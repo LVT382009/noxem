@@ -1,0 +1,13 @@
+# Hermes AI Memory System — Config Template
+# Add this to ~/.hermes/config.yaml
+
+hooks:
+  pre_llm_call:
+    - command: "node ~/.hermes/agent-hooks/pre-llm-memory.mjs"
+      timeout: 10
+  post_llm_call:
+    - command: "node ~/.hermes/agent-hooks/post-llm-extract.mjs"
+      timeout: 25
+
+# Set to true to skip the first-use consent prompt for hooks
+hooks_auto_accept: false
