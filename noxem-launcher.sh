@@ -4,6 +4,11 @@ set -euo pipefail
 
 NOXEM_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Ensure Node.js is in PATH (handles WSL non-interactive shells)
+if ! command -v node &>/dev/null && [ -d "$HOME/.local/bin" ]; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
 # Config
 MEMORY_PORT=${MEMORY_PORT:-3001}
 GEMMA4_PORT=${GEMMA4_PORT:-8000}

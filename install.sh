@@ -108,40 +108,56 @@ cp "$APP_DIR/hooks/"*.mjs "$HERMES_HOOKS_DIR/" 2>/dev/null || true
 chmod +x "$HERMES_HOOKS_DIR/"*.mjs 2>/dev/null || true
 echo "  ✓"
 
-# ── 6. Launcher alias ──
+# ── 6. Launcher ──
 echo "[6/6] Setting up launcher..."
 chmod +x "$APP_DIR/noxem-launcher.sh"
+INSTALLED=false
 
-# Determine shell rc file
-if $IS_MACOS; then
-  SHELL_RC="${HOME}/.zshrc"
-else
-  SHELL_RC="${HOME}/.bashrc"
+# On Linux/macOS: install wrapper in PATH for reliable resolution
+if ! $INSTALLED; then
+  WRAPPER_PATH="/usr/local/bin/hermes-noxem"
+  WRAPPER_CONTENT='#!/usr/bin/env bash
+set -euo pipefail
+exec '"$APP_DIR"'/noxem-launcher.sh "$@"'
+
+  if command -v sudo &>/dev/null; then
+    printf "%s\n" "$WRAPPER_CONTENT" | sudo tee "$WRAPPER_PATH" >/dev/null 2>&1 && sudo chmod +x "$WRAPPER_PATH" && { echo "  ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
+  elif [ -w "/usr/local/bin" ]; then
+    printf "%s\n" "$WRAPPER_CONTENT" > "$WRAPPER_PATH" && chmod +x "$WRAPPER_PATH" && { echo "  ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
+  fi
 fi
 
-ALIAS_LINE="alias hermes-noxem='$APP_DIR/noxem-launcher.sh'"
+# Fallback: add alias to shell rc file
+if ! $INSTALLED; then
+  if $IS_MACOS; then
+    SHELL_RC="${HOME}/.zshrc"
+  else
+    SHELL_RC="${HOME}/.bashrc"
+  fi
 
-if [ ! -f "$SHELL_RC" ] || ! grep -q "alias hermes-noxem" "$SHELL_RC" 2>/dev/null; then
-  # Ensure file exists
-  touch "$SHELL_RC"
-  cat >> "$SHELL_RC" << EOF
+  ALIAS_LINE="alias hermes-noxem='$APP_DIR/noxem-launcher.sh'"
+
+  if [ ! -f "$SHELL_RC" ] || ! grep -q "alias hermes-noxem" "$SHELL_RC" 2>/dev/null; then
+    touch "$SHELL_RC" 2>/dev/null || true
+    cat >> "$SHELL_RC" << EOF
 
 # Noxem — launch Hermes with memory + Gemma 4 servers
 $ALIAS_LINE
 EOF
-  echo "  ✓ Added 'hermes-noxem' alias to $SHELL_RC"
-else
-  echo "  ✓ 'hermes-noxem' alias already exists in $SHELL_RC"
-fi
+    echo "  ✓ Added 'hermes-noxem' alias to $SHELL_RC"
+  else
+    echo "  ✓ 'hermes-noxem' alias already exists in $SHELL_RC"
+  fi
 
-# On macOS, also add to ~/.bashrc if it exists (for bash users)
-if $IS_MACOS && [ -f "${HOME}/.bashrc" ]; then
-  if ! grep -q "alias hermes-noxem" "${HOME}/.bashrc" 2>/dev/null; then
-    cat >> "${HOME}/.bashrc" << EOF
+  # On macOS, also add to ~/.bashrc if it exists (for bash users)
+  if $IS_MACOS && [ -f "${HOME}/.bashrc" ]; then
+    if ! grep -q "alias hermes-noxem" "${HOME}/.bashrc" 2>/dev/null; then
+      cat >> "${HOME}/.bashrc" << EOF
 
 $ALIAS_LINE
 EOF
-    echo "  ✓ Also added to ~/.bashrc"
+      echo "  ✓ Also added to ~/.bashrc"
+    fi
   fi
 fi
 
@@ -176,8 +192,12 @@ echo "║  q4f16 inference).                           ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
-if $IS_MACOS; then
-  echo "Run: source ~/.zshrc && hermes-noxem"
+if $INSTALLED; then
+  echo "Run: hermes-noxem"
 else
-  echo "Run: source ~/.bashrc && hermes-noxem"
+  if $IS_MACOS; then
+    echo "Run: source ~/.zshrc && hermes-noxem"
+  else
+    echo "Run: source ~/.bashrc && hermes-noxem"
+  fi
 fi
