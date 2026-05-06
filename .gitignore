@@ -7,3 +7,4 @@ data/
 start.bat
 .cache/
 .env.local
+CLAUDE.md

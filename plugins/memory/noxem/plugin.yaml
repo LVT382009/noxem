@@ -1,6 +1,6 @@
 name: noxem
 version: 2.0.0
-description: "AI-powered memory for Hermes — EmbeddingGemma 300M for vector search + Gemma 4 advisor with DDG web search"
+description: "Persistent memory provider with vector search, deduplication, and context recovery"
 hooks:
   - prefetch
   - queue_prefetch
