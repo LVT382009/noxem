@@ -34,20 +34,19 @@
 ## Quick Start
 
 ```bash
-# 1. Install and start the server
-cd server && npm install && node memory-server.mjs
+# 1. Install everything
+bash install.sh
 
-# 2. Install the Hermes plugin
-cp -r plugins/memory/noxem ~/.hermes/plugins/memory/
+# 2. Launch Hermes with Noxem (auto-starts both servers)
+hermes-noxem
 
-# 3. Enable in Hermes
-hermes memory setup   # Select "noxem" from the list
-
-# 4. Verify
-hermes noxem status
+# Or manually:
+#   cd server && npm install && node memory-server.mjs
+#   node gemma4-server.mjs
+#   hermes chat
 ```
 
-**Requirements:** Node.js 20+, Python 3.10+, Hermes Agent v2026+
+**Requirements:** Node.js 22+, Python 3.10+, Hermes Agent v2026+
 
 ---
 
@@ -95,7 +94,7 @@ hermes noxem config                 # Show current configuration
 |----------|---------|-------------|
 | `MEMORY_PORT` | `3001` | Server port |
 | `MEMORY_DB_DIR` | `./data` | Database directory |
-| `GEMMA_URL` | `http://127.0.0.1:8000` | LLM endpoint for analysis |
+| `GEMMA_URL` | `http://127.0.0.1:8000` | Model server endpoint |
 | `DUP_THRESHOLD` | `0.92` | Deduplication sensitivity |
 | `ENABLE_MAINTENANCE` | `true` | Auto-cleanup every 5 minutes |
 
