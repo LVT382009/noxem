@@ -1,4 +1,4 @@
-import { AutoModel, AutoTokenizer, matmul } from '@xenova/transformers';
+import { AutoModel, AutoTokenizer } from '@xenova/transformers';
 
 const MODEL_ID = process.env.EMBEDDING_MODEL || 'onnx-community/embeddinggemma-300m-ONNX';
 const DTYPE = process.env.EMBEDDING_DTYPE || 'fp32';
