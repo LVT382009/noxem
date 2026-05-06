@@ -8,9 +8,21 @@ import cors from 'cors';
 const PORT = process.env.GEMMA4_PORT || 8000;
 const MODEL_ID = process.env.GEMMA4_MODEL || 'onnx-community/gemma-4-E2B-it-ONNX';
 const DTYPE = process.env.GEMMA4_DTYPE || 'q4f16';
-const DEVICE = process.env.GEMMA4_DEVICE || 'webgpu';
 const MAX_NEW_TOKENS = parseInt(process.env.GEMMA4_MAX_TOKENS || '1024');
 const CACHE_DIR = process.env.GEMMA4_CACHE || './.cache/gemma4';
+
+// Device detection: macOS defaults to CPU (Apple Silicon) unless user overrides
+function detectDevice() {
+  if (process.env.GEMMA4_DEVICE) return process.env.GEMMA4_DEVICE;
+  const isMac = process.platform === 'darwin';
+  if (isMac) {
+    console.log('  macOS detected — defaulting to CPU (Apple Silicon CPU handles q4f16 efficiently)');
+    console.log('  Override: export GEMMA4_DEVICE=webgpu');
+    return 'cpu';
+  }
+  return 'webgpu';
+}
+const DEVICE = detectDevice();
 
 let model = null;
 let processor = null;

@@ -12,6 +12,9 @@ GEMMA4_SERVER="$NOXEM_DIR/server/gemma4-server.mjs"
 MEMORY_PID=""
 GEMMA4_PID=""
 
+# OS detection
+OS="$(uname -s)"
+
 # Color helpers
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -30,15 +33,35 @@ cleanup() {
   exit $code
 }
 
+# Cross-platform port check: returns 0 if port is accepting connections
+check_port() {
+  local port=$1
+  if command -v curl &>/dev/null; then
+    curl -s -o /dev/null --connect-timeout 1 "http://127.0.0.1:$port/" 2>/dev/null
+  elif command -v nc &>/dev/null; then
+    # macOS nc uses -G timeout, GNU nc uses -w timeout; try both
+    nc -z -G 2 127.0.0.1 "$port" 2>/dev/null || nc -z -w 2 127.0.0.1 "$port" 2>/dev/null
+  elif [ "$OS" != "Darwin" ] && (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; then
+    return 0
+  else
+    # Last resort: try a quick Node.js TCP connect
+    node -e "
+      require('net').createConnection($port, '127.0.0.1')
+        .on('connect', () => process.exit(0))
+        .on('error', () => process.exit(1))
+        .setTimeout(2000, function() { process.exit(1); });
+    " 2>/dev/null
+  fi
+}
+
 wait_for_port() {
   local port=$1 name=$2 timeout=${3:-60}
   local elapsed=0
   printf "  Waiting for %s " "$name"
   while [ $elapsed -lt $timeout ]; do
-    if command -v nc &>/dev/null; then
-      nc -z 127.0.0.1 "$port" 2>/dev/null && { green "✓"; return 0; }
-    else
-      (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null && { green "✓"; return 0; }
+    if check_port "$port"; then
+      green "✓"
+      return 0
     fi
     printf "."
     sleep 1
@@ -64,7 +87,11 @@ wait_for_port $MEMORY_PORT "Memory server"
 
 # 2. Gemma 4 server
 echo "[2/2] Starting Gemma 4 (this may take a while on first run)..."
-export GEMMA4_PORT GEMMA4_DEVICE=${GEMMA4_DEVICE:-webgpu}
+# On macOS, default to CPU (Apple Silicon CPU is fast enough for q4f16)
+if [ "$OS" = "Darwin" ] && [ -z "${GEMMA4_DEVICE:-}" ]; then
+  export GEMMA4_DEVICE=cpu
+fi
+export GEMMA4_PORT
 node "$GEMMA4_SERVER" &
 GEMMA4_PID=$!
 wait_for_port $GEMMA4_PORT "Gemma 4" 180  # longer timeout for model download

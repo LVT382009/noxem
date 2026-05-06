@@ -8,7 +8,7 @@
 ![Node](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js)
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-0078D4)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4)
 
 ---
 
@@ -47,6 +47,24 @@ hermes-noxem
 ```
 
 **Requirements:** Node.js 22+, Python 3.10+, Hermes Agent v2026+
+
+### macOS Prerequisites
+
+```bash
+# 1. Install Xcode Command Line Tools
+xcode-select --install
+
+# 2. Install Homebrew (if not installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 3. Install Node.js 22+
+brew install node
+
+# 4. Run the installer (same as Linux)
+bash install.sh
+```
+
+> **Apple Silicon (M1–M4):** The Gemma 4 model uses CPU by default on macOS — Apple Silicon CPUs are fast enough for q4f16 inference. To force WebGPU: `export GEMMA4_DEVICE=webgpu` before launching.
 
 ---
 
@@ -95,6 +113,7 @@ hermes noxem config                 # Show current configuration
 | `MEMORY_PORT` | `3001` | Server port |
 | `MEMORY_DB_DIR` | `./data` | Database directory |
 | `GEMMA_URL` | `http://127.0.0.1:8000` | Model server endpoint |
+| `GEMMA4_DEVICE` | `webgpu` (Win/Lin), `cpu` (macOS) | Inference device |
 | `DUP_THRESHOLD` | `0.92` | Deduplication sensitivity |
 | `ENABLE_MAINTENANCE` | `true` | Auto-cleanup every 5 minutes |
 
