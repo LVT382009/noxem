@@ -1,4 +1,4 @@
-import { AutoModel, AutoTokenizer } from '@xenova/transformers';
+import { pipeline } from '@huggingface/transformers';
 
 const MODEL_ID = process.env.EMBEDDING_MODEL || 'onnx-community/embeddinggemma-300m-ONNX';
 const DTYPE = process.env.EMBEDDING_DTYPE || 'fp32';
@@ -11,16 +11,16 @@ const PREFIXES = {
   document: 'title: none | text: ',
 };
 
-let model = null;
-let tokenizer = null;
+let extractor = null;
 let modelReady = false;
 
 export async function initEmbeddingEngine() {
   if (modelReady) return;
   console.log(`Loading EmbeddingGemma 300M (${DTYPE}, dim=${EMBED_DIM})...`);
   const start = Date.now();
-  tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
-  model = await AutoModel.from_pretrained(MODEL_ID, { dtype: DTYPE });
+  extractor = await pipeline('feature-extraction', MODEL_ID, {
+    dtype: DTYPE,
+  });
   modelReady = true;
   console.log(`Embedding model ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
 }
@@ -49,21 +49,25 @@ function cosineSimilarity(a, b) {
 export async function embed(text, role = 'document') {
   if (!modelReady) throw new Error('Embedding engine not initialized');
   const prefix = role === 'query' ? PREFIXES.query : PREFIXES.document;
-  const inputs = await tokenizer(prefix + text, { padding: true, truncation: true, max_length: 2048 });
-  const { sentence_embedding } = await model(inputs);
-  // sentence_embedding: [1, 768] → Float32Array
-  const arr = Array.from(sentence_embedding.data);
+  const output = await extractor(prefix + text, {
+    pooling: 'mean',
+    normalize: true,
+  });
+  // output: [1, 768] Float32Array — already normalized by pipeline
+  const arr = Array.from(output.data);
   return normalize(arr.slice(0, EMBED_DIM));
 }
 
 export async function embedBatch(texts, role = 'document') {
   if (!modelReady) throw new Error('Embedding engine not initialized');
   const prefixed = texts.map(t => (role === 'query' ? PREFIXES.query : PREFIXES.document) + t);
-  const inputs = await tokenizer(prefixed, { padding: true, truncation: true, max_length: 2048 });
-  const { sentence_embedding } = await model(inputs);
-  // sentence_embedding: [batch, 768]
-  const dim = sentence_embedding.dims[1];
-  const flat = Array.from(sentence_embedding.data);
+  const output = await extractor(prefixed, {
+    pooling: 'mean',
+    normalize: true,
+  });
+  // output: [batch, 768]
+  const dim = output.dims[1];
+  const flat = Array.from(output.data);
   const vectors = [];
   for (let i = 0; i < texts.length; i++) {
     const start = i * dim;
