@@ -234,63 +234,101 @@ app.post('/memory/store-batch', async (req, res) => {
   }
 });
 
-app.get('/memory/search', async (req, res) => {
+app.get("/memory/search", async (req, res) => {
   let searchResults = [];
   try {
-    const { q, session_id, limit, method } = req.query;
-    if (!q?.trim()) return res.status(400).json({ error: 'query "q" required' });
-
+    const { q, session_id, limit, method, expand } = req.query;
+    if (!q?.trim()) return res.status(400).json({ error: "query required" });
     const limitNum = limit ? parseInt(limit) : 10;
-    let searchMethod = 'fts';
+    let searchMethod = "fts";
+    const isShortQuery = expand !== "false" && q.trim().split(/\s+/).length < 6;
 
-    // Embedding search (primary) — try sqlite-vec KNN first, fall back to JS cosine
-    if ((!method || method === 'hybrid' || method === 'embedding') && isEmbeddingReady()) {
+    // Multi-query expansion for vague queries
+    let queries = [q.trim()];
+    if (isShortQuery && ENABLE_ADVISOR) {
       try {
-        const qVec = await embed(q.trim(), 'query');
+        const expQ = q.trim().replace(/"/g, "");
+        const prompt = "Generate 2 alternative ways to phrase this search query for a personal memory store. Return ONLY a JSON array of 2 strings. Query: " + expQ;
+        const expandRes = await fetch(process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "gemma4", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
+          signal: AbortSignal.timeout(3000),
+        });
+        if (expandRes.ok) {
+          const expandData = await expandRes.json();
+          const content = expandData.choices?.[0]?.message?.content || "";
+          const match = content.match(/\[.*?\]/s);
+          if (match) {
+            const alternates = JSON.parse(match[0]);
+            if (Array.isArray(alternates)) queries = [q.trim(), ...alternates.slice(0, 2)];
+          }
+        }
+      } catch { /* expansion is optional */ }
+    }
 
-        // Try native KNN via sqlite-vec (much faster for large datasets)
+    // Embedding search (primary) - try KNN first, fall back to JS cosine
+    if ((!method || method === "hybrid" || method === "embedding") && isEmbeddingReady()) {
+      try {
+        const queryVecs = await Promise.all(queries.map(qq => embed(qq, "query")));
+        const qVec = queryVecs[0];
         let embeddingResults = null;
-        const knnHits = vectorKnnSearch(qVec, limitNum * 3);
-        if (knnHits && knnHits.length > 0) {
-          embeddingResults = applyRecencyScore(knnHits);
-          searchMethod = 'knn';
+
+        if (queryVecs.length > 1) {
+          // Multi-query: search each variant, merge via RRF
+          const allEmbRes = [];
+          for (const vec of queryVecs) {
+            const knnHits = vectorKnnSearch(vec, limitNum * 3);
+            if (knnHits && knnHits.length > 0) { allEmbRes.push(applyRecencyScore(knnHits)); }
+            else {
+              const cands = searchByEmbedding(vec, getAllActiveMemories(), limitNum * 3);
+              allEmbRes.push(applyRecencyScore(mmrRerank(vec, cands, limitNum * 2, 0.7)));
+            }
+          }
+          embeddingResults = allEmbRes.length > 1 ? reciprocalRankFusion(allEmbRes) : allEmbRes[0];
+          searchMethod = "multi-query";
         } else {
-          // Fallback: JS brute-force cosine similarity
-          const allMemories = getAllActiveMemories();
-          const embeddingCandidates = searchByEmbedding(qVec, allMemories, limitNum * 3);
-          embeddingResults = applyRecencyScore(mmrRerank(qVec, embeddingCandidates, limitNum * 2, 0.7));
+          const knnHits = vectorKnnSearch(qVec, limitNum * 3);
+          if (knnHits && knnHits.length > 0) { embeddingResults = applyRecencyScore(knnHits); searchMethod = "knn"; }
+          else {
+            const cands = searchByEmbedding(qVec, getAllActiveMemories(), limitNum * 3);
+            embeddingResults = applyRecencyScore(mmrRerank(qVec, cands, limitNum * 2, 0.7));
+          }
         }
 
-        if (embeddingResults.length > 0 && method === 'embedding') {
+        if (embeddingResults && embeddingResults.length > 0 && method === "embedding") {
           searchResults = embeddingResults.slice(0, limitNum);
-          searchMethod = 'embedding';
-        } else if (method === 'hybrid' || !method) {
-          // Hybrid: Reciprocal Rank Fusion of embedding + FTS results
-          const ftsResults = normalizeFtsScore(searchMemories({ query: q, limit: limitNum * 3 }));
-          const merged = reciprocalRankFusion([embeddingResults, ftsResults]);
-          searchResults = merged.slice(0, limitNum);
-          searchMethod = 'hybrid';
+        } else if ((method === "hybrid" || !method) && embeddingResults && embeddingResults.length > 0) {
+          const allFts = queries.map(qq => normalizeFtsScore(searchMemories({ query: qq, limit: limitNum * 3 })));
+          const ftsResults = allFts.length > 1 ? reciprocalRankFusion(allFts) : allFts[0];
+          searchResults = reciprocalRankFusion([embeddingResults, ftsResults]).slice(0, limitNum);
+          searchMethod = "hybrid" + (queries.length > 1 ? "+expanded" : "");
         }
       } catch { /* fall through to FTS */ }
     }
 
     // FTS fallback
     if (!searchResults.length) {
-      searchResults = applyRecencyScore(normalizeFtsScore(searchMemories({ query: q, limit: limitNum })));
-      if (session_id) {
-        searchResults = searchResults.filter(r => r.session_id === session_id);
+      if (queries.length > 1) {
+        const allFts = queries.map(qq => applyRecencyScore(normalizeFtsScore(searchMemories({ query: qq, limit: limitNum }))));
+        searchResults = reciprocalRankFusion(allFts).slice(0, limitNum);
+        searchMethod = "fts+expanded";
+      } else {
+        searchResults = applyRecencyScore(normalizeFtsScore(searchMemories({ query: q, limit: limitNum })));
       }
     }
 
-    res.json({ ok: true, method: searchMethod, results: searchResults });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-  // Track recall counts for returned results
-  try {
-    const ids = searchResults.map(r => r.id).filter(Boolean);
-    if (ids.length) incrementRecallCounts(ids);
-  } catch {}
+    // Apply session filter to all search methods
+    if (session_id) searchResults = searchResults.filter(r => r.session_id === session_id);
+
+    // Track recall counts for returned results
+    try {
+      const ids = searchResults.map(r => r.id).filter(Boolean);
+      if (ids.length) incrementRecallCounts(ids);
+    } catch {}
+
+    res.json({ ok: true, method: searchMethod, queries: queries.length > 1 ? queries : undefined, results: searchResults });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/memory/stats', (_req, res) => {
@@ -313,6 +351,18 @@ app.get('/memory/:id', (req, res) => {
   res.json(mem);
 });
 
+app.delete('/memory/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const mem = getMemory(id);
+    if (!mem) return res.status(404).json({ error: 'not found' });
+    deleteMemory(id);
+    res.json({ ok: true, deleted: id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Provenance & Lineage ──────────────────────────────────────
 
 app.post('/memory/supersede', (req, res) => {
@@ -324,21 +374,32 @@ app.post('/memory/supersede', (req, res) => {
     if (!oldMem) return res.status(404).json({ error: `memory ${old_id} not found` });
 
     // Mark old as superseded by new
-    updateMemoryStatus(old_id, 'superseded', new_id);
+updateMemoryStatus(old_id, 'superseded', new_id);
 
-    // Add provenance to new memory metadata
-    const newMem = getMemory(new_id);
-    if (newMem) {
-      const oldMeta = JSON.parse(oldMem.metadata || '{}');
-      const newMeta = JSON.parse(newMem.metadata || '{}');
-      newMeta.supersedes = old_id;
-      newMeta.supersede_reason = reason || 'contradiction';
-      newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
-      const updateMeta = db.prepare('UPDATE memories SET metadata = ? WHERE id = ?');
-      updateMeta.run(JSON.stringify(newMeta), new_id);
-    }
+// Bi-temporal: set valid_until on old, valid_from on new
+const now = new Date().toISOString();
+const setValidUntil = db.prepare('UPDATE memories SET valid_until = ? WHERE id = ?');
+setValidUntil.run(now, old_id);
+const setValidFrom = db.prepare('UPDATE memories SET valid_from = ? WHERE id = ? AND valid_from IS NULL');
+setValidFrom.run(now, new_id);
 
-    res.json({ ok: true, old_id, new_id, status: 'superseded' });
+// Add provenance to new memory metadata
+const newMem = getMemory(new_id);
+if (newMem) {
+  const oldMeta = JSON.parse(oldMem.metadata || '{}');
+  const newMeta = JSON.parse(newMem.metadata || '{}');
+  newMeta.supersedes = old_id;
+  newMeta.supersede_reason = reason || 'contradiction';
+  newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
+  // Track source memory IDs for provenance graph
+  let sourceIds = [];
+  try { sourceIds = JSON.parse(newMem.source_memory_ids || '[]'); } catch {}
+  if (!sourceIds.includes(old_id)) sourceIds.push(old_id);
+  const updateMeta = db.prepare('UPDATE memories SET metadata = ?, source_memory_ids = ? WHERE id = ?');
+  updateMeta.run(JSON.stringify(newMeta), JSON.stringify(sourceIds), new_id);
+}
+
+res.json({ ok: true, old_id, new_id, status: 'superseded' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -357,6 +418,8 @@ app.get('/memory/:id/lineage', (req, res) => {
         type: current.type,
         status: current.status,
         created_at: current.created_at,
+        valid_from: current.valid_from,
+        valid_until: current.valid_until,
         source: meta.source,
         extraction_method: meta.extraction_method,
         origin_session_id: meta.origin_session_id,

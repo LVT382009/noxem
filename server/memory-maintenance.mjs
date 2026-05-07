@@ -1,5 +1,5 @@
-import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories } from './memory-store.mjs';
-import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, normalize, cosineSimilarity } from './embedding-engine.mjs';
+import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, db } from './memory-store.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, estimateImportance, extractEntityAttribute, normalize, cosineSimilarity } from './embedding-engine.mjs';
 
 let maintenanceInterval = null;
 const RUN_INTERVAL_MS = parseInt(process.env.MAINTENANCE_INTERVAL || '300000'); // 5 min default
@@ -82,9 +82,140 @@ export async function runMaintenance() {
     console.error('[Maintenance] Archive error:', err.message);
   }
 
+  // 6. Significance-gated consolidation: cluster related low-importance memories
+  try {
+    const consolidated = await consolidateMemories(memories);
+    results.consolidated = consolidated;
+    if (consolidated > 0) console.log(`[Maintenance] Consolidated ${consolidated} memory clusters`);
+  } catch (err) {
+    console.error('[Maintenance] Consolidation error:', err.message);
+  }
+
   const elapsed = Date.now() - start;
   console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
   return results;
+}
+
+// Significance-gated consolidation:
+// When 3+ low-importance memories (importance < 0.5) cluster together
+// about the same entity (cosine > 0.75), consolidate into a single
+// higher-importance summary and mark originals as superseded.
+const CONSOLIDATION_MIN_CLUSTER = 3;
+const CONSOLIDATION_SIM_THRESHOLD = 0.75;
+const CONSOLIDATION_MAX_IMPORTANCE = 0.5;
+
+async function consolidateMemories(memories) {
+  if (!isEmbeddingReady() || memories.length < CONSOLIDATION_MIN_CLUSTER) return 0;
+
+  // Group by entity (memories with same entity are candidates)
+  const byEntity = new Map();
+  for (const m of memories) {
+    if (m.importance >= CONSOLIDATION_MAX_IMPORTANCE) continue; // skip already-important
+    if (!m.entity || !m.embedding) continue; // need both for clustering
+    const key = m.entity;
+    if (!byEntity.has(key)) byEntity.set(key, []);
+    byEntity.get(key).push(m);
+  }
+
+  let consolidatedCount = 0;
+
+  for (const [entity, entityMems] of byEntity) {
+    if (entityMems.length < CONSOLIDATION_MIN_CLUSTER) continue;
+
+    // Find clusters via greedy single-link clustering
+    const visited = new Set();
+    const clusters = [];
+
+    for (let i = 0; i < entityMems.length; i++) {
+      if (visited.has(i)) continue;
+      const cluster = [entityMems[i]];
+      visited.add(i);
+
+      for (let j = i + 1; j < entityMems.length; j++) {
+        if (visited.has(j)) continue;
+        const sim = cosineSimilarity(
+          entityMems[i].embedding,
+          entityMems[j].embedding
+        );
+        if (sim > CONSOLIDATION_SIM_THRESHOLD) {
+          cluster.push(entityMems[j]);
+          visited.add(j);
+        }
+      }
+
+      if (cluster.length >= CONSOLIDATION_MIN_CLUSTER) {
+        clusters.push(cluster);
+      }
+    }
+
+    // Consolidate each cluster
+    for (const cluster of clusters) {
+      try {
+        // Sort by created_at to get oldest first
+        cluster.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+        // Create consolidated summary text
+        const texts = cluster.map(m => m.text);
+        const summaryText = texts.join(' | ');
+
+        // Determine the best type from the cluster (most specific wins)
+        const typePriority = ['profile', 'preference', 'setup', 'project', 'goal', 'pattern', 'entity', 'learning', 'issue', 'fact', 'event', 'request'];
+        let bestType = 'fact';
+        for (const m of cluster) {
+          if (typePriority.indexOf(m.type) < typePriority.indexOf(bestType)) {
+            bestType = m.type;
+          }
+        }
+
+        // Store the consolidated memory with higher importance
+        const newImportance = Math.min(1.0, Math.max(...cluster.map(m => m.importance)) + 0.2);
+        const clusterIds = cluster.map(m => m.id);
+
+        let embedding = null;
+        try {
+          const vec = await embed(summaryText);
+          embedding = new Float32Array(vec).buffer;
+        } catch {}
+
+        const newId = storeMemory({
+          session_id: cluster[0].session_id || '',
+          type: bestType,
+          text: summaryText,
+          embedding,
+          metadata: {
+            source: 'consolidation',
+            extraction_method: 'significance_gated',
+            origin_session_id: cluster[0].session_id || '',
+            consolidated_from: clusterIds,
+            stored_at: new Date().toISOString(),
+          },
+          importance: newImportance,
+          context_prefix: `Consolidated ${cluster.length} memories about ${entity}:`,
+          entity,
+          attribute: cluster[0].attribute || '',
+        });
+
+        // Track source memory IDs
+        const updateSourceIds = db.prepare('UPDATE memories SET source_memory_ids = ? WHERE id = ?');
+        updateSourceIds.run(JSON.stringify(clusterIds), newId);
+
+        // Mark originals as superseded by consolidated
+        for (const m of cluster) {
+          updateMemoryStatus(m.id, 'superseded', newId);
+          // Set valid_until on superseded
+          const setValidUntil = db.prepare('UPDATE memories SET valid_until = ? WHERE id = ?');
+          setValidUntil.run(new Date().toISOString(), m.id);
+        }
+
+        consolidatedCount++;
+        console.log(`[Maintenance] Consolidated ${cluster.length} memories about "${entity}" → #${newId} (importance: ${newImportance})`);
+      } catch (err) {
+        console.error('[Maintenance] Cluster consolidation error:', err.message);
+      }
+    }
+  }
+
+  return consolidatedCount;
 }
 
 export function startMaintenanceCron(intervalMs = RUN_INTERVAL_MS) {

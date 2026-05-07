@@ -86,16 +86,22 @@ class NoxemMemoryProvider:
     # ── Tools ─────────────────────────────────────────────────
 
     def get_tool_schemas(self):
-        """Expose memory search as a tool the agent can call."""
+        """Expose memory operations as tools the agent can call."""
         return [
             {
                 "name": "memory_search",
-                "description": "Search stored memories by semantic similarity",
+                "description": "Search stored memories by semantic similarity (hybrid: embedding + keyword)",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Search query"},
                         "limit": {"type": "integer", "description": "Max results", "default": 5},
+                        "method": {
+                            "type": "string",
+                            "description": "Search method: hybrid, embedding, or fts",
+                            "enum": ["hybrid", "embedding", "fts"],
+                            "default": "hybrid",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -117,18 +123,74 @@ class NoxemMemoryProvider:
                     "required": ["text"],
                 },
             },
+            {
+                "name": "memory_supersede",
+                "description": "Mark an old memory as superseded by a newer one (e.g., preference changed)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "old_id": {"type": "integer", "description": "ID of the old memory to supersede"},
+                        "new_id": {"type": "integer", "description": "ID of the new memory that replaces it"},
+                        "reason": {"type": "string", "description": "Reason for supersession", "default": "contradiction"},
+                    },
+                    "required": ["old_id", "new_id"],
+                },
+            },
+            {
+                "name": "memory_lineage",
+                "description": "Trace the provenance chain of a memory through supersession history",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer", "description": "Memory ID to trace lineage for"},
+                    },
+                    "required": ["id"],
+                },
+            },
+            {
+                "name": "memory_contradiction_check",
+                "description": "Check if a new memory contradicts existing memories with the same entity+attribute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity": {"type": "string", "description": "Entity name (e.g., 'user')"},
+                        "attribute": {"type": "string", "description": "Attribute name (e.g., 'prefer_dark_mode')"},
+                        "text": {"type": "string", "description": "New memory text to check against existing"},
+                    },
+                    "required": ["entity", "attribute"],
+                },
+            },
         ]
 
     def handle_tool_call(self, name: str, args: dict) -> str:
         """Route tool calls to the memory server."""
         if name == "memory_search":
             query = urllib.parse.quote(args.get('query', ''), safe='')
-            return self._api_get(f"/memory/search?q={query}&limit={args.get('limit', 5)}")
+            method = args.get('method', 'hybrid')
+            url = f"/memory/search?q={query}&limit={args.get('limit', 5)}&method={method}"
+            return self._api_get(url)
         elif name == "memory_store":
             result = self._api_post("/memory/store", {
                 "text": args["text"],
                 "type": args.get("type", "fact"),
                 "session_id": self._session_id,
+            })
+            return json.dumps(result)
+        elif name == "memory_supersede":
+            result = self._api_post("/memory/supersede", {
+                "old_id": args["old_id"],
+                "new_id": args["new_id"],
+                "reason": args.get("reason", "contradiction"),
+            })
+            return json.dumps(result)
+        elif name == "memory_lineage":
+            result = self._api_get(f"/memory/{args['id']}/lineage")
+            return json.dumps(result)
+        elif name == "memory_contradiction_check":
+            result = self._api_post("/memory/contradiction-check", {
+                "entity": args["entity"],
+                "attribute": args["attribute"],
+                "text": args.get("text", ""),
             })
             return json.dumps(result)
         return json.dumps({"error": f"Unknown tool: {name}"})

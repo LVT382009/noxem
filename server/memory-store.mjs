@@ -55,14 +55,17 @@ try { db.exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 
 try { db.exec(`ALTER TABLE memories ADD COLUMN context_prefix TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE memories ADD COLUMN entity TEXT NOT NULL DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE memories ADD COLUMN attribute TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN valid_from TEXT`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN valid_until TEXT`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN source_memory_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(entity, attribute)`); } catch {}
 
 // Initialize sqlite-vec for native KNN (optional — falls back to JS cosine)
 initVectorIndex(db).catch(() => {});
 
 const insert = db.prepare(
-  `INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute)
-   VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute)`
+  `INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from)
+  VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from)`
 );
 
 const insertTx = db.transaction((items) => {
@@ -146,7 +149,7 @@ function bufferToFloat32(buf) {
   return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / Float32Array.BYTES_PER_ELEMENT));
 }
 
-export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '' }) {
+export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null }) {
   const result = insert.run({
     session_id: session_id || '',
     type: type || 'general',
@@ -157,6 +160,7 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
     context_prefix,
     entity,
     attribute,
+    valid_from: valid_from || new Date().toISOString(),
   });
   const id = result.lastInsertRowid;
   // Update vector index if embedding provided
@@ -170,6 +174,7 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
 }
 
 export function storeMemories(items) {
+  const now = new Date().toISOString();
   const prepared = items.map(m => ({
     session_id: m.session_id || '',
     type: m.type || 'general',
@@ -180,6 +185,7 @@ export function storeMemories(items) {
     context_prefix: m.context_prefix || '',
     entity: m.entity || '',
     attribute: m.attribute || '',
+    valid_from: m.valid_from || now,
   }));
   return insertTx(prepared);
 }

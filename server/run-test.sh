@@ -117,6 +117,59 @@ R=$(curl -s "http://127.0.0.1:3001/memory/session/test-1")
 echo "$R"
 echo "$R" | grep -q '"results"' && check "session filter" "true" || check "session filter" "FAIL"
 
+echo "=== Bi-temporal valid_from at store ==="
+R=$(curl -s http://127.0.0.1:3001/memory/2)
+echo "$R"
+echo "$R" | grep -q '"valid_from"' && check "valid_from field" "true" || check "valid_from field" "FAIL"
+echo "$R" | grep -qE '"valid_from":"202[0-9]' && check "valid_from populated" "true" || check "valid_from populated" "FAIL"
+
+echo "=== Bi-temporal valid_until after supersede ==="
+R=$(curl -s http://127.0.0.1:3001/memory/1)
+echo "$R"
+echo "$R" | grep -qE '"valid_until":"202[0-9]' && check "valid_until after supersede" "true" || check "valid_until after supersede" "FAIL"
+
+echo "=== Lineage includes bi-temporal ==="
+R=$(curl -s http://127.0.0.1:3001/memory/1/lineage)
+echo "$R"
+echo "$R" | grep -q '"valid_from"' && check "lineage valid_from" "true" || check "lineage valid_from" "FAIL"
+echo "$R" | grep -q '"valid_until"' && check "lineage valid_until" "true" || check "lineage valid_until" "FAIL"
+
+echo "=== FTS search with active results ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"I use React for frontend development","type":"setup"}')
+echo "$R"
+R=$(curl -s "http://127.0.0.1:3001/memory/search?q=React+frontend&limit=5")
+echo "$R"
+echo "$R" | grep -qE '"results":\s*\[.+' && check "fts search returns results" "true" || check "fts search results" "FAIL"
+
+echo "=== Store-batch ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/store-batch -H "Content-Type: application/json" -d '{"memories":[{"text":"First batch item","type":"fact"},{"text":"Second batch item","type":"fact"}]}')
+echo "$R"
+echo "$R" | grep -q '"ids"' && check "store-batch" "true" || check "store-batch" "FAIL"
+
+echo "=== Session filter on search ==="
+R=$(curl -s "http://127.0.0.1:3001/memory/search?q=auth&limit=5&session_id=test-1")
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "search session filter" "true" || check "search session filter" "FAIL"
+
+echo "=== Delete memory ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"Temporary memory to delete","type":"fact"}')
+DEL_ID=$(echo "$R" | grep -oE '"id":[0-9]+' | grep -oE '[0-9]+')
+R=$(curl -s -X DELETE "http://127.0.0.1:3001/memory/$DEL_ID")
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "delete memory" "true" || check "delete memory" "FAIL"
+R=$(curl -s "http://127.0.0.1:3001/memory/$DEL_ID")
+echo "$R" | grep -q '"not found"' && check "deleted memory is 404" "true" || check "deleted memory 404" "FAIL"
+
+echo "=== Ready endpoint ==="
+R=$(curl -s http://127.0.0.1:3001/ready)
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "ready check" "true" || check "ready check" "FAIL"
+
+echo "=== Source memory IDs in supersede ==="
+R=$(curl -s http://127.0.0.1:3001/memory/2)
+echo "$R"
+echo "$R" | grep -q 'source_memory_ids' && check "source_memory_ids field" "true" || check "source_memory_ids field" "FAIL"
+
 echo ""
 echo "========================================"
 echo "Results: $PASS passed, $FAIL failed"

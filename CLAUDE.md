@@ -16,6 +16,7 @@ Hermes Agent
 │   ├── Brain 2: Gemma 4 E2B
 │   │   - Context recovery after compaction
 │   │   - Task drift warnings
+│   │   - Multi-query expansion for vague searches
 │   │   - DuckDuckGo web search
 │   │   - Session-end memory extraction
 │   │
@@ -29,13 +30,15 @@ Hermes Agent
 3. **Categorize** — Auto-tagged: preference, project, profile, request, learning, setup, goal, issue, pattern, entity, event, fact
 4. **Extract Entity** — Entity-attribute pairs extracted at store time for contradiction detection (e.g., `entity=user, attribute=prefer_dark_mode`)
 5. **Estimate Importance** — Scored 0.1-1.0 based on type, content, and keywords (profile=0.9, trivial=0.1)
-6. **Dedup** — Cron (5min): cosine >0.92 → merge, mark older as invalid
-7. **Contradict** — Entity-attribute matching + cosine similarity → older marked superseded
-8. **Clean** — Invalid memories purged; stale (90d, 0 recalls) archived
-9. **Search** — Hybrid (EmbeddingGemma KNN + FTS5 via Reciprocal Rank Fusion) with MMR diversity
-10. **Score** — Recency + importance + spaced-repetition weighting (type-specific half-lives)
-11. **Recover** — `on_pre_compress`: Gemma 4 preserves critical context
-12. **Advise** — Gemma 4 + DDG web search watches for task drift
+6. **Bi-temporal Track** — `valid_from`/`valid_until` timestamps track when memories are current
+7. **Dedup** — Cron (5min): cosine >0.92 → merge, mark older as invalid
+8. **Contradict** — Entity-attribute matching + cosine similarity → older marked superseded
+9. **Consolidate** — Significance-gated: 3+ low-importance clustered memories (cosine >0.75) → single high-importance summary
+10. **Clean** — Invalid memories purged; stale (90d, 0 recalls) archived
+11. **Search** — Hybrid (EmbeddingGemma KNN + FTS5 via Reciprocal Rank Fusion) with MMR diversity + multi-query expansion
+12. **Score** — Recency + importance + spaced-repetition weighting (type-specific half-lives)
+13. **Recover** — `on_pre_compress`: Gemma 4 preserves critical context
+14. **Advise** — Gemma 4 + DDG web search watches for task drift
 
 ## Scoring System
 
@@ -74,22 +77,38 @@ Before embedding, a context prefix is prepended to the text (Anthropic contextua
 - `"Preference, about user's prefer dark mode: I prefer dark mode for VS Code"`
 - This anchors the embedding to its origin, reducing retrieval failures by ~49%
 
+### Significance-Gated Consolidation
+
+When 3+ low-importance memories (importance <0.5) about the same entity cluster together (cosine >0.75):
+- Clustered memories are merged into a single summary
+- Originals are marked superseded with bi-temporal tracking
+- New memory gets importance = max(cluster) + 0.2 (capped at 1.0)
+- Source memory IDs are tracked for provenance graph
+
+### Multi-Query Expansion
+
+For short queries (<6 words), Gemma 4 generates 2 alternate phrasings:
+- All variants are searched independently
+- Results merged via Reciprocal Rank Fusion
+- Improves recall for vague or imprecise queries
+
 ## API Endpoints
 
 ### Core CRUD
-- `POST /memory/store` — Store a memory with auto-categorization, entity extraction, importance estimation, contextual enrichment
+- `POST /memory/store` — Store a memory with auto-categorization, entity extraction, importance estimation, contextual enrichment, bi-temporal `valid_from`
 - `POST /memory/store-batch` — Batch store with enrichment
-- `GET /memory/search?q=...&limit=N&method=hybrid|embedding|fts` — Hybrid search with RRF + MMR + recency scoring
-- `GET /memory/:id` — Get a single memory
+- `GET /memory/search?q=...&limit=N&method=hybrid|embedding|fts&session_id=...` — Hybrid search with RRF + MMR + recency scoring + session filter + multi-query expansion
+- `GET /memory/:id` — Get a single memory (includes all fields)
+- `DELETE /memory/:id` — Delete a memory by ID
 - `GET /memory/stats` — Memory statistics
 
 ### Sync & Extraction
-- `POST /memory/sync` — Sync a conversation turn (user + assistant)
+- `POST /memory/sync` — Sync a conversation turn (user + assistant) with entity extraction + importance
 - `POST /memory/extract` — LLM-based memory extraction
 
 ### Provenance & Lineage
-- `POST /memory/supersede` — Mark old memory as superseded by new, with reason tracking
-- `GET /memory/:id/lineage` — Trace provenance chain through supersession history
+- `POST /memory/supersede` — Mark old memory as superseded by new, with reason tracking + bi-temporal `valid_from`/`valid_until` + `source_memory_ids`
+- `GET /memory/:id/lineage` — Trace provenance chain through supersession history (includes bi-temporal data)
 
 ### Contradiction Detection
 - `POST /memory/contradiction-check` — Find memories with same entity+attribute that express different values
@@ -100,7 +119,7 @@ Before embedding, a context prefix is prepended to the text (Anthropic contextua
 
 ### Maintenance
 - `POST /memory/reembed` — Backfill embeddings for memories missing them
-- `POST /memory/maintenance/run` — Run dedup + contradiction + archive cycle
+- `POST /memory/maintenance/run` — Run dedup + contradiction + consolidation + archive cycle
 - `POST /memory/maintenance/stop` — Stop maintenance cron
 
 ### Advisor
@@ -115,6 +134,15 @@ Before embedding, a context prefix is prepended to the text (Anthropic contextua
 - `GET /health` — Server health + feature status
 - `GET /ready` — Startup readiness check
 
+## Python Plugin Tools
+
+The Noxem plugin exposes these tools to Hermes:
+- `memory_search` — Search with method selection (hybrid/embedding/fts)
+- `memory_store` — Store with type categorization
+- `memory_supersede` — Mark old as superseded by new
+- `memory_lineage` — Trace provenance chain
+- `memory_contradiction_check` — Check for contradicting memories
+
 ## Quick Start
 
 ```bash
@@ -122,12 +150,12 @@ Before embedding, a context prefix is prepended to the text (Anthropic contextua
 cd server && npm start
 
 # Enable in Hermes
-hermes memory setup  # Select "noxem"
+hermes memory setup # Select "noxem"
 
 # Verify
 hermes noxem status
 
-# Run integration tests
+# Run integration tests (34 tests)
 cd server && bash run-test.sh
 ```
 
@@ -135,19 +163,19 @@ cd server && bash run-test.sh
 
 | File | Purpose |
 |------|---------|
-| `plugins/memory/noxem/__init__.py` | Hermes MemoryProvider plugin |
+| `plugins/memory/noxem/__init__.py` | Hermes MemoryProvider plugin (5 tools: search, store, supersede, lineage, contradiction) |
 | `plugins/memory/noxem/plugin.yaml` | Plugin metadata |
 | `plugins/memory/noxem/cli.py` | `hermes noxem` CLI commands |
 | `server/memory-server.mjs` | Express API server |
-| `server/memory-store.mjs` | SQLite + FTS5 + embeddings + entity/attribute |
-| `server/embedding-engine.mjs` | EmbeddingGemma 300M + entity extraction + context prefix |
+| `server/memory-store.mjs` | SQLite + FTS5 + embeddings + entity/attribute + bi-temporal |
+| `server/embedding-engine.mjs` | EmbeddingGemma 300M + entity extraction + context prefix + importance |
 | `server/vector-index.mjs` | sqlite-vec native KNN (optional, falls back to JS cosine) |
 | `server/memory-extract.mjs` | LLM memory extraction |
 | `server/advisor-engine.mjs` | Gemma 4 advisor + DDG |
 | `server/ddg-search.mjs` | DuckDuckGo search |
-| `server/memory-maintenance.mjs` | Cron: dedup/contradiction/archive |
+| `server/memory-maintenance.mjs` | Cron: dedup/contradiction/consolidation/archive |
 | `server/gemma4-server.mjs` | Gemma 4 model server (retry + fallback + graceful shutdown) |
-| `server/run-test.sh` | Integration test script (WSL compatible) |
+| `server/run-test.sh` | Integration test script (34 tests, WSL compatible) |
 | `hooks/pre-llm-memory.mjs` | Shell hook: prefetch memories before LLM call |
 | `hooks/post-llm-extract.mjs` | Shell hook: extract memories after LLM response |
 
@@ -157,18 +185,21 @@ cd server && bash run-test.sh
 CREATE TABLE memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL DEFAULT '',
-  type TEXT NOT NULL DEFAULT 'general',          -- categorization
-  text TEXT NOT NULL,                              -- memory content
-  embedding BLOB,                                  -- EmbeddingGemma vector (256d float32)
-  status TEXT NOT NULL DEFAULT 'active',           -- active/superseded/invalid/archived
-  superseded_by INTEGER REFERENCES memories(id),  -- lineage tracking
-  metadata TEXT NOT NULL DEFAULT '{}',             -- JSON: source, extraction_method, origin_session_id, stored_at
-  importance REAL NOT NULL DEFAULT 0.5,            -- 0.1-1.0 importance score
-  context_prefix TEXT NOT NULL DEFAULT '',          -- Anthropic contextual retrieval prefix
-  entity TEXT NOT NULL DEFAULT '',                  -- extracted entity (e.g., "user")
-  attribute TEXT NOT NULL DEFAULT '',               -- extracted attribute (e.g., "prefer_dark_mode")
-  recall_count INTEGER NOT NULL DEFAULT 0,         -- spaced repetition tracking
-  last_recalled_at TEXT,                           -- last recall timestamp
+  type TEXT NOT NULL DEFAULT 'general', -- categorization
+  text TEXT NOT NULL, -- memory content
+  embedding BLOB, -- EmbeddingGemma vector (256d float32)
+  status TEXT NOT NULL DEFAULT 'active', -- active/superseded/invalid/archived
+  superseded_by INTEGER REFERENCES memories(id), -- lineage tracking
+  metadata TEXT NOT NULL DEFAULT '{}', -- JSON: source, extraction_method, origin_session_id, stored_at
+  importance REAL NOT NULL DEFAULT 0.5, -- 0.1-1.0 importance score
+  context_prefix TEXT NOT NULL DEFAULT '', -- Anthropic contextual retrieval prefix
+  entity TEXT NOT NULL DEFAULT '', -- extracted entity (e.g., "user")
+  attribute TEXT NOT NULL DEFAULT '', -- extracted attribute (e.g., "prefer_dark_mode")
+  recall_count INTEGER NOT NULL DEFAULT 0, -- spaced repetition tracking
+  last_recalled_at TEXT, -- last recall timestamp
+  valid_from TEXT, -- bi-temporal: when this memory became current
+  valid_until TEXT, -- bi-temporal: when this memory was superseded
+  source_memory_ids TEXT NOT NULL DEFAULT '[]', -- provenance graph: IDs this was derived from
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
