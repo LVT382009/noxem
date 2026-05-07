@@ -15,7 +15,10 @@ import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:* http://127.0.0.1:*',
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.MEMORY_PORT || 3001;
@@ -51,6 +54,7 @@ function getEffectiveHalfLife(type, importance, recallCount) {
 
 // ─── Startup ─────────────────────────────────────────────────────
 let startupComplete = false;
+const serverStartTime = Date.now();
 
 async function startup() {
   if (ENABLE_EMBEDDING) await initEmbeddingEngine();
@@ -65,16 +69,28 @@ startup().catch(err => {
 });
 
 // ─── Health ───────────────────────────────────────────────────────
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
+  const stats = getMemoryStats();
+  let gemma4Ok = false;
+  try {
+    const r = await fetch(`${process.env.GEMMA_URL || 'http://127.0.0.1:8000'}/v1/models`, { signal: AbortSignal.timeout(2000) });
+    gemma4Ok = r.ok;
+  } catch {}
   res.json({
     ok: true,
-    version: '2.0',
+    version: '2.1.0',
+    uptime_seconds: Math.round((Date.now() - serverStartTime) / 1000),
     embedding: isEmbeddingReady(),
     embedding_error: getEmbeddingError()?.message || null,
     vector_index: isVecReady(),
     advisor: ENABLE_ADVISOR,
+    gemma4: gemma4Ok,
     maintenance: ENABLE_MAINTENANCE,
     mode: 'hybrid-ai',
+    memory: {
+      active: stats.active,
+      total_by_status: stats.breakdown,
+    },
   });
 });
 

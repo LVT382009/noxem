@@ -35,11 +35,15 @@ export async function analyzeBeforeCompress(conversationHistory, sessionMemories
 
   let webContext = '';
   if (ENABLE_WEB_SEARCH) {
-    const searchResults = await searchWeb(
-      `latest information about: ${recentTurns[recentTurns.length - 1]?.content?.substring(0, 100) || ''}`,
-      3
-    );
-    webContext = formatSearchResults(searchResults);
+    try {
+      const searchResults = await searchWeb(
+        `latest information about: ${recentTurns[recentTurns.length - 1]?.content?.substring(0, 100) || ''}`,
+        3
+      );
+      webContext = formatSearchResults(searchResults);
+    } catch (err) {
+      console.error('Advisor web search failed (compress):', err.message);
+    }
   }
 
   const messages = [
@@ -96,9 +100,13 @@ export async function getAdvice({ userMessage, conversationHistory, activeMemori
 
   let webContext = '';
   if (ENABLE_WEB_SEARCH) {
-    const query = userMessage ? userMessage.substring(0, 150) : 'latest technology news';
-    const searchResults = await searchWeb(query, 3);
-    webContext = formatSearchResults(searchResults);
+    try {
+      const query = userMessage ? userMessage.substring(0, 150) : 'latest technology news';
+      const searchResults = await searchWeb(query, 3);
+      webContext = formatSearchResults(searchResults);
+    } catch (err) {
+      console.error('Advisor web search failed (advice):', err.message);
+    }
   }
 
   const messages = [
