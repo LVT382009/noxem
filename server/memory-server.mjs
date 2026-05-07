@@ -170,10 +170,8 @@ app.get('/memory/search', async (req, res) => {
   }
 });
 
-app.get('/memory/:id', (req, res) => {
-  const mem = getMemory(parseInt(req.params.id));
-  if (!mem) return res.status(404).json({ error: 'not found' });
-  res.json(mem);
+app.get('/memory/stats', (_req, res) => {
+  res.json(getMemoryStats());
 });
 
 app.get('/memory/session/:sessionId', (req, res) => {
@@ -186,8 +184,10 @@ app.get('/memory/type/:type', (req, res) => {
   res.json({ results: getMemoriesByType(req.params.type, limit ? parseInt(limit) : 50) });
 });
 
-app.get('/memory/stats', (_req, res) => {
-  res.json(getMemoryStats());
+app.get('/memory/:id', (req, res) => {
+  const mem = getMemory(parseInt(req.params.id));
+  if (!mem) return res.status(404).json({ error: 'not found' });
+  res.json(mem);
 });
 
 // ─── Sync Turn (called by provider.sync_turn) ──────────────────

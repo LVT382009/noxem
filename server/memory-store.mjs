@@ -160,10 +160,10 @@ export function searchMemories({ query, limit = 10 }) {
   const limitNum = Math.min(Math.max(1, limit), 50);
   try {
     const sanitized = query.replace(/['"]/g, '').replace(/[^\w\s]/g, ' ').trim();
-    if (!sanitized) return searchRecent({ query: `%${query}%`, limit: limitNum });
-    return searchFts({ query: sanitized, limit: limitNum });
+    if (!sanitized) return searchRecent.all({ query: `%${query}%`, limit: limitNum });
+    return searchFts.all({ query: sanitized, limit: limitNum });
   } catch {
-    return searchRecent({ query: `%${query}%`, limit: limitNum });
+    return searchRecent.all({ query: `%${query}%`, limit: limitNum });
   }
 }
 
