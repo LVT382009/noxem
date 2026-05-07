@@ -12,13 +12,12 @@ const MAX_NEW_TOKENS = parseInt(process.env.GEMMA4_MAX_TOKENS || '1024');
 const CACHE_DIR = process.env.GEMMA4_CACHE || './.cache/gemma4';
 const MAX_RETRIES = parseInt(process.env.GEMMA4_LOAD_RETRIES || '2');
 
-// Device detection: macOS defaults to CPU (Apple Silicon) unless user overrides
+// Device detection
 function detectDevice() {
   if (process.env.GEMMA4_DEVICE) return process.env.GEMMA4_DEVICE;
   const isMac = process.platform === 'darwin';
   if (isMac) {
-    console.log('  macOS detected — defaulting to CPU (Apple Silicon CPU handles q4f16 efficiently)');
-    console.log('  Override: export GEMMA4_DEVICE=webgpu');
+    console.log('  macOS detected — defaulting to CPU');
     return 'cpu';
   }
   return 'webgpu';
@@ -34,13 +33,29 @@ let loadError = null;
 async function loadModel() {
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
-    const { AutoProcessor, Gemma4ForConditionalGeneration } = await import('@huggingface/transformers');
+    // Dynamic import — Gemma4ForConditionalGeneration may not exist in older versions
+    let AutoProcessor, Gemma4ForConditionalGeneration;
+    try {
+      const transformers = await import('@huggingface/transformers');
+      AutoProcessor = transformers.AutoProcessor;
+      Gemma4ForConditionalGeneration = transformers.Gemma4ForConditionalGeneration;
+    } catch (err) {
+      loadError = err;
+      console.error(`Failed to import transformers.js: ${err.message}`);
+      console.error('Run: npm install @huggingface/transformers@latest');
+      return;
+    }
+
+    if (!AutoProcessor || !Gemma4ForConditionalGeneration) {
+      loadError = new Error('Gemma4ForConditionalGeneration not available — update @huggingface/transformers to v4+');
+      console.error(loadError.message);
+      return;
+    }
 
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         if (attempt > 0) {
           console.log(`Model load retry ${attempt}/${MAX_RETRIES}...`);
-          // Clear cache on retry to force fresh download
           const fs = await import('fs');
           const path = await import('path');
           const cachePath = path.resolve(CACHE_DIR);
@@ -88,7 +103,6 @@ function formatMessages(messages) {
   }).join('\n\n') + '\n\nASSISTANT:';
 }
 
-// Fallback response when model is unavailable
 function fallbackResponse(messages) {
   const lastUser = [...messages].reverse().find(m => m.role === 'user');
   const text = (lastUser?.content || '').substring(0, 200);
@@ -99,7 +113,7 @@ function fallbackResponse(messages) {
     model: MODEL_ID,
     choices: [{
       index: 0,
-      message: { role: 'assistant', content: `[Gemma 4 unavailable] Model failed to load: ${loadError?.message || 'unknown error'}. Query was: "${text}"` },
+      message: { role: 'assistant', content: `[Gemma 4 unavailable] ${loadError?.message || 'model not loaded'}. Query: "${text}"` },
       finish_reason: 'stop',
     }],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
@@ -122,17 +136,27 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     const messages = req.body?.messages || [];
-    const prompt = formatMessages(messages);
+    const prompt = processor.apply_chat_template
+      ? processor.apply_chat_template(messages, { enable_thinking: false, add_generation_prompt: true })
+      : formatMessages(messages);
     const maxTokens = req.body?.max_tokens || MAX_NEW_TOKENS;
 
     const inputs = await processor(prompt, { add_special_tokens: false });
-    const inputLen = inputs.input_ids.dims.at(-1) || 0;
+    const inputLen = inputs.input_ids?.dims?.at(-1) || 0;
 
-    const outputs = await model.generate({
+    const TextStreamer = (await import('@huggingface/transformers')).TextStreamer;
+    const streamer = TextStreamer
+      ? new TextStreamer(processor.tokenizer, { skip_prompt: true, skip_special_tokens: false })
+      : undefined;
+
+    const generateOpts = {
       ...inputs,
       max_new_tokens: maxTokens,
       do_sample: false,
-    });
+    };
+    if (streamer) generateOpts.streamer = streamer;
+
+    const outputs = await model.generate(generateOpts);
 
     const decoded = processor.batch_decode(
       outputs.slice(null, [inputLen, null]),
@@ -151,7 +175,6 @@ app.post('/v1/chat/completions', async (req, res) => {
     });
   } catch (err) {
     console.error('Gemma 4 inference error:', err.message);
-    // Return fallback instead of 500 — advisor can still function with degraded mode
     res.json(fallbackResponse(req.body?.messages || []));
   }
 });
@@ -166,7 +189,6 @@ const server = app.listen(PORT, '127.0.0.1', async () => {
 function shutdown(signal) {
   console.log(`\n${signal} received — shutting down Gemma 4 server...`);
   server.close(() => {
-    // Free model resources
     model = null;
     processor = null;
     console.log('Gemma 4 server stopped.');
@@ -177,7 +199,7 @@ function shutdown(signal) {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+// Don't crash on uncaught exceptions — log and continue
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err.message);
-  shutdown('UNCAUGHT_EXCEPTION');
+  console.error('Uncaught exception (non-fatal):', err.message);
 });

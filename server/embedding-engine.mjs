@@ -1,4 +1,4 @@
-import { pipeline } from '@huggingface/transformers';
+import { AutoModel, AutoTokenizer } from '@huggingface/transformers';
 
 const MODEL_ID = process.env.EMBEDDING_MODEL || 'onnx-community/embeddinggemma-300m-ONNX';
 const DTYPE = process.env.EMBEDDING_DTYPE || 'q8'; // q8: 68.13 vs fp32: 68.36 on MTEB — negligible diff, much smaller/faster
@@ -13,7 +13,8 @@ const PREFIXES = {
   document: 'title: none | text: ',
 };
 
-let extractor = null;
+let tokenizer = null;
+let model = null;
 let modelReady = false;
 let loadError = null;
 let loadPromise = null;
@@ -46,10 +47,13 @@ export async function initEmbeddingEngine() {
 
         console.log(`Loading EmbeddingGemma 300M (${DTYPE}, dim=${EMBED_DIM})...`);
         const start = Date.now();
-        extractor = await pipeline('sentence-similarity', MODEL_ID, {
-          dtype: DTYPE,
-          cache_dir: EMBED_CACHE_DIR,
-        });
+        [tokenizer, model] = await Promise.all([
+          AutoTokenizer.from_pretrained(MODEL_ID, { cache_dir: EMBED_CACHE_DIR }),
+          AutoModel.from_pretrained(MODEL_ID, {
+            dtype: DTYPE,
+            cache_dir: EMBED_CACHE_DIR,
+          }),
+        ]);
         modelReady = true;
         loadError = null;
         console.log(`Embedding model ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
@@ -93,25 +97,19 @@ function cosineSimilarity(a, b) {
 export async function embed(text, role = 'document') {
   if (!modelReady) throw new Error('Embedding engine not initialized');
   const prefix = role === 'query' ? PREFIXES.query : PREFIXES.document;
-  const output = await extractor(prefix + text, {
-    pooling: 'mean',
-    normalize: true,
-  });
-  // output: [1, 768] Float32Array — already normalized by pipeline
-  const arr = Array.from(output.data);
+  const inputs = await tokenizer(prefix + text, { padding: true });
+  const { sentence_embedding } = await model(inputs);
+  const arr = Array.from(sentence_embedding.data);
   return normalize(arr.slice(0, EMBED_DIM));
 }
 
 export async function embedBatch(texts, role = 'document') {
   if (!modelReady) throw new Error('Embedding engine not initialized');
   const prefixed = texts.map(t => (role === 'query' ? PREFIXES.query : PREFIXES.document) + t);
-  const output = await extractor(prefixed, {
-    pooling: 'mean',
-    normalize: true,
-  });
-  // output: [batch, 768]
-  const dim = output.dims[1];
-  const flat = Array.from(output.data);
+  const inputs = await tokenizer(prefixed, { padding: true });
+  const { sentence_embedding } = await model(inputs);
+  const dim = sentence_embedding.dims[1];
+  const flat = Array.from(sentence_embedding.data);
   const vectors = [];
   for (let i = 0; i < texts.length; i++) {
     const start = i * dim;
