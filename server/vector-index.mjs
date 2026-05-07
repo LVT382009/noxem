@@ -11,13 +11,14 @@ export async function initVectorIndex(db) {
   try {
     sqliteVec = await import('sqlite-vec');
     sqliteVec.load(db);
-    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memory_vecs USING vec0(embedding float[${EMBED_DIM}])`);
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memory_vecs USING vec0(embedding float[${EMBED_DIM}] distance_metric=cosine)`);
     vecAvailable = true;
     vecTableReady = true;
-    console.log(`[VectorIndex] sqlite-vec loaded — native KNN search enabled (${EMBED_DIM}d)`);
+    console.log(`[VectorIndex] sqlite-vec loaded — native KNN search enabled (${EMBED_DIM}d, cosine)`);
   } catch (err) {
     vecAvailable = false;
     console.log(`[VectorIndex] sqlite-vec unavailable — JS cosine fallback active (install sqlite-vec for native KNN)`);
+    if (process.env.LOG_LEVEL === 'debug') console.error(`[VectorIndex] Load error: ${err.message}`);
   }
 }
 

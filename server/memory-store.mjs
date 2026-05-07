@@ -8,9 +8,20 @@ const DB_PATH = path.join(DB_DIR, 'hermes-memory.db');
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
+const isNewDb = !fs.existsSync(DB_PATH);
 const db = new Database(DB_PATH);
+if (isNewDb) {
+  db.pragma('page_size = 32768'); // Optimal for BLOB/vector I/O — must set before first table
+}
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma('synchronous = NORMAL');
+db.pragma('busy_timeout = 5000');
+db.pragma('cache_size = -32000'); // 32 MiB page cache
+db.pragma('mmap_size = 268435456'); // 256 MiB memory-mapped I/O
+db.pragma('temp_store = MEMORY');
+db.pragma('wal_autocheckpoint = 1000');
+db.pragma('journal_size_limit = 67108864'); // 64 MiB WAL cap
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS memories (
@@ -212,6 +223,7 @@ export function updateMemoryType(id, type) {
 
 export function deleteMemory(id) {
   removeById.run(id);
+  try { deleteVec(db, id); } catch {} // clean vector index
 }
 
 export function deleteInvalid() {

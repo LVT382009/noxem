@@ -99,7 +99,18 @@ let startupComplete = false;
 const serverStartTime = Date.now();
 
 async function startup() {
-  if (ENABLE_EMBEDDING) await initEmbeddingEngine();
+  if (ENABLE_EMBEDDING) {
+    await initEmbeddingEngine();
+    // Warm up: compute a dummy embedding to avoid cold-start latency
+    if (isEmbeddingReady()) {
+      try {
+        await embed('warmup');
+        console.log('Embedding engine warmed up');
+      } catch (err) {
+        console.error('Embedding warm-up failed:', err.message);
+      }
+    }
+  }
   if (ENABLE_MAINTENANCE) startMaintenanceCron();
   startupComplete = true;
   console.log('Memory server fully initialized');
@@ -219,10 +230,14 @@ function reciprocalRankFusion(lists, k = 60) {
 
 // ─── Memory CRUD ─────────────────────────────────────────────────
 
+const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request'];
+
 app.post('/memory/store', async (req, res) => {
   try {
     const { text, session_id, type, metadata } = req.body;
-    if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
+    if (!text || typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text required (non-empty string)' });
+    if (text.length > 10000) return res.status(400).json({ error: 'text too long (max 10000 chars)' });
+    if (type && !VALID_TYPES.includes(type)) return res.status(400).json({ error: `invalid type: ${type}. Valid: ${VALID_TYPES.join(', ')}` });
 
     const catType = type || categorizeText(text);
     const trimmed = text.trim();
@@ -235,7 +250,7 @@ app.post('/memory/store', async (req, res) => {
         // Contextual enrichment: prepend context prefix for better retrieval
         const embedText = contextPrefix ? `${contextPrefix} ${trimmed}` : trimmed;
         const vec = await embed(embedText);
-        embedding = new Float32Array();
+        embedding = new Float32Array(vec);
       } catch { /* proceed without embedding */ }
     }
 
@@ -282,7 +297,7 @@ app.post('/memory/store-batch', async (req, res) => {
       session_id: m.session_id || '',
       type: m.catType,
       text: m.trimmed,
-      embedding: embeddings ? new Float32Array() : null,
+      embedding: embeddings ? new Float32Array(embeddings[i]) : null,
       metadata: { ...(m.metadata || {}), source: m.metadata?.source || "api", extraction_method: m.metadata?.extraction_method || "store_batch_api" },
       importance: estimateImportance(m.trimmed, m.catType),
       context_prefix: m.contextPrefix,
@@ -302,7 +317,8 @@ app.get("/memory/search", async (req, res) => {
   try {
     const { q, session_id, limit, method, expand } = req.query;
     if (!q?.trim()) return res.status(400).json({ error: "query required" });
-    const limitNum = limit ? parseInt(limit) : 10;
+    if (q.length > 1000) return res.status(400).json({ error: "query too long (max 1000 chars)" });
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
     let searchMethod = "fts";
     const isShortQuery = expand !== "false" && q.trim().split(/\s+/).length < 6;
 
@@ -577,7 +593,7 @@ app.post('/memory/sync', async (req, res) => {
       if (isEmbeddingReady()) {
         try {
           const embedText = userPrefix ? userPrefix + " " + userText : userText;
-          embedding = new Float32Array(await embed());
+          embedding = new Float32Array(await embed(embedText));
         } catch {}
       }
       memories.push({ session_id, type, text: userText, embedding, metadata: { source: "user", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr });
@@ -592,7 +608,7 @@ app.post('/memory/sync', async (req, res) => {
       if (isEmbeddingReady()) {
         try {
           const embedText = asstPrefix ? asstPrefix + " " + asstText : asstText;
-          embedding = new Float32Array(await embed());
+          embedding = new Float32Array(await embed(embedText));
         } catch {}
       }
       memories.push({ session_id, type: "fact", text: asstText, embedding, metadata: { source: "assistant", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr });
@@ -655,7 +671,7 @@ app.post('/memory/session/end', async (req, res) => {
       for (const m of newMemories) {
         let embedding = null;
         if (isEmbeddingReady()) {
-          try { embedding = new Float32Array(await embed()); } catch {}
+          try { embedding = new Float32Array(await embed(m.text)); } catch {}
         }
         const id = storeMemory({ session_id, type: m.type, text: m.text, embedding, importance: estimateImportance(m.text, m.type) });
         ids.push(id);
@@ -700,7 +716,7 @@ app.post('/memory/reembed', async (req, res) => {
     const ids = missing.map(m => m.id);
 
     for (let i = 0; i < ids.length; i++) {
-      const vec = new Float32Array();
+      const vec = new Float32Array(embeddings[i]);
       updateMemoryEmbedding(ids[i], vec);
     }
     addVecsToIndex(ids, embeddings);
@@ -737,7 +753,7 @@ app.post('/memory/extract', async (req, res) => {
     for (const m of memories) {
       let embedding = null;
       if (isEmbeddingReady()) {
-        try { embedding = new Float32Array(await embed()); } catch {}
+        try { embedding = new Float32Array(await embed(m.text)); } catch {}
       }
       const id = storeMemory({ session_id, type: m.type, text: m.text, embedding, importance: estimateImportance(m.text, m.type) });
       ids.push(id);
