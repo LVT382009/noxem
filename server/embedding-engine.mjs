@@ -3,6 +3,8 @@ import { pipeline } from '@huggingface/transformers';
 const MODEL_ID = process.env.EMBEDDING_MODEL || 'onnx-community/embeddinggemma-300m-ONNX';
 const DTYPE = process.env.EMBEDDING_DTYPE || 'fp32';
 const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '768');
+const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || './.cache/embedding';
+const MAX_RETRIES = parseInt(process.env.EMBEDDING_LOAD_RETRIES || '2');
 const SIMILARITY_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
 const CONTRADICTION_THRESHOLD = parseFloat(process.env.CONTRADICT_THRESHOLD || '0.80');
 
@@ -13,20 +15,62 @@ const PREFIXES = {
 
 let extractor = null;
 let modelReady = false;
+let loadError = null;
+let loadPromise = null;
 
 export async function initEmbeddingEngine() {
   if (modelReady) return;
-  console.log(`Loading EmbeddingGemma 300M (${DTYPE}, dim=${EMBED_DIM})...`);
-  const start = Date.now();
-  extractor = await pipeline('feature-extraction', MODEL_ID, {
-    dtype: DTYPE,
-  });
-  modelReady = true;
-  console.log(`Embedding model ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+  if (loadPromise) return loadPromise;
+
+  loadPromise = (async () => {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 0) {
+          console.log(`Embedding model load retry ${attempt}/${MAX_RETRIES}...`);
+          const fs = await import('fs');
+          const path = await import('path');
+          const cachePath = path.resolve(EMBED_CACHE_DIR);
+          if (fs.existsSync(cachePath)) {
+            fs.rmSync(cachePath, { recursive: true, force: true });
+            console.log('  Cleared corrupted embedding model cache');
+          }
+          // Also clear HuggingFace hub cache for this model
+          const hfCache = path.join(process.env.HF_HOME || path.join(process.env.HOME || '.', '.cache', 'huggingface'), 'hub');
+          const modelSlug = MODEL_ID.replace('/', '--');
+          const modelCacheDir = path.join(hfCache, `models--${modelSlug}`);
+          if (fs.existsSync(modelCacheDir)) {
+            fs.rmSync(modelCacheDir, { recursive: true, force: true });
+            console.log('  Cleared HuggingFace hub cache for embedding model');
+          }
+        }
+
+        console.log(`Loading EmbeddingGemma 300M (${DTYPE}, dim=${EMBED_DIM})...`);
+        const start = Date.now();
+        extractor = await pipeline('feature-extraction', MODEL_ID, {
+          dtype: DTYPE,
+          cache_dir: EMBED_CACHE_DIR,
+        });
+        modelReady = true;
+        loadError = null;
+        console.log(`Embedding model ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+        return;
+      } catch (err) {
+        loadError = err;
+        console.error(`Embedding model load attempt ${attempt + 1} failed: ${err.message}`);
+      }
+    }
+    console.error('All embedding model load attempts failed. Vector search will be unavailable.');
+  })();
+
+  return loadPromise;
 }
 
 export function isEmbeddingReady() {
   return modelReady;
+}
+
+export function getEmbeddingError() {
+  return loadError;
 }
 
 function normalize(v) {

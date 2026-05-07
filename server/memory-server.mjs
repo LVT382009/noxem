@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, searchByEmbedding, categorizeText } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, categorizeText } from './embedding-engine.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getSessionMemories, getMemoriesByType,
@@ -41,6 +41,7 @@ app.get('/health', (_req, res) => {
     ok: true,
     version: '2.0',
     embedding: isEmbeddingReady(),
+    embedding_error: getEmbeddingError()?.message || null,
     advisor: ENABLE_ADVISOR,
     maintenance: ENABLE_MAINTENANCE,
     mode: 'hybrid-ai',
