@@ -1,4 +1,4 @@
-import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid } from './memory-store.mjs';
+import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, normalize, cosineSimilarity } from './embedding-engine.mjs';
 
 let maintenanceInterval = null;
@@ -71,6 +71,15 @@ export async function runMaintenance() {
     results.invalid = cleaned;
   } catch (err) {
     console.error('[Maintenance] Cleanup error:', err.message);
+  }
+
+  // 5. Archive stale memories (90+ days old, never recalled)
+  try {
+    const archived = archiveStaleMemories();
+    results.archived = archived;
+    if (archived > 0) console.log(`[Maintenance] Archived ${archived} stale memories (90+ days, 0 recalls)`);
+  } catch (err) {
+    console.error('[Maintenance] Archive error:', err.message);
   }
 
   const elapsed = Date.now() - start;

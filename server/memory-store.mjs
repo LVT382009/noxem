@@ -47,6 +47,11 @@ CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 `);
 
+// Schema migrations — add recall tracking columns to existing databases
+try { db.exec(`ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN last_recalled_at TEXT`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`); } catch {}
+
 const insert = db.prepare(
   `INSERT INTO memories (session_id, type, text, embedding, metadata)
    VALUES (@session_id, @type, @text, @embedding, @metadata)`
@@ -71,6 +76,14 @@ const updateType = db.prepare(
 
 const removeById = db.prepare(`DELETE FROM memories WHERE id = ?`);
 const removeByStatus = db.prepare(`DELETE FROM memories WHERE status = 'invalid'`);
+const archiveStale = db.prepare(`UPDATE memories SET status = 'archived', updated_at = datetime('now') WHERE status = 'active' AND recall_count = 0 AND created_at < datetime('now', '-90 days')`);
+
+const incrementRecall = db.prepare(
+  `UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = datetime('now') WHERE id = ?`
+);
+const incrementRecallTx = db.transaction((ids) => {
+  for (const id of ids) incrementRecall.run(id);
+});
 
 const getById = db.prepare(`SELECT * FROM memories WHERE id = ?`);
 
@@ -207,6 +220,16 @@ export function getMemoryStats() {
 
 export function getSupersededMemories() {
   return getSuperseded.all();
+}
+
+export function incrementRecallCounts(ids) {
+  if (!ids?.length) return;
+  incrementRecallTx(ids);
+}
+
+export function archiveStaleMemories() {
+  const result = archiveStale.run();
+  return result.changes;
 }
 
 export function close() {

@@ -5,7 +5,7 @@ import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getSessionMemories, getMemoriesByType,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
-  deleteMemory, deleteInvalid, close,
+  deleteMemory, deleteInvalid, incrementRecallCounts, archiveStaleMemories, close,
 } from './memory-store.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
@@ -168,11 +168,13 @@ app.post('/memory/store-batch', async (req, res) => {
 });
 
 app.get('/memory/search', async (req, res) => {
+  let searchResults = [];
   try {
     const { q, session_id, limit, method } = req.query;
     if (!q?.trim()) return res.status(400).json({ error: 'query "q" required' });
 
     const limitNum = limit ? parseInt(limit) : 10;
+    let searchMethod = 'fts';
 
     // Embedding search (primary)
     if ((!method || method === 'hybrid' || method === 'embedding') && isEmbeddingReady()) {
@@ -183,41 +185,35 @@ app.get('/memory/search', async (req, res) => {
         const embeddingResults = applyRecencyScore(mmrRerank(qVec, embeddingCandidates, limitNum * 2, 0.7));
 
         if (embeddingResults.length > 0 && method === 'embedding') {
-          return res.json({
-            ok: true,
-            method: 'embedding',
-            results: embeddingResults.slice(0, limitNum),
-          });
-        }
-
-        // Hybrid: Reciprocal Rank Fusion of embedding + FTS results
-        if (method === 'hybrid' || !method) {
+          searchResults = embeddingResults.slice(0, limitNum);
+          searchMethod = 'embedding';
+        } else if (method === 'hybrid' || !method) {
+          // Hybrid: Reciprocal Rank Fusion of embedding + FTS results
           const ftsResults = normalizeFtsScore(searchMemories({ query: q, limit: limitNum * 3 }));
           const merged = reciprocalRankFusion([embeddingResults, ftsResults]);
-          return res.json({
-            ok: true,
-            method: 'hybrid',
-            results: merged.slice(0, limitNum),
-          });
+          searchResults = merged.slice(0, limitNum);
+          searchMethod = 'hybrid';
         }
       } catch { /* fall through to FTS */ }
     }
 
     // FTS fallback
-    const results = applyRecencyScore(normalizeFtsScore(searchMemories({ query: q, limit: limitNum })));
-
-    if (session_id) {
-      return res.json({
-        ok: true,
-        method: 'fts',
-        results: results.filter(r => r.session_id === session_id),
-      });
+    if (!searchResults.length) {
+      searchResults = applyRecencyScore(normalizeFtsScore(searchMemories({ query: q, limit: limitNum })));
+      if (session_id) {
+        searchResults = searchResults.filter(r => r.session_id === session_id);
+      }
     }
 
-    res.json({ ok: true, method: 'fts', results });
+    res.json({ ok: true, method: searchMethod, results: searchResults });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+  // Track recall counts for returned results
+  try {
+    const ids = searchResults.map(r => r.id).filter(Boolean);
+    if (ids.length) incrementRecallCounts(ids);
+  } catch {}
 });
 
 app.get('/memory/stats', (_req, res) => {
@@ -241,6 +237,20 @@ app.get('/memory/:id', (req, res) => {
 });
 
 // ─── Sync Turn (called by provider.sync_turn) ──────────────────
+
+// Skip short/greeting messages that aren't worth storing
+const SKIP_PATTERNS = [
+  /^(ok|okay|sure|yes|no|got it|thanks|thank you|done|continue|go ahead|please|yep|yeah|nope|cool|great|good|fine|right|correct|agreed)$/i,
+  /^(hi|hello|hey|good morning|good afternoon|good evening|bye|goodbye|see you)$/i,
+  /^\s*.{0,15}\s*$/, // Very short messages (<16 chars)
+];
+
+function shouldSkipMessage(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  return SKIP_PATTERNS.some(p => p.test(trimmed));
+}
+
 app.post('/memory/sync', async (req, res) => {
   try {
     const { user_message, assistant_response, session_id } = req.body;
@@ -251,8 +261,8 @@ app.post('/memory/sync', async (req, res) => {
     const memories = [];
     const now = new Date().toISOString();
 
-    // Store user message as memory
-    if (user_message?.trim()) {
+    // Store user message — skip trivial/greeting messages
+    if (user_message?.trim() && !shouldSkipMessage(user_message)) {
       const type = categorizeText(user_message);
       let embedding = null;
       if (isEmbeddingReady()) {
@@ -261,8 +271,8 @@ app.post('/memory/sync', async (req, res) => {
       memories.push({ session_id, type, text: user_message.trim().substring(0, 500), embedding, metadata: { source: 'user', timestamp: now } });
     }
 
-    // Store assistant response key points
-    if (assistant_response?.trim()) {
+    // Store assistant response — skip very short responses
+    if (assistant_response?.trim() && !shouldSkipMessage(assistant_response)) {
       let embedding = null;
       if (isEmbeddingReady()) {
         try { embedding = new Float32Array(await embed(assistant_response.substring(0, 500))).buffer; } catch {}
