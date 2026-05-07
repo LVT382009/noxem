@@ -2,6 +2,7 @@
 
 import json
 import os
+import urllib.parse
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError
@@ -50,14 +51,15 @@ def _cmd_search(args):
     if not args.query:
         print("Usage: hermes noxem search <query>")
         return
-    data = _api_get(f"/memory/search?q={args.query}&limit={args.limit}")
+    data = _api_get(f"/memory/search?q={urllib.parse.quote(args.query, safe='')}&limit={args.limit}")
     results = data.get("results", [])
     if not results:
         print("No memories found.")
         return
     print(f"Found {len(results)} memories:")
     for i, m in enumerate(results, 1):
-        print(f"\n  [{i}] ({m.get('type', '?')}) [rel: {m.get('score', 0):.2f}]")
+        score = m.get('score') or 0
+        print(f"\n  [{i}] ({m.get('type', '?')}) [rel: {score:.2f}]")
         print(f"      {m.get('text', '')[:200]}")
         print(f"      session: {m.get('session_id', '')[:20]}")
 
@@ -84,7 +86,6 @@ def _cmd_run(args):
 
 
 def _api_post(path):
-    import urllib.parse
     url = f"{_get_server()}{path}"
     try:
         with urlopen(Request(url, data=b"{}", headers={"Content-Type": "application/json"}), timeout=30) as r:

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import threading
+import urllib.parse
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError
@@ -121,7 +122,8 @@ class NoxemMemoryProvider:
     def handle_tool_call(self, name: str, args: dict) -> str:
         """Route tool calls to the memory server."""
         if name == "memory_search":
-            return self._api_get(f"/memory/search?q={args.get('query', '')}&limit={args.get('limit', 5)}")
+            query = urllib.parse.quote(args.get('query', ''), safe='')
+            return self._api_get(f"/memory/search?q={query}&limit={args.get('limit', 5)}")
         elif name == "memory_store":
             result = self._api_post("/memory/store", {
                 "text": args["text"],
@@ -133,7 +135,7 @@ class NoxemMemoryProvider:
 
     # ── Optional Hooks ────────────────────────────────────────
 
-    def system_prompt_block(self) -> str | None:
+    def system_prompt_block(self):
         """Add provider info to system prompt."""
         return (
             "[Noxem Memory Active]\n"
@@ -143,7 +145,7 @@ class NoxemMemoryProvider:
             "Use `memory_search` to look up past information and `memory_store` to save important facts."
         )
 
-    def prefetch(self, query: str) -> str | None:
+    def prefetch(self, query: str):
         """Inject relevant memories before each API call.
 
         Called by Hermes before each turn. Returns context text to inject.
@@ -210,7 +212,7 @@ class NoxemMemoryProvider:
         except Exception as e:
             logger.warning(f"on_session_end failed: {e}")
 
-    def on_pre_compress(self, messages: list) -> str | None:
+    def on_pre_compress(self, messages: list):
         """Before context compression, get advisor analysis.
 
         Returns: Analysis string to preserve in compressed context.
@@ -266,8 +268,6 @@ class NoxemMemoryProvider:
 
     @staticmethod
     def _urlencode(s: str) -> str:
-        """Minimal URL encoding."""
-        import urllib.parse
         return urllib.parse.quote(s, safe="")
 
 

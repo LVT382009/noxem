@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 // Hermes Shell Hook: post_llm_call
-// Extracts memories from conversation turns after each response.
+// Syncs conversation turns to memory server after each response.
 
 const MEMORY_SERVER = process.env.MEMORY_SERVER || 'http://127.0.0.1:3001';
+const MAX_RESULTS = parseInt(process.env.MEMORY_MAX_RESULTS, 10) || 5;
 
 async function main() {
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  const input = JSON.parse(chunks.join(''));
+  let input;
+  try {
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    input = JSON.parse(chunks.join(''));
+  } catch {
+    process.stdout.write('{}');
+    return;
+  }
 
   const extra = input.extra || {};
   const userMessage = (extra.user_message || '').substring(0, 2000);
@@ -20,7 +27,7 @@ async function main() {
   }
 
   try {
-    const res = await fetch(`${MEMORY_SERVER}/memory/extract`, {
+    const res = await fetch(`${MEMORY_SERVER}/memory/sync`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -33,13 +40,6 @@ async function main() {
 
     if (!res.ok) {
       process.stderr.write(`post-llm-extract error: ${res.status}\n`);
-      process.stdout.write('{}');
-      return;
-    }
-
-    const data = await res.json();
-    if (data.memories && data.memories.length > 0) {
-      process.stderr.write(`Extracted ${data.memories.length} memories\n`);
     }
 
     process.stdout.write('{}');

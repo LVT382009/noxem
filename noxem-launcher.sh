@@ -35,6 +35,8 @@ cleanup() {
   wait "$MEMORY_PID" 2>/dev/null || true
   wait "$GEMMA4_PID" 2>/dev/null || true
   green "Noxem cleaned up."
+  # Prevent double-run on INT/TERM + EXIT
+  trap - EXIT
   exit $code
 }
 
@@ -85,7 +87,10 @@ echo ""
 
 # 1. Memory server
 echo "[1/2] Starting memory server..."
-export MEMORY_PORT ENABLE_EMBEDDING=${ENABLE_EMBEDDING:-true} ENABLE_ADVISOR=${ENABLE_ADVISOR:-true} ENABLE_MAINTENANCE=${ENABLE_MAINTENANCE:-true}
+export MEMORY_PORT
+export ENABLE_EMBEDDING=${ENABLE_EMBEDDING:-true}
+export ENABLE_ADVISOR=${ENABLE_ADVISOR:-true}
+export ENABLE_MAINTENANCE=${ENABLE_MAINTENANCE:-true}
 node "$MEMORY_SERVER" &
 MEMORY_PID=$!
 wait_for_port $MEMORY_PORT "Memory server"

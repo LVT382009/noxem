@@ -12,39 +12,39 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS memories (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id    TEXT NOT NULL DEFAULT '',
-    type          TEXT NOT NULL DEFAULT 'general',
-    text          TEXT NOT NULL,
-    embedding     BLOB,
-    status        TEXT NOT NULL DEFAULT 'active',
-    superseded_by INTEGER REFERENCES memories(id),
-    metadata      TEXT NOT NULL DEFAULT '{}',
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+CREATE TABLE IF NOT EXISTS memories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT 'general',
+  text TEXT NOT NULL,
+  embedding BLOB,
+  status TEXT NOT NULL DEFAULT 'active',
+  superseded_by INTEGER REFERENCES memories(id),
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
-  CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-    USING fts5(text, content='memories', content_rowid='id');
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
+  USING fts5(text, content='memories', content_rowid='id');
 
-  CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-    INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
-  END;
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+END;
 
-  CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
-  END;
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
 
-  CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-    INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
-    INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
-  END;
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+END;
 
-  CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
-  CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
-  CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
-  CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
+CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
+CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 `);
 
 const insert = db.prepare(
@@ -73,7 +73,6 @@ const removeById = db.prepare(`DELETE FROM memories WHERE id = ?`);
 const removeByStatus = db.prepare(`DELETE FROM memories WHERE status = 'invalid'`);
 
 const getById = db.prepare(`SELECT * FROM memories WHERE id = ?`);
-const getByIds = db.prepare(`SELECT * FROM memories WHERE id IN (@ids)`);
 
 const getActive = db.prepare(`SELECT * FROM memories WHERE status = 'active' ORDER BY created_at DESC LIMIT ?`);
 const getActiveAll = db.prepare(`SELECT * FROM memories WHERE status = 'active'`);
@@ -110,6 +109,12 @@ const getActiveWithEmbeddings = db.prepare(
 const getAllWithEmbeddings = db.prepare(
   `SELECT id, type, text, embedding, status, created_at FROM memories WHERE embedding IS NOT NULL`
 );
+
+// Convert SQLite BLOB (Node Buffer) to a regular JS array of float32 values
+function bufferToFloat32(buf) {
+  if (!buf) return null;
+  return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / Float32Array.BYTES_PER_ELEMENT));
+}
 
 export function storeMemory({ session_id, type, text, embedding = null, metadata = {} }) {
   const result = insert.run({
@@ -171,7 +176,7 @@ export function getActiveMemories(limit = 50) {
 }
 
 export function getAllActiveMemories() {
-  return getActiveAll.all();
+  return getActiveAll.all().map(m => ({ ...m, embedding: bufferToFloat32(m.embedding) }));
 }
 
 export function getSessionMemories(sessionId, limit = 50) {
@@ -187,11 +192,11 @@ export function getSessionMemoriesBefore(sessionId, beforeDate, limit = 50) {
 }
 
 export function getActiveWithEmbedding() {
-  return getActiveWithEmbeddings.all();
+  return getActiveWithEmbeddings.all().map(m => ({ ...m, embedding: bufferToFloat32(m.embedding) }));
 }
 
 export function getAllWithEmbedding() {
-  return getAllWithEmbeddings.all();
+  return getAllWithEmbeddings.all().map(m => ({ ...m, embedding: bufferToFloat32(m.embedding) }));
 }
 
 export function getMemoryStats() {

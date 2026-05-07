@@ -3,12 +3,18 @@
 // Injects relevant memories into the LLM context before each turn.
 
 const MEMORY_SERVER = process.env.MEMORY_SERVER || 'http://127.0.0.1:3001';
-const MAX_RESULTS = process.env.MEMORY_MAX_RESULTS || 5;
+const MAX_RESULTS = parseInt(process.env.MEMORY_MAX_RESULTS, 10) || 5;
 
 async function main() {
-  const chunks = [];
-  for await (const chunk of process.stdin) chunks.push(chunk);
-  const input = JSON.parse(chunks.join(''));
+  let input;
+  try {
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    input = JSON.parse(chunks.join(''));
+  } catch {
+    process.stdout.write('{}');
+    return;
+  }
 
   const extra = input.extra || {};
   const userMessage = extra.user_message || '';
@@ -44,9 +50,8 @@ async function main() {
     const context = `[Memory Recall]\n${lines.join('\n')}`;
 
     process.stdout.write(JSON.stringify({ context }));
-  } catch (err) {
+  } catch {
     // Silently fail — memory is additive
-    process.stderr.write(`pre-llm-memory error: ${err.message}\n`);
     process.stdout.write('{}');
   }
 }
