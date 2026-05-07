@@ -149,7 +149,19 @@ function bufferToFloat32(buf) {
   return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / Float32Array.BYTES_PER_ELEMENT));
 }
 
+// Ensure embedding is a Node Buffer for SQLite BLOB binding
+// Accepts Buffer, Float32Array, ArrayBuffer, or plain array
+function ensureEmbeddingBuffer(embedding) {
+  if (!embedding) return null;
+  if (Buffer.isBuffer(embedding)) return embedding;
+  if (embedding instanceof Float32Array) return Buffer.from(embedding.buffer);
+  if (embedding instanceof ArrayBuffer) return Buffer.from(embedding);
+  if (Array.isArray(embedding)) return Buffer.from(new Float32Array(embedding).buffer);
+  return null;
+}
+
 export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null }) {
+  embedding = ensureEmbeddingBuffer(embedding);
   const result = insert.run({
     session_id: session_id || '',
     type: type || 'general',
@@ -276,7 +288,7 @@ export function getMemoriesWithoutEmbedding(limit = 100) {
 }
 
 export function updateMemoryEmbedding(id, embedding) {
-  updateEmbedding.run(embedding, id);
+  updateEmbedding.run(ensureEmbeddingBuffer(embedding), id);
 }
 
 export function addVecsToIndex(ids, embeddings) {

@@ -22,8 +22,8 @@ OS="$(uname -s)"
 
 # Color helpers
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
-red()   { printf '\033[31m%s\033[0m\n' "$*"; }
-dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
+red() { printf '\033[31m%s\033[0m\n' "$*"; }
+dim() { printf '\033[2m%s\033[0m\n' "$*"; }
 
 cleanup() {
   local code=$?
@@ -53,10 +53,10 @@ check_port() {
   else
     # Last resort: try a quick Node.js TCP connect
     node -e "
-      require('net').createConnection($port, '127.0.0.1')
-        .on('connect', () => process.exit(0))
-        .on('error', () => process.exit(1))
-        .setTimeout(2000, function() { process.exit(1); });
+    require('net').createConnection($port, '127.0.0.1')
+    .on('connect', () => process.exit(0))
+    .on('error', () => process.exit(1))
+    .setTimeout(2000, function() { process.exit(1); });
     " 2>/dev/null
   fi
 }
@@ -81,30 +81,32 @@ wait_for_port() {
 # ── Start servers ──
 echo ""
 green "╔═══════════════════════════════════╗"
-green "║   Noxem — Starting Servers        ║"
+green "║ Noxem — Starting Servers          ║"
 green "╚═══════════════════════════════════╝"
 echo ""
 
 # 1. Memory server
 echo "[1/2] Starting memory server..."
+dim "  First run downloads EmbeddingGemma (~300MB)"
 export MEMORY_PORT
 export ENABLE_EMBEDDING=${ENABLE_EMBEDDING:-true}
 export ENABLE_ADVISOR=${ENABLE_ADVISOR:-true}
 export ENABLE_MAINTENANCE=${ENABLE_MAINTENANCE:-true}
 node "$MEMORY_SERVER" &
 MEMORY_PID=$!
-wait_for_port $MEMORY_PORT "Memory server"
+wait_for_port $MEMORY_PORT "Memory server" 180
 
 # 2. Gemma 4 server
-echo "[2/2] Starting Gemma 4 (this may take a while on first run)..."
-# On macOS, default to CPU (Apple Silicon CPU is fast enough for q4f16)
-if [ "$OS" = "Darwin" ] && [ -z "${GEMMA4_DEVICE:-}" ]; then
-  export GEMMA4_DEVICE=cpu
-fi
+echo "[2/2] Starting Gemma 4 server..."
+dim "  First run downloads model (~2GB, subsequent starts use cache)"
+# Device is auto-detected in gemma4-server.mjs:
+# - Node.js: onnxruntime-node picks best EP (CUDA > DirectML > CPU)
+# - GEMMA4_DEVICE env var overrides auto-detection
+# - WebGPU is browser-only, not available in Node.js
 export GEMMA4_PORT
 node "$GEMMA4_SERVER" &
 GEMMA4_PID=$!
-wait_for_port $GEMMA4_PORT "Gemma 4" 180  # longer timeout for model download
+wait_for_port $GEMMA4_PORT "Gemma 4" 300
 
 echo ""
 green "Both servers ready!"

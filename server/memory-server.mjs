@@ -177,7 +177,7 @@ app.post('/memory/store', async (req, res) => {
         // Contextual enrichment: prepend context prefix for better retrieval
         const embedText = contextPrefix ? `${contextPrefix} ${trimmed}` : trimmed;
         const vec = await embed(embedText);
-        embedding = Buffer.from(new Float32Array(vec).buffer);
+        embedding = new Float32Array();
       } catch { /* proceed without embedding */ }
     }
 
@@ -224,7 +224,7 @@ app.post('/memory/store-batch', async (req, res) => {
       session_id: m.session_id || '',
       type: m.catType,
       text: m.trimmed,
-      embedding: embeddings ? Buffer.from(new Float32Array(embeddings[i]).buffer) : null,
+      embedding: embeddings ? new Float32Array() : null,
       metadata: { ...(m.metadata || {}), source: m.metadata?.source || "api", extraction_method: m.metadata?.extraction_method || "store_batch_api" },
       importance: estimateImportance(m.trimmed, m.catType),
       context_prefix: m.contextPrefix,
@@ -519,7 +519,7 @@ app.post('/memory/sync', async (req, res) => {
       if (isEmbeddingReady()) {
         try {
           const embedText = userPrefix ? userPrefix + " " + userText : userText;
-          embedding = Buffer.from(new Float32Array(await embed(embedText)).buffer);
+          embedding = new Float32Array(await embed());
         } catch {}
       }
       memories.push({ session_id, type, text: userText, embedding, metadata: { source: "user", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr });
@@ -534,7 +534,7 @@ app.post('/memory/sync', async (req, res) => {
       if (isEmbeddingReady()) {
         try {
           const embedText = asstPrefix ? asstPrefix + " " + asstText : asstText;
-          embedding = Buffer.from(new Float32Array(await embed(embedText)).buffer);
+          embedding = new Float32Array(await embed());
         } catch {}
       }
       memories.push({ session_id, type: "fact", text: asstText, embedding, metadata: { source: "assistant", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr });
@@ -597,7 +597,7 @@ app.post('/memory/session/end', async (req, res) => {
       for (const m of newMemories) {
         let embedding = null;
         if (isEmbeddingReady()) {
-          try { embedding = Buffer.from(new Float32Array(await embed(m.text)).buffer); } catch {}
+          try { embedding = new Float32Array(await embed()); } catch {}
         }
         const id = storeMemory({ session_id, type: m.type, text: m.text, embedding, importance: estimateImportance(m.text, m.type) });
         ids.push(id);
@@ -642,7 +642,7 @@ app.post('/memory/reembed', async (req, res) => {
     const ids = missing.map(m => m.id);
 
     for (let i = 0; i < ids.length; i++) {
-      const vec = Buffer.from(new Float32Array(embeddings[i]).buffer);
+      const vec = new Float32Array();
       updateMemoryEmbedding(ids[i], vec);
     }
     addVecsToIndex(ids, embeddings);
@@ -679,7 +679,7 @@ app.post('/memory/extract', async (req, res) => {
     for (const m of memories) {
       let embedding = null;
       if (isEmbeddingReady()) {
-        try { embedding = Buffer.from(new Float32Array(await embed(m.text)).buffer); } catch {}
+        try { embedding = new Float32Array(await embed()); } catch {}
       }
       const id = storeMemory({ session_id, type: m.type, text: m.text, embedding, importance: estimateImportance(m.text, m.type) });
       ids.push(id);

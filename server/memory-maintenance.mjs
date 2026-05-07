@@ -180,7 +180,7 @@ async function consolidateMemories(memories) {
         let embedding = null;
         try {
           const vec = await embed(summaryText);
-          embedding = Buffer.from(new Float32Array(vec).buffer);
+          embedding = new Float32Array(vec);
         } catch {}
 
         const newId = storeMemory({

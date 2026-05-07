@@ -1,10 +1,11 @@
 {
   "name": "hermes-memory-server",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node memory-server.mjs"
+    "start": "node memory-server.mjs",
+    "test": "bash run-test.sh"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
@@ -13,6 +14,7 @@
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "node-fetch": "^3.3.2",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "sqlite-vec": "^0.1.6"
   }
 }
