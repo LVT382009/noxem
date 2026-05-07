@@ -44,15 +44,14 @@ echo ""
 echo "[1/5] Installing server dependencies..."
 cd "$SERVER_DIR"
 npm install --no-audit --no-fund 2>&1 | tail -1
-echo "  ✓"
+echo " ✓"
 
 # ── 2. Hermes plugin (clean install) ──
 echo "[2/5] Installing Noxem plugin for Hermes..."
-# Remove old installation completely to avoid stale files
 rm -rf "$HERMES_PLUGIN_DIR"
 mkdir -p "$HERMES_PLUGIN_DIR"
 cp "$PLUGIN_DIR/"* "$HERMES_PLUGIN_DIR/"
-echo "  ✓ Installed to $HERMES_PLUGIN_DIR"
+echo " ✓ Installed to $HERMES_PLUGIN_DIR"
 
 # Verifying plugin structure
 echo "  Verifying plugin structure..."
@@ -70,7 +69,6 @@ cd "$HERMES_PLUGIN_DIR"
 if python3 -c "from __init__ import NoxemMemoryProvider; print('  ✓ NoxemMemoryProvider imports successfully')" 2>/dev/null; then
   :
 else
-  # Try as package import
   if python3 -c "import sys; sys.path.insert(0, '..'); from noxem import NoxemMemoryProvider; print('  ✓ NoxemMemoryProvider imports successfully')" 2>/dev/null; then
     :
   else
@@ -83,7 +81,7 @@ echo "[4/5] Installing shell hooks..."
 mkdir -p "$HERMES_HOOKS_DIR"
 cp "$APP_DIR/hooks/"*.mjs "$HERMES_HOOKS_DIR/" 2>/dev/null || true
 chmod +x "$HERMES_HOOKS_DIR/"*.mjs 2>/dev/null || true
-echo "  ✓"
+echo " ✓"
 
 # ── 5. Launcher ──
 echo "[5/5] Setting up launcher..."
@@ -96,10 +94,14 @@ WRAPPER_CONTENT='#!/usr/bin/env bash
 set -euo pipefail
 exec '"$APP_DIR"'/noxem-launcher.sh "$@"'
 
-if command -v sudo &>/dev/null; then
-  printf "%s\n" "$WRAPPER_CONTENT" | sudo tee "$WRAPPER_PATH" >/dev/null 2>&1 && sudo chmod +x "$WRAPPER_PATH" && { echo "  ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
-elif [ -w "/usr/local/bin" ]; then
-  printf "%s\n" "$WRAPPER_CONTENT" > "$WRAPPER_PATH" && chmod +x "$WRAPPER_PATH" && { echo "  ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
+# Try writeable first (no sudo needed), then sudo with TTY check,
+# then sudo with NOPASSWD. Avoids hanging on non-interactive shells.
+if [ -w "/usr/local/bin" ]; then
+  printf "%s\n" "$WRAPPER_CONTENT" > "$WRAPPER_PATH" && chmod +x "$WRAPPER_PATH" && { echo " ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
+elif command -v sudo &>/dev/null && [ -t 0 ]; then
+  printf "%s\n" "$WRAPPER_CONTENT" | sudo tee "$WRAPPER_PATH" >/dev/null 2>&1 && sudo chmod +x "$WRAPPER_PATH" && { echo " ✓ Installed to $WRAPPER_PATH (via sudo)"; INSTALLED=true; }
+elif command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+  printf "%s\n" "$WRAPPER_CONTENT" | sudo tee "$WRAPPER_PATH" >/dev/null 2>&1 && sudo chmod +x "$WRAPPER_PATH" && { echo " ✓ Installed to $WRAPPER_PATH (via sudo NOPASSWD)"; INSTALLED=true; }
 fi
 
 # Fallback: add alias to shell rc file
@@ -119,9 +121,9 @@ if ! $INSTALLED; then
 # Noxem — launch Hermes with memory + Gemma 4 servers
 $ALIAS_LINE
 EOF
-    echo "  ✓ Added 'hermes-noxem' alias to $SHELL_RC"
+    echo " ✓ Added 'hermes-noxem' alias to $SHELL_RC"
   else
-    echo "  ✓ 'hermes-noxem' alias already exists in $SHELL_RC"
+    echo " ✓ 'hermes-noxem' alias already exists in $SHELL_RC"
   fi
 fi
 
@@ -136,9 +138,9 @@ echo "  (starts both servers, runs Hermes, shuts down on exit)"
 echo ""
 echo "Or manually:"
 echo "  1. Start memory server: node server/memory-server.mjs"
-echo "  2. Start Gemma 4:       node server/gemma4-server.mjs"
-echo "  3. Run Hermes:          hermes chat"
-echo "  4. Enable provider:     hermes memory setup → Select 'noxem'"
+echo "  2. Start Gemma 4: node server/gemma4-server.mjs"
+echo "  3. Run Hermes: hermes chat"
+echo "  4. Enable provider: hermes memory setup → Select 'noxem'"
 echo ""
 echo "First run downloads models (~2-3GB total)."
 echo "========================================"
