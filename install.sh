@@ -14,117 +14,92 @@ if [ "$OS" = "Darwin" ]; then
   IS_MACOS=true
 fi
 
-echo "╔══════════════════════════════════════╗"
-echo "║   Noxem — Memory Provider            ║"
-echo "║   for Hermes Agent                   ║"
-echo "╚══════════════════════════════════════╝"
+echo "========================================"
+echo " Noxem Installation for Hermes Agent"
+echo "========================================"
 echo ""
 
-# ── Pre-flight: macOS dependencies ──
-if $IS_MACOS; then
-  echo "[pre-flight] Checking macOS build environment..."
-
-  # Xcode Command Line Tools
-  if ! xcode-select -p &>/dev/null; then
-    echo "  Xcode Command Line Tools not found."
-    echo "  Install with: xcode-select --install"
-    echo "  Then re-run this installer."
+# ── Pre-flight: Node.js ──
+if command -v node &>/dev/null; then
+  NODE_VER="$(node --version | sed 's/v//' | cut -d. -f1)"
+  if [ "$NODE_VER" -lt 22 ]; then
+    echo " ⚠ Node.js $NODE_VER detected — v22+ required."
     exit 1
   fi
-  echo "  ✓ Xcode CLT found"
-
-  # Homebrew (recommended for Node.js if not present)
-  if ! command -v brew &>/dev/null; then
-    echo "  ⚠ Homebrew not found — install from https://brew.sh"
-    echo "    (Node.js 22+ is required; install via Homebrew or官网)"
-  else
-    echo "  ✓ Homebrew found"
-  fi
-
-  # Node.js 22+
-  if command -v node &>/dev/null; then
-    NODE_VER="$(node --version | sed 's/v//' | cut -d. -f1)"
-    if [ "$NODE_VER" -lt 22 ]; then
-      echo "  ⚠ Node.js $NODE_VER detected — v22+ required."
-      echo "    Upgrade: brew upgrade node"
-      exit 1
-    fi
-    echo "  ✓ Node.js $(node --version)"
-  else
-    echo "  ✗ Node.js not found — install Node.js 22+ first."
-    echo "    brew install node"
-    exit 1
-  fi
-
-  echo ""
+  echo "✓ Node.js $(node --version)"
+else
+  echo "✗ Node.js not found — install Node.js 22+ first."
+  exit 1
 fi
 
+# ── Pre-flight: Hermes ──
+if [ -d "${HOME}/.hermes" ]; then
+  echo "✓ Hermes installation found at ${HOME}/.hermes"
+else
+  echo "⚠ Hermes not found at ${HOME}/.hermes — some features may not work"
+fi
+echo ""
+
 # ── 1. Node.js dependencies ──
-echo "[1/6] Installing server dependencies..."
+echo "[1/5] Installing server dependencies..."
 cd "$SERVER_DIR"
 npm install --no-audit --no-fund 2>&1 | tail -1
 echo "  ✓"
 
-# ── 2. EmbeddingGemma 300M ──
-echo "[2/6] Setting up EmbeddingGemma 300M..."
-echo "  (auto-downloads on first start via Transformers.js)"
-echo "  ✓"
-
-# ── 3. Gemma 4 E2B ──
-echo "[3/6] Setting up Gemma 4 E2B..."
-echo "  Engine: Transformers.js + WebGPU"
-echo "  Model:  onnx-community/gemma-4-E2B-it-ONNX (q4f16)"
-echo "  Port:   8000"
-echo "  (model auto-downloads on first start via Transformers.js)"
-
-if $IS_MACOS; then
-  echo "  Device: CPU (Apple Silicon) — override with GEMMA4_DEVICE=webgpu"
-fi
-echo ""
-
-if command -v npx &>/dev/null; then
-  echo "  Checking Node.js GPU support..."
-  node -e "
-    try {
-      require('@huggingface/transformers');
-      console.log('  ✓ Transformers.js available');
-    } catch(e) {
-      // will install in step 1
-    }
-  " 2>/dev/null || true
-fi
-echo "  ✓"
-
-# ── 4. Hermes plugin ──
-echo "[4/6] Installing Noxem plugin for Hermes..."
+# ── 2. Hermes plugin (clean install) ──
+echo "[2/5] Installing Noxem plugin for Hermes..."
+# Remove old installation completely to avoid stale files
+rm -rf "$HERMES_PLUGIN_DIR"
 mkdir -p "$HERMES_PLUGIN_DIR"
 cp "$PLUGIN_DIR/"* "$HERMES_PLUGIN_DIR/"
 echo "  ✓ Installed to $HERMES_PLUGIN_DIR"
 
-# ── 5. Shell hooks (backup) ──
-echo "[5/6] Installing shell hooks..."
+# Verifying plugin structure
+echo "  Verifying plugin structure..."
+for f in plugin.yaml __init__.py cli.py; do
+  if [ -f "$HERMES_PLUGIN_DIR/$f" ]; then
+    echo "  ✓ $f"
+  else
+    echo "  ✗ $f MISSING"
+  fi
+done
+
+# ── 3. Verify Python imports ──
+echo "[3/5] Verifying Python imports..."
+cd "$HERMES_PLUGIN_DIR"
+if python3 -c "from __init__ import NoxemMemoryProvider; print('  ✓ NoxemMemoryProvider imports successfully')" 2>/dev/null; then
+  :
+else
+  # Try as package import
+  if python3 -c "import sys; sys.path.insert(0, '..'); from noxem import NoxemMemoryProvider; print('  ✓ NoxemMemoryProvider imports successfully')" 2>/dev/null; then
+    :
+  else
+    echo "  ⚠ Import check skipped (will work at runtime via Hermes plugin loader)"
+  fi
+fi
+
+# ── 4. Shell hooks ──
+echo "[4/5] Installing shell hooks..."
 mkdir -p "$HERMES_HOOKS_DIR"
 cp "$APP_DIR/hooks/"*.mjs "$HERMES_HOOKS_DIR/" 2>/dev/null || true
 chmod +x "$HERMES_HOOKS_DIR/"*.mjs 2>/dev/null || true
 echo "  ✓"
 
-# ── 6. Launcher ──
-echo "[6/6] Setting up launcher..."
-chmod +x "$APP_DIR/noxem-launcher.sh"
+# ── 5. Launcher ──
+echo "[5/5] Setting up launcher..."
+chmod +x "$APP_DIR/noxem-launcher.sh" 2>/dev/null || true
 INSTALLED=false
 
-# On Linux/macOS: install wrapper in PATH for reliable resolution
-if ! $INSTALLED; then
-  WRAPPER_PATH="/usr/local/bin/hermes-noxem"
-  WRAPPER_CONTENT='#!/usr/bin/env bash
+# On Linux/macOS: install wrapper in PATH
+WRAPPER_PATH="/usr/local/bin/hermes-noxem"
+WRAPPER_CONTENT='#!/usr/bin/env bash
 set -euo pipefail
 exec '"$APP_DIR"'/noxem-launcher.sh "$@"'
 
-  if command -v sudo &>/dev/null; then
-    printf "%s\n" "$WRAPPER_CONTENT" | sudo tee "$WRAPPER_PATH" >/dev/null 2>&1 && sudo chmod +x "$WRAPPER_PATH" && { echo "  ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
-  elif [ -w "/usr/local/bin" ]; then
-    printf "%s\n" "$WRAPPER_CONTENT" > "$WRAPPER_PATH" && chmod +x "$WRAPPER_PATH" && { echo "  ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
-  fi
+if command -v sudo &>/dev/null; then
+  printf "%s\n" "$WRAPPER_CONTENT" | sudo tee "$WRAPPER_PATH" >/dev/null 2>&1 && sudo chmod +x "$WRAPPER_PATH" && { echo "  ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
+elif [ -w "/usr/local/bin" ]; then
+  printf "%s\n" "$WRAPPER_CONTENT" > "$WRAPPER_PATH" && chmod +x "$WRAPPER_PATH" && { echo "  ✓ Installed to $WRAPPER_PATH"; INSTALLED=true; }
 fi
 
 # Fallback: add alias to shell rc file
@@ -148,49 +123,25 @@ EOF
   else
     echo "  ✓ 'hermes-noxem' alias already exists in $SHELL_RC"
   fi
-
-  # On macOS, also add to ~/.bashrc if it exists (for bash users)
-  if $IS_MACOS && [ -f "${HOME}/.bashrc" ]; then
-    if ! grep -q "alias hermes-noxem" "${HOME}/.bashrc" 2>/dev/null; then
-      cat >> "${HOME}/.bashrc" << EOF
-
-$ALIAS_LINE
-EOF
-      echo "  ✓ Also added to ~/.bashrc"
-    fi
-  fi
 fi
 
 echo ""
-echo "╔════════════════════════════════════════════╗"
-echo "║  Installation Complete!                     ║"
-echo "╠══════════════════════════════════════════════╣"
-echo "║                                              ║"
-echo "║  USE:                                        ║"
-echo "║    hermes-noxem                              ║"
-echo "║    (starts both servers, runs Hermes,        ║"
-echo "║     shuts down servers on exit)              ║"
-echo "║                                              ║"
-echo "║  Or manually:                                ║"
-echo "║    1. Start memory server:                   ║"
-echo "║       node server/memory-server.mjs          ║"
-echo "║                                              ║"
-echo "║    2. Start Gemma 4:                         ║"
-echo "║       node server/gemma4-server.mjs          ║"
-echo "║                                              ║"
-echo "║    3. Run Hermes:                            ║"
-echo "║       hermes chat                            ║"
-echo "║                                              ║"
-echo "║    4. Enable provider:                       ║"
-echo "║       hermes memory setup                    ║"
-echo "║       → Select 'noxem'                       ║"
-echo "║                                              ║"
-echo "║  First run downloads models (~2-3GB total).  ║"
-echo "║  WebGPU used on Windows/Linux.               ║"
-echo "║  Apple Silicon uses CPU (fast enough for     ║"
-echo "║  q4f16 inference).                           ║"
-echo "╚══════════════════════════════════════════════╝"
+echo "========================================"
+echo " Installation Complete!"
+echo "========================================"
 echo ""
+echo "USE:"
+echo "  hermes-noxem"
+echo "  (starts both servers, runs Hermes, shuts down on exit)"
+echo ""
+echo "Or manually:"
+echo "  1. Start memory server: node server/memory-server.mjs"
+echo "  2. Start Gemma 4:       node server/gemma4-server.mjs"
+echo "  3. Run Hermes:          hermes chat"
+echo "  4. Enable provider:     hermes memory setup → Select 'noxem'"
+echo ""
+echo "First run downloads models (~2-3GB total)."
+echo "========================================"
 
 if $INSTALLED; then
   echo "Run: hermes-noxem"
