@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, categorizeText } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText } from './embedding-engine.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getSessionMemories, getMemoriesByType,
@@ -19,6 +19,7 @@ const PORT = process.env.MEMORY_PORT || 3001;
 const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
 const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false';
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
+const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
 
 // ─── Startup ─────────────────────────────────────────────────────
 let startupComplete = false;
@@ -52,6 +53,61 @@ app.get('/ready', (_req, res) => {
   if (startupComplete) return res.json({ ok: true });
   res.status(503).json({ ok: false, message: 'still starting up' });
 });
+
+// ─── Scoring Utilities ───────────────────────────────────────────
+
+// Normalize FTS5 rank to 0-1 similarity-like score (higher = better)
+function normalizeFtsScore(results) {
+  if (!results.length) return results;
+  // FTS5 rank is negative bm25 (lower = more relevant)
+  // Flip sign so higher = better, then min-max normalize to [0.3, 1.0]
+  const maxRank = Math.max(...results.map(r => -r.score));
+  const minRank = Math.min(...results.map(r => -r.score));
+  return results.map(r => {
+    const flipped = -r.score;
+    const normalized = maxRank === minRank
+      ? 1.0
+      : 0.3 + 0.7 * (flipped - minRank) / (maxRank - minRank);
+    return { ...r, score: Math.round(normalized * 1000) / 1000 };
+  });
+}
+
+// Recency-weighted scoring: blend similarity with recency
+// Formula: final_score = similarity * (0.7 + 0.3 * recency_weight)
+// recency_weight = 0.5 ** (age_days / half_life_days)
+function applyRecencyScore(results) {
+  const now = Date.now();
+  const halfLifeMs = DECAY_HALF_LIFE_DAYS * 24 * 60 * 60 * 1000;
+  return results.map(r => {
+    const createdAt = new Date(r.created_at).getTime();
+    const ageMs = Math.max(0, now - createdAt);
+    const recencyWeight = Math.pow(0.5, ageMs / halfLifeMs);
+    const boosted = r.score * (0.7 + 0.3 * recencyWeight);
+    return { ...r, score: Math.round(boosted * 1000) / 1000 };
+  });
+}
+
+// Reciprocal Rank Fusion: merge multiple ranked lists by position
+// RRF score = sum(1 / (k + rank)) across all lists. k=60 is standard.
+function reciprocalRankFusion(lists, k = 60) {
+  const scores = new Map(); // id -> { rrf_score, data }
+  for (const list of lists) {
+    list.forEach((item, rank) => {
+      const id = item.id;
+      const existing = scores.get(id);
+      const contribution = 1 / (k + rank + 1); // 0-indexed rank
+      if (existing) {
+        existing.rrf_score += contribution;
+        // Keep the richer data object (prefer first seen with embedding score)
+      } else {
+        scores.set(id, { rrf_score: contribution, data: item });
+      }
+    });
+  }
+  return [...scores.values()]
+    .sort((a, b) => b.rrf_score - a.rrf_score)
+    .map(entry => ({ ...entry.data, score: Math.round(entry.rrf_score * 1000) / 1000 }));
+}
 
 // ─── Memory CRUD ─────────────────────────────────────────────────
 
@@ -123,38 +179,32 @@ app.get('/memory/search', async (req, res) => {
       try {
         const qVec = await embed(q.trim(), 'query');
         const allMemories = getAllActiveMemories();
-        const results = searchByEmbedding(qVec, allMemories, limitNum);
+        const embeddingCandidates = searchByEmbedding(qVec, allMemories, limitNum * 3);
+        const embeddingResults = applyRecencyScore(mmrRerank(qVec, embeddingCandidates, limitNum * 2, 0.7));
 
-        if (results.length > 0 && method === 'embedding') {
+        if (embeddingResults.length > 0 && method === 'embedding') {
           return res.json({
             ok: true,
             method: 'embedding',
-            results,
+            results: embeddingResults.slice(0, limitNum),
           });
         }
 
-        // Hybrid: merge FTS + embedding results
+        // Hybrid: Reciprocal Rank Fusion of embedding + FTS results
         if (method === 'hybrid' || !method) {
-          const ftsResults = searchMemories({ query: q, limit: limitNum });
-          // Deduplicate by id, prefer embedding (scored)
-          const seen = new Set(results.map(r => r.id));
-          for (const r of ftsResults) {
-            if (!seen.has(r.id)) {
-              results.push({ ...r, score: r.score * 0.5 });
-              seen.add(r.id);
-            }
-          }
+          const ftsResults = normalizeFtsScore(searchMemories({ query: q, limit: limitNum * 3 }));
+          const merged = reciprocalRankFusion([embeddingResults, ftsResults]);
           return res.json({
             ok: true,
             method: 'hybrid',
-            results: results.sort((a, b) => b.score - a.score).slice(0, limitNum),
+            results: merged.slice(0, limitNum),
           });
         }
       } catch { /* fall through to FTS */ }
     }
 
     // FTS fallback
-    const results = searchMemories({ query: q, limit: limitNum });
+    const results = applyRecencyScore(normalizeFtsScore(searchMemories({ query: q, limit: limitNum })));
 
     if (session_id) {
       return res.json({
@@ -323,10 +373,11 @@ app.post('/memory/maintenance/stop', (_req, res) => {
 // ─── Start ────────────────────────────────────────────────────────
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
-  console.log(`  Port:       ${PORT}`);
-  console.log(`  Embedding:  ${ENABLE_EMBEDDING ? 'EmbeddingGemma 300M' : 'DISABLED'}`);
-  console.log(`  Advisor:    ${ENABLE_ADVISOR ? 'Gemma 4' : 'DISABLED'}`);
+  console.log(`  Port: ${PORT}`);
+  console.log(`  Embedding: ${ENABLE_EMBEDDING ? 'EmbeddingGemma 300M' : 'DISABLED'}`);
+  console.log(`  Advisor: ${ENABLE_ADVISOR ? 'Gemma 4' : 'DISABLED'}`);
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
   console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
+  console.log(`  Decay half-life: ${DECAY_HALF_LIFE_DAYS} days`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 });

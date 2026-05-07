@@ -205,4 +205,46 @@ export function categorizeText(text) {
   return 'fact';
 }
 
+// Maximal Marginal Relevance: diversify results by penalizing similarity to already-selected items
+// lambda: 0.7 = relevance-heavy, 0.5 = balanced, 0.3 = diversity-heavy
+export function mmrRerank(queryEmbedding, candidates, topK = 5, lambda = 0.7) {
+  if (candidates.length <= topK) return candidates;
+
+  const selected = [];
+  const remaining = [...candidates];
+
+  // Pick the most relevant first
+  remaining.sort((a, b) => b.score - a.score);
+  selected.push(remaining.shift());
+
+  while (selected.length < topK && remaining.length > 0) {
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const relevance = lambda * remaining[i].score;
+      // Max similarity to any already-selected item
+      let maxSim = 0;
+      if (remaining[i].embedding) {
+        for (const s of selected) {
+          if (s.embedding) {
+            const sim = cosineSimilarity(remaining[i].embedding, s.embedding);
+            if (sim > maxSim) maxSim = sim;
+          }
+        }
+      }
+      const diversity = (1 - lambda) * maxSim;
+      const mmrScore = relevance - diversity;
+      if (mmrScore > bestScore) {
+        bestScore = mmrScore;
+        bestIdx = i;
+      }
+    }
+
+    selected.push(remaining.splice(bestIdx, 1)[0]);
+  }
+
+  return selected;
+}
+
 export { cosineSimilarity, normalize, SIMILARITY_THRESHOLD, CONTRADICTION_THRESHOLD };
