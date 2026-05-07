@@ -28,20 +28,16 @@ export async function initEmbeddingEngine() {
       try {
         if (attempt > 0) {
           console.log(`Embedding model load retry ${attempt}/${MAX_RETRIES}...`);
-          const fs = await import('fs');
-          const path = await import('path');
-          const cachePath = path.resolve(EMBED_CACHE_DIR);
-          if (fs.existsSync(cachePath)) {
-            fs.rmSync(cachePath, { recursive: true, force: true });
-            console.log('  Cleared corrupted embedding model cache');
-          }
-          // Also clear HuggingFace hub cache for this model
-          const hfCache = path.join(process.env.HF_HOME || path.join(process.env.HOME || '.', '.cache', 'huggingface'), 'hub');
-          const modelSlug = MODEL_ID.replace('/', '--');
-          const modelCacheDir = path.join(hfCache, `models--${modelSlug}`);
-          if (fs.existsSync(modelCacheDir)) {
-            fs.rmSync(modelCacheDir, { recursive: true, force: true });
-            console.log('  Cleared HuggingFace hub cache for embedding model');
+          if (process.env.EMBEDDING_CLEAR_CACHE_ON_RETRY === 'true') {
+            const fs = await import('fs');
+            const path = await import('path');
+            const cachePath = path.resolve(EMBED_CACHE_DIR);
+            if (fs.existsSync(cachePath)) {
+              fs.rmSync(cachePath, { recursive: true, force: true });
+              console.log('  Cleared embedding model cache (EMBEDDING_CLEAR_CACHE_ON_RETRY=true)');
+            }
+          } else {
+            console.log('  Retrying with existing cache...');
           }
         }
 

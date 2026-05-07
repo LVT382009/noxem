@@ -12,23 +12,41 @@ const MAX_NEW_TOKENS = parseInt(process.env.GEMMA4_MAX_TOKENS || '1024');
 const CACHE_DIR = process.env.GEMMA4_CACHE || './.cache/gemma4';
 const MAX_RETRIES = parseInt(process.env.GEMMA4_LOAD_RETRIES || '2');
 
-// Device detection
+// In Node.js, onnxruntime-node auto-selects the best EP (CUDA > DirectML > CPU).
+// WebGPU is browser-only — setting device:'webgpu' in Node causes "fetch failed".
 function detectDevice() {
   if (process.env.GEMMA4_DEVICE) return process.env.GEMMA4_DEVICE;
-  const isMac = process.platform === 'darwin';
-  if (isMac) {
-    console.log('  macOS detected — defaulting to CPU');
-    return 'cpu';
-  }
-  return 'webgpu';
+  // Node.js uses onnxruntime-native — don't pass device, let it auto-detect
+  return undefined;
 }
 const DEVICE = detectDevice();
+if (DEVICE) {
+  console.log(`Device override: ${DEVICE}`);
+} else {
+  console.log('Device: auto (onnxruntime-node selects best EP)');
+}
 
 let model = null;
 let processor = null;
 let loadPromise = null;
 let ready = false;
 let loadError = null;
+
+// Deduplicate uncaught exceptions — log first occurrence, count repeats
+const errorCounts = new Map();
+let errorLogInterval = null;
+
+function startErrorLogger() {
+  if (errorLogInterval) return;
+  errorLogInterval = setInterval(() => {
+    for (const [msg, count] of errorCounts) {
+      if (count > 1) {
+        console.error(`Uncaught exception (non-fatal, ${count}x): ${msg}`);
+      }
+      errorCounts.delete(msg);
+    }
+  }, 5000).unref();
+}
 
 async function loadModel() {
   if (loadPromise) return loadPromise;
@@ -56,29 +74,38 @@ async function loadModel() {
       try {
         if (attempt > 0) {
           console.log(`Model load retry ${attempt}/${MAX_RETRIES}...`);
-          const fs = await import('fs');
-          const path = await import('path');
-          const cachePath = path.resolve(CACHE_DIR);
-          if (fs.existsSync(cachePath)) {
-            fs.rmSync(cachePath, { recursive: true, force: true });
-            console.log('  Cleared corrupted model cache');
+          // Only clear cache on second+ attempt if explicitly requested
+          if (process.env.GEMMA4_CLEAR_CACHE_ON_RETRY === 'true') {
+            const fs = await import('fs');
+            const path = await import('path');
+            const cachePath = path.resolve(CACHE_DIR);
+            if (fs.existsSync(cachePath)) {
+              fs.rmSync(cachePath, { recursive: true, force: true });
+              console.log('  Cleared model cache (GEMMA4_CLEAR_CACHE_ON_RETRY=true)');
+            }
+          } else {
+            console.log('  Retrying with existing cache...');
           }
         }
 
-        console.log(`Loading ${MODEL_ID} (dtype=${DTYPE}, device=${DEVICE})...`);
+        console.log(`Loading ${MODEL_ID} (dtype=${DTYPE})...`);
         const start = Date.now();
+
+        const loadOpts = {
+          dtype: DTYPE,
+          cache_dir: CACHE_DIR,
+        };
+        // Only pass device if explicitly set — in Node.js, onnxruntime-node
+        // auto-selects the best execution provider (CUDA/DirectML/CPU)
+        if (DEVICE) loadOpts.device = DEVICE;
 
         [processor, model] = await Promise.all([
           AutoProcessor.from_pretrained(MODEL_ID, { cache_dir: CACHE_DIR }),
-          Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, {
-            dtype: DTYPE,
-            device: DEVICE,
-            cache_dir: CACHE_DIR,
-          }),
+          Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, loadOpts),
         ]);
 
         const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-        console.log(`Gemma 4 ready in ${elapsed}s on ${DEVICE}`);
+        console.log(`Gemma 4 ready in ${elapsed}s`);
         ready = true;
         loadError = null;
         return;
@@ -125,7 +152,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
-app.get('/health', (_req, res) => res.json({ ok: true, ready, model: MODEL_ID, device: DEVICE, error: loadError?.message || null }));
+app.get('/health', (_req, res) => res.json({ ok: true, ready, model: MODEL_ID, device: DEVICE || 'auto', error: loadError?.message || null }));
 
 app.post('/v1/chat/completions', async (req, res) => {
   try {
@@ -188,6 +215,7 @@ const server = app.listen(PORT, '127.0.0.1', async () => {
 // Graceful shutdown
 function shutdown(signal) {
   console.log(`\n${signal} received — shutting down Gemma 4 server...`);
+  if (errorLogInterval) clearInterval(errorLogInterval);
   server.close(() => {
     model = null;
     processor = null;
@@ -199,7 +227,15 @@ function shutdown(signal) {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
-// Don't crash on uncaught exceptions — log and continue
+
+// Don't crash on uncaught exceptions — debounce and count repeated errors
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception (non-fatal):', err.message);
+  const msg = err.message || String(err);
+  const count = (errorCounts.get(msg) || 0) + 1;
+  errorCounts.set(msg, count);
+  if (count === 1) {
+    console.error(`Uncaught exception (non-fatal): ${msg}`);
+    startErrorLogger();
+  }
+  // Repeated errors are batch-logged every 5s by the interval
 });

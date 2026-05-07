@@ -95,7 +95,7 @@ node gemma4-server.mjs     # Gemma 4 advisor (port 8000)
 hermes chat                # Hermes agent
 ```
 
-> **Apple Silicon (M1-M4):** The Gemma 4 model uses CPU by default on macOS — Apple Silicon CPUs are fast enough for q4f16 inference. To force WebGPU: `export GEMMA4_DEVICE=webgpu` before launching.
+> **Device auto-detection:** In Node.js, onnxruntime-node automatically picks the best execution provider (CUDA > DirectML > CPU). WebGPU is browser-only and does not work in Node.js. Set `GEMMA4_DEVICE` only if you need to override auto-detection.
 
 > **First run** downloads the models (~2-3 GB total). Subsequent starts use the local cache.
 
@@ -146,7 +146,7 @@ hermes noxem config          # Show current configuration
 | `MEMORY_PORT` | `3001` | Server port |
 | `MEMORY_DB_DIR` | `./data` | Database directory |
 | `GEMMA_URL` | `http://127.0.0.1:8000` | Model server endpoint |
-| `GEMMA4_DEVICE` | `webgpu` (Win/Lin), `cpu` (macOS) | Inference device |
+| `GEMMA4_DEVICE` | `auto` (onnxruntime-node picks best EP) | Override inference device (CUDA/DirectML/CPU, not WebGPU) |
 | `EMBEDDING_DTYPE` | `q8` | Embedding precision (fp32/q8/q4) |
 | `EMBEDDING_DIM` | `256` | MRL embedding dimension (128/256/512/768) |
 | `DUP_THRESHOLD` | `0.92` | Deduplication sensitivity |

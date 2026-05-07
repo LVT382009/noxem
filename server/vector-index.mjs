@@ -17,7 +17,7 @@ export async function initVectorIndex(db) {
     console.log(`[VectorIndex] sqlite-vec loaded — native KNN search enabled (${EMBED_DIM}d)`);
   } catch (err) {
     vecAvailable = false;
-    console.log(`[VectorIndex] sqlite-vec unavailable — using JS cosine fallback (${err.message})`);
+    console.log(`[VectorIndex] sqlite-vec unavailable — JS cosine fallback active (install sqlite-vec for native KNN)`);
   }
 }
 
