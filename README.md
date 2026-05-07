@@ -1,11 +1,10 @@
 <div align="center">
 
-# 🧠 Noxem
-
+# 🧠 Noxem 4
 **Persistent memory provider for Hermes Agent** — remembers what matters, forgets what doesn't.
 
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Node](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js)
+![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js)
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4)
@@ -33,22 +32,23 @@
 
 ## Quick Start
 
-```bash
-# 1. Install everything
-bash install.sh
-
-# 2. Launch Hermes with Noxem (auto-starts both servers)
-hermes-noxem
-
-# Or manually:
-#   cd server && npm install && node memory-server.mjs
-#   node gemma4-server.mjs
-#   hermes chat
-```
-
 **Requirements:** Node.js 22+, Python 3.10+, Hermes Agent v2026+
 
-### macOS Prerequisites
+### Linux / WSL
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/LVT382009/noxem.git
+cd noxem
+
+# 2. Run the installer (deps + plugin + hooks)
+bash install.sh
+
+# 3. Launch Hermes with Noxem (auto-starts both servers)
+hermes-noxem
+```
+
+### macOS
 
 ```bash
 # 1. Install Xcode Command Line Tools
@@ -60,11 +60,44 @@ xcode-select --install
 # 3. Install Node.js 22+
 brew install node
 
-# 4. Run the installer (same as Linux)
+# 4. Clone and install
+git clone https://github.com/LVT382009/noxem.git
+cd noxem
 bash install.sh
+
+# 5. Launch
+hermes-noxem
 ```
 
-> **Apple Silicon (M1–M4):** The Gemma 4 model uses CPU by default on macOS — Apple Silicon CPUs are fast enough for q4f16 inference. To force WebGPU: `export GEMMA4_DEVICE=webgpu` before launching.
+### Windows (via WSL)
+
+Open Command Prompt or PowerShell, then:
+
+```cmd
+:: Option A: use the Windows batch installer
+install.bat
+
+:: Option B: do it manually inside WSL
+wsl -d Ubuntu
+git clone https://github.com/LVT382009/noxem.git
+cd noxem
+bash install.sh
+hermes-noxem
+```
+
+### Manual Start (any OS)
+
+```bash
+# Start each component separately
+cd server && npm install
+node memory-server.mjs     # Memory server (port 3001)
+node gemma4-server.mjs     # Gemma 4 advisor (port 8000)
+hermes chat                # Hermes agent
+```
+
+> **Apple Silicon (M1-M4):** The Gemma 4 model uses CPU by default on macOS — Apple Silicon CPUs are fast enough for q4f16 inference. To force WebGPU: `export GEMMA4_DEVICE=webgpu` before launching.
+
+> **First run** downloads the models (~2-3 GB total). Subsequent starts use the local cache.
 
 ---
 
@@ -75,19 +108,19 @@ Hermes Agent
       │
       ▼
 Noxem Plugin ──HTTP──► Noxem Server (port 3001)
-                           │
-                      ┌────┴────┐
-                      │         │
-                   Vector      Search
-                   Engine      Engine
-                      │         │
-                      └────┬────┘
-                           │
-                        SQLite
-                     (FTS5 + Vectors)
+                              │
+                    ┌─────────┴─────────┐
+                    │                   │
+              Embedding Engine     Advisor Engine
+              (EmbeddingGemma)      (Gemma 4 E2B)
+                    │                   │
+                    └─────────┬─────────┘
+                              │
+                           SQLite
+                      (FTS5 + Vectors)
 ```
 
-Two processing layers work together — a **vector engine** for semantic understanding and a **search engine** for precise lookups. Both feed into a shared SQLite store.
+Two processing layers work together — an **embedding engine** for semantic understanding and an **advisor engine** for context recovery and task drift detection. Both feed into a shared SQLite store.
 
 ---
 
@@ -95,13 +128,13 @@ Two processing layers work together — a **vector engine** for semantic underst
 
 ```bash
 # Server management
-npm start                           # Start the memory server
+npm start                    # Start the memory server
 
 # Hermes CLI (after plugin is installed)
-hermes noxem status                 # Server health + memory stats
-hermes noxem search <query>         # Search stored memories
-hermes noxem run                    # Run maintenance manually
-hermes noxem config                 # Show current configuration
+hermes noxem status          # Server health + memory stats
+hermes noxem search <query>  # Search stored memories
+hermes noxem run             # Run maintenance manually
+hermes noxem config          # Show current configuration
 ```
 
 ---
@@ -114,8 +147,12 @@ hermes noxem config                 # Show current configuration
 | `MEMORY_DB_DIR` | `./data` | Database directory |
 | `GEMMA_URL` | `http://127.0.0.1:8000` | Model server endpoint |
 | `GEMMA4_DEVICE` | `webgpu` (Win/Lin), `cpu` (macOS) | Inference device |
+| `EMBEDDING_DTYPE` | `q8` | Embedding precision (fp32/q8/q4) |
+| `EMBEDDING_DIM` | `256` | MRL embedding dimension (128/256/512/768) |
 | `DUP_THRESHOLD` | `0.92` | Deduplication sensitivity |
+| `CONTRADICT_THRESHOLD` | `0.80` | Contradiction detection threshold |
 | `ENABLE_MAINTENANCE` | `true` | Auto-cleanup every 5 minutes |
+| `MEMORY_DECAY_HALF_LIFE` | `30` | Default recency decay (days) |
 
 ---
 
@@ -123,17 +160,17 @@ hermes noxem config                 # Show current configuration
 
 ```
 User says something
-      │
-      ▼
+        │
+        ▼
 Noxem checks memory ──► Relevant past context injected
-      │
-      ▼
+        │
+        ▼
 Turn is processed
-      │
-      ▼
+        │
+        ▼
 Key information extracted ──► Stored with vector index
-      │
-      ▼
+        │
+        ▼
 Background cleanup ──► Duplicates merged, conflicts resolved
 ```
 
