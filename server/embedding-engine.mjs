@@ -1,8 +1,8 @@
 import { pipeline } from '@huggingface/transformers';
 
 const MODEL_ID = process.env.EMBEDDING_MODEL || 'onnx-community/embeddinggemma-300m-ONNX';
-const DTYPE = process.env.EMBEDDING_DTYPE || 'fp32';
-const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '768');
+const DTYPE = process.env.EMBEDDING_DTYPE || 'q8'; // q8: 68.13 vs fp32: 68.36 on MTEB — negligible diff, much smaller/faster
+const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '256'); // MRL 256d: only 1.5% loss vs 768d, 3x less storage
 const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || './.cache/embedding';
 const MAX_RETRIES = parseInt(process.env.EMBEDDING_LOAD_RETRIES || '2');
 const SIMILARITY_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
@@ -46,7 +46,7 @@ export async function initEmbeddingEngine() {
 
         console.log(`Loading EmbeddingGemma 300M (${DTYPE}, dim=${EMBED_DIM})...`);
         const start = Date.now();
-        extractor = await pipeline('feature-extraction', MODEL_ID, {
+        extractor = await pipeline('sentence-similarity', MODEL_ID, {
           dtype: DTYPE,
           cache_dir: EMBED_CACHE_DIR,
         });

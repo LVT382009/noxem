@@ -1,11 +1,12 @@
 import express from 'express';
 import cors from 'cors';
 import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText } from './embedding-engine.mjs';
+import { isVecReady } from './vector-index.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getSessionMemories, getMemoriesByType,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
-  deleteMemory, deleteInvalid, incrementRecallCounts, archiveStaleMemories, close,
+  deleteMemory, deleteInvalid, incrementRecallCounts, archiveStaleMemories, vectorKnnSearch, close,
 } from './memory-store.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
@@ -43,6 +44,7 @@ app.get('/health', (_req, res) => {
     version: '2.0',
     embedding: isEmbeddingReady(),
     embedding_error: getEmbeddingError()?.message || null,
+    vector_index: isVecReady(),
     advisor: ENABLE_ADVISOR,
     maintenance: ENABLE_MAINTENANCE,
     mode: 'hybrid-ai',
@@ -176,13 +178,23 @@ app.get('/memory/search', async (req, res) => {
     const limitNum = limit ? parseInt(limit) : 10;
     let searchMethod = 'fts';
 
-    // Embedding search (primary)
+    // Embedding search (primary) — try sqlite-vec KNN first, fall back to JS cosine
     if ((!method || method === 'hybrid' || method === 'embedding') && isEmbeddingReady()) {
       try {
         const qVec = await embed(q.trim(), 'query');
-        const allMemories = getAllActiveMemories();
-        const embeddingCandidates = searchByEmbedding(qVec, allMemories, limitNum * 3);
-        const embeddingResults = applyRecencyScore(mmrRerank(qVec, embeddingCandidates, limitNum * 2, 0.7));
+
+        // Try native KNN via sqlite-vec (much faster for large datasets)
+        let embeddingResults = null;
+        const knnHits = vectorKnnSearch(qVec, limitNum * 3);
+        if (knnHits && knnHits.length > 0) {
+          embeddingResults = applyRecencyScore(knnHits);
+          searchMethod = 'knn';
+        } else {
+          // Fallback: JS brute-force cosine similarity
+          const allMemories = getAllActiveMemories();
+          const embeddingCandidates = searchByEmbedding(qVec, allMemories, limitNum * 3);
+          embeddingResults = applyRecencyScore(mmrRerank(qVec, embeddingCandidates, limitNum * 2, 0.7));
+        }
 
         if (embeddingResults.length > 0 && method === 'embedding') {
           searchResults = embeddingResults.slice(0, limitNum);
@@ -384,7 +396,8 @@ app.post('/memory/maintenance/stop', (_req, res) => {
 app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
   console.log(`  Port: ${PORT}`);
-  console.log(`  Embedding: ${ENABLE_EMBEDDING ? 'EmbeddingGemma 300M' : 'DISABLED'}`);
+  console.log(`  Embedding: ${ENABLE_EMBEDDING ? 'EmbeddingGemma 300M (q8, 256d)' : 'DISABLED'}`);
+  console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'}`);
   console.log(`  Advisor: ${ENABLE_ADVISOR ? 'Gemma 4' : 'DISABLED'}`);
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
   console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);

@@ -55,6 +55,8 @@ hermes noxem status
 | `server/memory-server.mjs` | Express API server |
 | `server/memory-store.mjs` | SQLite + FTS5 + embeddings |
 | `server/embedding-engine.mjs` | EmbeddingGemma 300M wrapper |
+| `server/vector-index.mjs` | sqlite-vec native KNN (optional) |
+| `server/memory-extract.mjs` | LLM memory extraction |
 | `server/advisor-engine.mjs` | Gemma 4 advisor + DDG |
 | `server/ddg-search.mjs` | DuckDuckGo search |
 | `server/memory-maintenance.mjs` | Cron: dedup/contradiction/categorize |
@@ -71,6 +73,10 @@ hermes noxem status
 | `ENABLE_MAINTENANCE` | `true` | Enable 5-min dedup cron |
 | `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | Gemma 4 API |
 | `EMBEDDING_MODEL` | `onnx-community/embeddinggemma-300m-ONNX` | Embedding model ID |
-| `EMBEDDING_DTYPE` | `fp32` | Embedding precision |
+| `EMBEDDING_DTYPE` | `q8` | Embedding precision (fp32/q8/q4) |
+| `EMBEDDING_DIM` | `256` | MRL embedding dimension (128/256/512/768) |
 | `DUP_THRESHOLD` | `0.92` | Dedup cosine threshold |
 | `CONTRADICT_THRESHOLD` | `0.80` | Contradiction threshold |
+| `MEMORY_DECAY_HALF_LIFE` | `30` | Recency decay half-life in days |
+| `GEMMA4_LOAD_RETRIES` | `2` | Model download retry count |
+| `EMBEDDING_LOAD_RETRIES` | `2` | Embedding model retry count |

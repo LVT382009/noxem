@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch } from './vector-index.mjs';
 
 const DB_DIR = process.env.MEMORY_DB_DIR || './data';
 const DB_PATH = path.join(DB_DIR, 'hermes-memory.db');
@@ -51,6 +52,9 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 try { db.exec(`ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE memories ADD COLUMN last_recalled_at TEXT`); } catch {}
 try { db.exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`); } catch {}
+
+// Initialize sqlite-vec for native KNN (optional — falls back to JS cosine)
+initVectorIndex(db).catch(() => {});
 
 const insert = db.prepare(
   `INSERT INTO memories (session_id, type, text, embedding, metadata)
@@ -137,7 +141,15 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
     embedding: embedding,
     metadata: JSON.stringify(metadata),
   });
-  return result.lastInsertRowid;
+  const id = result.lastInsertRowid;
+  // Update vector index if embedding provided
+  if (embedding) {
+    try {
+      const vec = bufferToFloat32(embedding);
+      insertVec(db, id, vec);
+    } catch {}
+  }
+  return id;
 }
 
 export function storeMemories(items) {
@@ -231,6 +243,27 @@ export function archiveStaleMemories() {
   const result = archiveStale.run();
   return result.changes;
 }
+
+export function vectorKnnSearch(queryEmbedding, topK = 5) {
+  if (!isVecReady()) return null;
+  const hits = knnSearch(db, queryEmbedding, topK);
+  if (!hits) return null;
+  // Enrich with memory data
+  return hits.map(h => {
+    const mem = getById.get(h.id);
+    if (!mem || mem.status !== 'active') return null;
+    return {
+      id: mem.id,
+      text: mem.text,
+      type: mem.type,
+      session_id: mem.session_id,
+      created_at: mem.created_at,
+      score: h.score,
+    };
+  }).filter(Boolean);
+}
+
+export { db };
 
 export function close() {
   db.close();
