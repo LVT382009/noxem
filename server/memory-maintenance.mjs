@@ -2,98 +2,108 @@ import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMem
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, estimateImportance, extractEntityAttribute, normalize, cosineSimilarity } from './embedding-engine.mjs';
 
 let maintenanceInterval = null;
+let initialTimeout = null;
+let maintenanceRunning = false;
 const RUN_INTERVAL_MS = parseInt(process.env.MAINTENANCE_INTERVAL || '300000'); // 5 min default
 
 export async function runMaintenance() {
-  if (!isEmbeddingReady()) {
-    console.log('Maintenance skipped: embedding engine not ready');
-    return { skipped: true, reason: 'embedding not ready' };
+  if (maintenanceRunning) {
+    console.log('[Maintenance] Already running — skipping');
+    return { skipped: true, reason: 'already running' };
   }
+  maintenanceRunning = true;
 
-  console.log('[Maintenance] Starting memory maintenance...');
-  const start = Date.now();
-  const results = { duplicates: 0, contradictions: 0, invalid: 0, categorized: 0 };
-
-  const memories = getActiveWithEmbedding();
-
-  if (memories.length < 2) {
-    console.log(`[Maintenance] Only ${memories.length} memories — skipping dedup/contradiction`);
-    results.message = 'too few memories';
-    return results;
-  }
-
-  // 1. Deduplication
   try {
-    const dupes = findDuplicates(memories);
-    for (const d of dupes) {
-      // Keep the newer one (by id)
-      const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
-      updateMemoryStatus(older.id, 'invalid');
-      results.duplicates++;
+    if (!isEmbeddingReady()) {
+      console.log('Maintenance skipped: embedding engine not ready');
+      return { skipped: true, reason: 'embedding not ready' };
     }
-    if (dupes.length > 0) console.log(`[Maintenance] Marked ${dupes.length} duplicates as invalid`);
-  } catch (err) {
-    console.error('[Maintenance] Dedup error:', err.message);
-  }
 
-  // 2. Contradiction detection
-  try {
-    const contradictions = findContradictions(memories);
-    for (const c of contradictions) {
-      // Mark older preference as superseded
-      const [older, newer] = c.a.id < c.b.id ? [c.a, c.b] : [c.b, c.a];
-      updateMemoryStatus(older.id, 'superseded', newer.id);
-      results.contradictions++;
-      console.log(`[Maintenance] Contradiction: "${older.text}" → superseded by "${newer.text}" (sim: ${c.similarity.toFixed(3)})`);
+    console.log('[Maintenance] Starting memory maintenance...');
+    const start = Date.now();
+    const results = { duplicates: 0, contradictions: 0, invalid: 0, categorized: 0 };
+
+    const memories = getActiveWithEmbedding();
+
+    if (memories.length < 2) {
+      console.log(`[Maintenance] Only ${memories.length} memories — skipping dedup/contradiction`);
+      results.message = 'too few memories';
+      return results;
     }
-  } catch (err) {
-    console.error('[Maintenance] Contradiction error:', err.message);
-  }
 
-  // 3. Categorize uncategorized memories
-  try {
-    for (const m of memories) {
-      if (m.type === 'general' || m.type === 'fact') {
-        const newType = categorizeText(m.text);
-        if (newType !== m.type && newType !== 'fact') {
-          updateMemoryType(m.id, newType);
-          results.categorized++;
+    // 1. Deduplication
+    try {
+      const dupes = findDuplicates(memories);
+      for (const d of dupes) {
+        const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
+        updateMemoryStatus(older.id, 'invalid');
+        results.duplicates++;
+      }
+      if (dupes.length > 0) console.log(`[Maintenance] Marked ${dupes.length} duplicates as invalid`);
+    } catch (err) {
+      console.error('[Maintenance] Dedup error:', err.message);
+    }
+
+    // 2. Contradiction detection
+    try {
+      const contradictions = findContradictions(memories);
+      for (const c of contradictions) {
+        const [older, newer] = c.a.id < c.b.id ? [c.a, c.b] : [c.b, c.a];
+        updateMemoryStatus(older.id, 'superseded', newer.id);
+        results.contradictions++;
+        console.log(`[Maintenance] Contradiction: "${older.text}" → superseded by "${newer.text}" (sim: ${c.similarity.toFixed(3)})`);
+      }
+    } catch (err) {
+      console.error('[Maintenance] Contradiction error:', err.message);
+    }
+
+    // 3. Categorize uncategorized memories
+    try {
+      for (const m of memories) {
+        if (m.type === 'general' || m.type === 'fact') {
+          const newType = categorizeText(m.text);
+          if (newType !== m.type && newType !== 'fact') {
+            updateMemoryType(m.id, newType);
+            results.categorized++;
+          }
         }
       }
+    } catch (err) {
+      console.error('[Maintenance] Categorization error:', err.message);
     }
-  } catch (err) {
-    console.error('[Maintenance] Categorization error:', err.message);
-  }
 
-  // 4. Clean invalid
-  try {
-    const cleaned = deleteInvalid();
-    results.invalid = cleaned;
-  } catch (err) {
-    console.error('[Maintenance] Cleanup error:', err.message);
-  }
+    // 4. Clean invalid
+    try {
+      const cleaned = deleteInvalid();
+      results.invalid = cleaned;
+    } catch (err) {
+      console.error('[Maintenance] Cleanup error:', err.message);
+    }
 
-  // 5. Archive stale memories (90+ days old, never recalled)
-  try {
-    const archived = archiveStaleMemories();
-    results.archived = archived;
-    if (archived > 0) console.log(`[Maintenance] Archived ${archived} stale memories (90+ days, 0 recalls)`);
-  } catch (err) {
-    console.error('[Maintenance] Archive error:', err.message);
-  }
+    // 5. Archive stale memories (90+ days old, never recalled)
+    try {
+      const archived = archiveStaleMemories();
+      results.archived = archived;
+      if (archived > 0) console.log(`[Maintenance] Archived ${archived} stale memories (90+ days, 0 recalls)`);
+    } catch (err) {
+      console.error('[Maintenance] Archive error:', err.message);
+    }
 
-  // 6. Significance-gated consolidation: cluster related low-importance memories
-  try {
-    const consolidated = await consolidateMemories(memories);
-    results.consolidated = consolidated;
-    if (consolidated > 0) console.log(`[Maintenance] Consolidated ${consolidated} memory clusters`);
-  } catch (err) {
-    console.error('[Maintenance] Consolidation error:', err.message);
-  }
+    // 6. Significance-gated consolidation: cluster related low-importance memories
+    try {
+      const consolidated = await consolidateMemories(memories);
+      results.consolidated = consolidated;
+      if (consolidated > 0) console.log(`[Maintenance] Consolidated ${consolidated} memory clusters`);
+    } catch (err) {
+      console.error('[Maintenance] Consolidation error:', err.message);
+    }
 
-  const elapsed = Date.now() - start;
-  console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
-  return results;
+    const elapsed = Date.now() - start;
+    console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
+    return results;
+  } finally {
+    maintenanceRunning = false;
+  }
 }
 
 // Significance-gated consolidation:
@@ -107,11 +117,10 @@ const CONSOLIDATION_MAX_IMPORTANCE = 0.5;
 async function consolidateMemories(memories) {
   if (!isEmbeddingReady() || memories.length < CONSOLIDATION_MIN_CLUSTER) return 0;
 
-  // Group by entity (memories with same entity are candidates)
   const byEntity = new Map();
   for (const m of memories) {
-    if (m.importance >= CONSOLIDATION_MAX_IMPORTANCE) continue; // skip already-important
-    if (!m.entity || !m.embedding) continue; // need both for clustering
+    if (m.importance >= CONSOLIDATION_MAX_IMPORTANCE) continue;
+    if (!m.entity || !m.embedding) continue;
     const key = m.entity;
     if (!byEntity.has(key)) byEntity.set(key, []);
     byEntity.get(key).push(m);
@@ -119,10 +128,13 @@ async function consolidateMemories(memories) {
 
   let consolidatedCount = 0;
 
+  // Pre-prepare statements outside the loop
+  const updateSourceIds = db.prepare('UPDATE memories SET source_memory_ids = ? WHERE id = ?');
+  const setValidUntil = db.prepare('UPDATE memories SET valid_until = ? WHERE id = ?');
+
   for (const [entity, entityMems] of byEntity) {
     if (entityMems.length < CONSOLIDATION_MIN_CLUSTER) continue;
 
-    // Find clusters via greedy single-link clustering
     const visited = new Set();
     const clusters = [];
 
@@ -148,17 +160,12 @@ async function consolidateMemories(memories) {
       }
     }
 
-    // Consolidate each cluster
     for (const cluster of clusters) {
       try {
-        // Sort by created_at to get oldest first
         cluster.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-        // Create consolidated summary text
         const texts = cluster.map(m => m.text);
         const summaryText = texts.join(' | ');
 
-        // Determine the best type from the cluster (most specific wins)
         const typePriority = ['profile', 'preference', 'setup', 'project', 'goal', 'pattern', 'entity', 'learning', 'issue', 'fact', 'event', 'request'];
         let bestType = 'fact';
         for (const m of cluster) {
@@ -167,7 +174,6 @@ async function consolidateMemories(memories) {
           }
         }
 
-        // Store the consolidated memory with higher importance
         const newImportance = Math.min(1.0, Math.max(...cluster.map(m => m.importance)) + 0.2);
         const clusterIds = cluster.map(m => m.id);
 
@@ -195,15 +201,10 @@ async function consolidateMemories(memories) {
           attribute: cluster[0].attribute || '',
         });
 
-        // Track source memory IDs
-        const updateSourceIds = db.prepare('UPDATE memories SET source_memory_ids = ? WHERE id = ?');
         updateSourceIds.run(JSON.stringify(clusterIds), newId);
 
-        // Mark originals as superseded by consolidated
         for (const m of cluster) {
           updateMemoryStatus(m.id, 'superseded', newId);
-          // Set valid_until on superseded
-          const setValidUntil = db.prepare('UPDATE memories SET valid_until = ? WHERE id = ?');
           setValidUntil.run(new Date().toISOString(), m.id);
         }
 
@@ -220,20 +221,25 @@ async function consolidateMemories(memories) {
 
 export function startMaintenanceCron(intervalMs = RUN_INTERVAL_MS) {
   if (maintenanceInterval) clearInterval(maintenanceInterval);
+  if (initialTimeout) clearTimeout(initialTimeout);
 
   // Run first maintenance after 30s (give server time to load)
-  setTimeout(async () => {
-    await runMaintenance();
+  initialTimeout = setTimeout(() => {
+    runMaintenance().catch(err => console.error('[Maintenance] Initial run error:', err.message));
   }, 30000);
 
-  maintenanceInterval = setInterval(async () => {
-    await runMaintenance();
+  maintenanceInterval = setInterval(() => {
+    runMaintenance().catch(err => console.error('[Maintenance] Cron run error:', err.message));
   }, intervalMs);
 
   console.log(`[Maintenance] Cron started: every ${Math.round(intervalMs / 1000)}s`);
 }
 
 export function stopMaintenanceCron() {
+  if (initialTimeout) {
+    clearTimeout(initialTimeout);
+    initialTimeout = null;
+  }
   if (maintenanceInterval) {
     clearInterval(maintenanceInterval);
     maintenanceInterval = null;

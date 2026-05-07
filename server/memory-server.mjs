@@ -110,12 +110,17 @@ function applyRecencyScore(results) {
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
   return results.map(r => {
-    const createdAt = new Date(r.created_at).getTime();
+    const ts = r.created_at ? new Date(r.created_at).getTime() : now;
+    const createdAt = Number.isFinite(ts) ? ts : now;
     const ageMs = Math.max(0, now - createdAt);
     const recallCount = r.recall_count ?? 0;
     const importance = r.importance ?? 0.5;
     const type = r.type || 'general';
     const halfLifeDays = getEffectiveHalfLife(type, importance, recallCount);
+    if (!Number.isFinite(halfLifeDays) || halfLifeDays <= 0) {
+      // Invalid half-life — treat as no decay
+      return { ...r, score: r.score };
+    }
     if (halfLifeDays === Infinity) {
       // Profile/identity memories never decay — recency always 1.0
       const reinforcement = 1 - Math.exp(-recallCount / 3);
@@ -298,8 +303,9 @@ app.get("/memory/search", async (req, res) => {
 
         if (embeddingResults && embeddingResults.length > 0 && method === "embedding") {
           searchResults = embeddingResults.slice(0, limitNum);
+          searchMethod = "embedding";
         } else if ((method === "hybrid" || !method) && embeddingResults && embeddingResults.length > 0) {
-          const allFts = queries.map(qq => normalizeFtsScore(searchMemories({ query: qq, limit: limitNum * 3 })));
+          const allFts = queries.map(qq => applyRecencyScore(normalizeFtsScore(searchMemories({ query: qq, limit: limitNum * 3 }))));
           const ftsResults = allFts.length > 1 ? reciprocalRankFusion(allFts) : allFts[0];
           searchResults = reciprocalRankFusion([embeddingResults, ftsResults]).slice(0, limitNum);
           searchMethod = "hybrid" + (queries.length > 1 ? "+expanded" : "");
@@ -336,19 +342,25 @@ app.get('/memory/stats', (_req, res) => {
 });
 
 app.get('/memory/session/:sessionId', (req, res) => {
+  try {
   const { limit } = req.query;
   res.json({ results: getSessionMemories(req.params.sessionId, limit ? parseInt(limit) : 50) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/memory/type/:type', (req, res) => {
+  try {
   const { limit } = req.query;
   res.json({ results: getMemoriesByType(req.params.type, limit ? parseInt(limit) : 50) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/memory/:id', (req, res) => {
+  try {
   const mem = getMemory(parseInt(req.params.id));
   if (!mem) return res.status(404).json({ error: 'not found' });
   res.json(mem);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/memory/:id', (req, res) => {
@@ -367,7 +379,9 @@ app.delete('/memory/:id', (req, res) => {
 
 app.post('/memory/supersede', (req, res) => {
   try {
-    const { old_id, new_id, reason } = req.body;
+    const old_id = parseInt(req.body.old_id);
+  const new_id = parseInt(req.body.new_id);
+  const { reason } = req.body;
     if (!old_id || !new_id) return res.status(400).json({ error: 'old_id and new_id required' });
 
     const oldMem = getMemory(old_id);
@@ -729,4 +743,8 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err.message);
   shutdown('UNCAUGHT_EXCEPTION');
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason instanceof Error ? reason.message : reason);
 });
