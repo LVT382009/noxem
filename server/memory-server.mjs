@@ -21,6 +21,48 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
+// Simple sliding-window rate limiter (in-memory, per-IP)
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '120');
+const rateLimitBuckets = new Map();
+function rateLimiter(req, res, next) {
+  if (RATE_LIMIT_MAX <= 0) return next();
+  const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+  const now = Date.now();
+  let bucket = rateLimitBuckets.get(ip);
+  if (!bucket || now - bucket.start > RATE_LIMIT_WINDOW_MS) {
+    bucket = { start: now, count: 0 };
+    rateLimitBuckets.set(ip, bucket);
+  }
+  bucket.count++;
+  if (bucket.count > RATE_LIMIT_MAX) {
+    return res.status(429).json({ error: 'Rate limit exceeded', retry_after_ms: RATE_LIMIT_WINDOW_MS - (now - bucket.start) });
+  }
+  next();
+}
+// Periodic cleanup of stale rate limit buckets
+setInterval(() => {
+  const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS * 2;
+  for (const [ip, bucket] of rateLimitBuckets) {
+    if (bucket.start < cutoff) rateLimitBuckets.delete(ip);
+  }
+}, 120_000);
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    const level = res.statusCode >= 500 ? 'ERROR' : res.statusCode >= 400 ? 'WARN' : 'INFO';
+    if (process.env.LOG_LEVEL !== 'silent') {
+      console.log(`[${level}] ${req.method} ${req.path} ${res.statusCode} ${ms}ms`);
+    }
+  });
+  next();
+});
+
+app.use(rateLimiter);
+
 const PORT = process.env.MEMORY_PORT || 3001;
 const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
 const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false';
@@ -721,6 +763,22 @@ app.post('/memory/maintenance/run', async (req, res) => {
 app.post('/memory/maintenance/stop', (_req, res) => {
   stopMaintenanceCron();
   res.json({ ok: true });
+});
+
+// Purge low-importance old memories
+const AUTO_PURGE_DAYS = parseInt(process.env.AUTO_PURGE_DAYS || '365');
+app.post('/memory/purge', (_req, res) => {
+  try {
+    const before = getMemoryStats();
+    const purgeStmt = db.prepare(
+      `DELETE FROM memories WHERE importance < 0.3 AND recall_count = 0 AND created_at < datetime('now', '-' || ? || ' days') AND status = 'active'`
+    );
+    const result = purgeStmt.run(AUTO_PURGE_DAYS);
+    const after = getMemoryStats();
+    res.json({ ok: true, purged: result.changes, before: before.active, after: after.active });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ─── Start ────────────────────────────────────────────────────────

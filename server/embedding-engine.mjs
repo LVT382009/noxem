@@ -5,6 +5,7 @@ const DTYPE = process.env.EMBEDDING_DTYPE || 'q8'; // q8: 68.13 vs fp32: 68.36 o
 const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '256'); // MRL 256d: only 1.5% loss vs 768d, 3x less storage
 const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || './.cache/embedding';
 const MAX_RETRIES = parseInt(process.env.EMBEDDING_LOAD_RETRIES || '2');
+const LOAD_TIMEOUT_MS = parseInt(process.env.EMBEDDING_LOAD_TIMEOUT || '300000'); // 5 min default
 const SIMILARITY_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
 const CONTRADICTION_THRESHOLD = parseFloat(process.env.CONTRADICT_THRESHOLD || '0.80');
 
@@ -43,13 +44,19 @@ export async function initEmbeddingEngine() {
 
         console.log(`Loading EmbeddingGemma 300M (${DTYPE}, dim=${EMBED_DIM})...`);
         const start = Date.now();
-        [tokenizer, model] = await Promise.all([
-          AutoTokenizer.from_pretrained(MODEL_ID, { cache_dir: EMBED_CACHE_DIR }),
-          AutoModel.from_pretrained(MODEL_ID, {
-            dtype: DTYPE,
-            cache_dir: EMBED_CACHE_DIR,
-          }),
+        const loadWithTimeout = Promise.race([
+          Promise.all([
+            AutoTokenizer.from_pretrained(MODEL_ID, { cache_dir: EMBED_CACHE_DIR }),
+            AutoModel.from_pretrained(MODEL_ID, {
+              dtype: DTYPE,
+              cache_dir: EMBED_CACHE_DIR,
+            }),
+          ]),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`Model load timed out after ${LOAD_TIMEOUT_MS / 1000}s`)), LOAD_TIMEOUT_MS)
+          ),
         ]);
+        [tokenizer, model] = await loadWithTimeout;
         modelReady = true;
         loadError = null;
         console.log(`Embedding model ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
@@ -57,6 +64,11 @@ export async function initEmbeddingEngine() {
       } catch (err) {
         loadError = err;
         console.error(`Embedding model load attempt ${attempt + 1} failed: ${err.message}`);
+      if (err.message.includes('fetch') || err.message.includes('network') || err.message.includes('ECONNREFUSED')) {
+        console.error('  This may be a network issue. Check internet connection and try EMBEDDING_CLEAR_CACHE_ON_RETRY=true');
+      } else if (err.message.includes('timed out')) {
+        console.error('  Model download took too long. Increase EMBEDDING_LOAD_TIMEOUT or check network speed.');
+      }
       }
     }
     console.error('All embedding model load attempts failed. Vector search will be unavailable.');
