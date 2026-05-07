@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix } from './embedding-engine.mjs';
 import { isVecReady } from './vector-index.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
@@ -8,6 +8,7 @@ import {
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
   deleteMemory, deleteInvalid, incrementRecallCounts, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
+  getMemoriesByEntityAttr, db,
 } from './memory-store.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
@@ -22,6 +23,31 @@ const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
 const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false';
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
+
+// Type-specific decay half-lives (days) — profile never decays, events decay fast
+const DECAY_BY_TYPE = {
+  profile: Infinity,   // Identity — never decay
+  preference: 180,     // Preferences change slowly (6 months)
+  setup: 120,          // Tech stack changes quarterly
+  project: 60,         // Project context changes monthly
+  goal: 45,            // Goals shift frequently
+  fact: 30,            // Generic facts
+  learning: 45,        // Learning persists
+  pattern: 60,         // Habits are stable
+  entity: 90,          // Entities are relatively stable
+  issue: 14,           // Issues get resolved
+  event: 7,            // Events are time-sensitive
+  request: 3,          // Requests are ephemeral
+  general: 30,         // Default
+};
+
+function getEffectiveHalfLife(type, importance, recallCount) {
+  const baseHalfLife = DECAY_BY_TYPE[type] ?? DECAY_HALF_LIFE_DAYS;
+  if (baseHalfLife === Infinity) return Infinity;
+  const importanceMod = 0.5 + importance;  // 0.5-1.5x multiplier
+  const recallMod = 1 + 0.3 * recallCount; // SRS: each recall extends 30%
+  return baseHalfLife * importanceMod * recallMod;
+}
 
 // ─── Startup ─────────────────────────────────────────────────────
 let startupComplete = false;
@@ -75,17 +101,33 @@ function normalizeFtsScore(results) {
   });
 }
 
-// Recency-weighted scoring: blend similarity with recency
-// Formula: final_score = similarity * (0.7 + 0.3 * recency_weight)
-// recency_weight = 0.5 ** (age_days / half_life_days)
+// Recency + importance + spaced-repetition weighted scoring
+// Formula: final_score = similarity * (0.4 + 0.25 * recency_weight + 0.2 * importance + 0.15 * reinforcement)
+// recency_weight = 0.5 ** (age_days / effective_half_life) — type-specific half-lives
+// effective_half_life = type_base * (0.5 + importance) * (1 + 0.3 * recall_count)
+// reinforcement = 1 - e^(-recall_count / 3) — exponential approach to 1.0
 function applyRecencyScore(results) {
   const now = Date.now();
-  const halfLifeMs = DECAY_HALF_LIFE_DAYS * 24 * 60 * 60 * 1000;
+  const dayMs = 24 * 60 * 60 * 1000;
   return results.map(r => {
     const createdAt = new Date(r.created_at).getTime();
     const ageMs = Math.max(0, now - createdAt);
+    const recallCount = r.recall_count ?? 0;
+    const importance = r.importance ?? 0.5;
+    const type = r.type || 'general';
+    const halfLifeDays = getEffectiveHalfLife(type, importance, recallCount);
+    if (halfLifeDays === Infinity) {
+      // Profile/identity memories never decay — recency always 1.0
+      const reinforcement = 1 - Math.exp(-recallCount / 3);
+      const boosted = r.score * (0.4 + 0.25 + 0.2 * importance + 0.15 * reinforcement);
+      return { ...r, score: Math.round(boosted * 1000) / 1000 };
+    }
+    const halfLifeMs = halfLifeDays * dayMs;
     const recencyWeight = Math.pow(0.5, ageMs / halfLifeMs);
-    const boosted = r.score * (0.7 + 0.3 * recencyWeight);
+    // Exponential reinforcement curve: asymptotically approaches 1.0
+    // At 1 recall: 0.28, at 3: 0.63, at 6: 0.86, at 10: 0.96
+    const reinforcement = 1 - Math.exp(-recallCount / 3);
+    const boosted = r.score * (0.4 + 0.25 * recencyWeight + 0.2 * importance + 0.15 * reinforcement);
     return { ...r, score: Math.round(boosted * 1000) / 1000 };
   });
 }
@@ -120,11 +162,16 @@ app.post('/memory/store', async (req, res) => {
     if (!text || !text.trim()) return res.status(400).json({ error: 'text required' });
 
     const catType = type || categorizeText(text);
+    const trimmed = text.trim();
+    const { entity, attribute } = extractEntityAttribute(trimmed);
+    const contextPrefix = generateContextPrefix(trimmed, catType, session_id);
     let embedding = null;
 
     if (isEmbeddingReady()) {
       try {
-        const vec = await embed(text);
+        // Contextual enrichment: prepend context prefix for better retrieval
+        const embedText = contextPrefix ? `${contextPrefix} ${trimmed}` : trimmed;
+        const vec = await embed(embedText);
         embedding = new Float32Array(vec).buffer;
       } catch { /* proceed without embedding */ }
     }
@@ -132,9 +179,13 @@ app.post('/memory/store', async (req, res) => {
     const id = storeMemory({
       session_id: session_id || '',
       type: catType,
-      text: text.trim(),
+      text: trimmed,
       embedding,
-      metadata: metadata || {},
+      metadata: { ...(metadata || {}), source: metadata?.source || "api", extraction_method: metadata?.extraction_method || "store_api", origin_session_id: session_id || "", stored_at: new Date().toISOString() },
+      importance: estimateImportance(trimmed, catType),
+      context_prefix: contextPrefix,
+      entity,
+      attribute,
     });
 
     res.json({ ok: true, id });
@@ -148,19 +199,32 @@ app.post('/memory/store-batch', async (req, res) => {
     const { memories } = req.body;
     if (!memories?.length) return res.status(400).json({ error: 'memories array required' });
 
+    const enrichedMemories = memories.map(m => {
+      const catType = m.type || categorizeText(m.text);
+      const trimmed = m.text.trim();
+      const { entity, attribute } = extractEntityAttribute(trimmed);
+      const contextPrefix = generateContextPrefix(trimmed, catType, m.session_id);
+      return { ...m, catType, trimmed, entity, attribute, contextPrefix };
+    });
+
     let embeddings = null;
     if (isEmbeddingReady()) {
       try {
-        embeddings = await embedBatch(memories.map(m => m.text));
+        const embedTexts = enrichedMemories.map(m => m.contextPrefix ? m.contextPrefix + " " + m.trimmed : m.trimmed);
+        embeddings = await embedBatch(embedTexts);
       } catch { /* proceed */ }
     }
 
-    const items = memories.map((m, i) => ({
+    const items = enrichedMemories.map((m, i) => ({
       session_id: m.session_id || '',
-      type: m.type || categorizeText(m.text),
-      text: m.text.trim(),
+      type: m.catType,
+      text: m.trimmed,
       embedding: embeddings ? new Float32Array(embeddings[i]).buffer : null,
-      metadata: m.metadata || {},
+      metadata: { ...(m.metadata || {}), source: m.metadata?.source || "api", extraction_method: m.metadata?.extraction_method || "store_batch_api" },
+      importance: estimateImportance(m.trimmed, m.catType),
+      context_prefix: m.contextPrefix,
+      entity: m.entity,
+      attribute: m.attribute,
     }));
 
     const ids = storeMemories(items);
@@ -249,6 +313,100 @@ app.get('/memory/:id', (req, res) => {
   res.json(mem);
 });
 
+// ─── Provenance & Lineage ──────────────────────────────────────
+
+app.post('/memory/supersede', (req, res) => {
+  try {
+    const { old_id, new_id, reason } = req.body;
+    if (!old_id || !new_id) return res.status(400).json({ error: 'old_id and new_id required' });
+
+    const oldMem = getMemory(old_id);
+    if (!oldMem) return res.status(404).json({ error: `memory ${old_id} not found` });
+
+    // Mark old as superseded by new
+    updateMemoryStatus(old_id, 'superseded', new_id);
+
+    // Add provenance to new memory metadata
+    const newMem = getMemory(new_id);
+    if (newMem) {
+      const oldMeta = JSON.parse(oldMem.metadata || '{}');
+      const newMeta = JSON.parse(newMem.metadata || '{}');
+      newMeta.supersedes = old_id;
+      newMeta.supersede_reason = reason || 'contradiction';
+      newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
+      const updateMeta = db.prepare('UPDATE memories SET metadata = ? WHERE id = ?');
+      updateMeta.run(JSON.stringify(newMeta), new_id);
+    }
+
+    res.json({ ok: true, old_id, new_id, status: 'superseded' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/memory/:id/lineage', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const lineage = [];
+    let current = getMemory(id);
+    while (current) {
+      const meta = JSON.parse(current.metadata || '{}');
+      lineage.push({
+        id: current.id,
+        text: current.text,
+        type: current.type,
+        status: current.status,
+        created_at: current.created_at,
+        source: meta.source,
+        extraction_method: meta.extraction_method,
+        origin_session_id: meta.origin_session_id,
+        derived_from: meta.derived_from || [],
+        supersedes: meta.supersedes || null,
+      });
+      if (current.superseded_by) {
+        current = getMemory(current.superseded_by);
+      } else {
+        break;
+      }
+    }
+    res.json({ ok: true, lineage });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Contradiction Detection ────────────────────────────────────
+
+app.post('/memory/contradiction-check', (req, res) => {
+try {
+  const { entity, attribute, text } = req.body;
+  if (!entity || !attribute) return res.status(400).json({ error: 'entity and attribute required' });
+
+  const existing = getMemoriesByEntityAttr(entity, attribute);
+  if (!existing.length) return res.json({ ok: true, conflicts: [] });
+
+  // Check if any existing memories with same entity+attribute might contradict the new one
+  const conflicts = existing.filter(m => {
+    // Simple heuristic: same entity+attribute = potential conflict
+    // More precise check: compare the "value" part
+    const lower = m.text.toLowerCase();
+    const newLower = (text || '').toLowerCase();
+    // If both express preferences, check if values differ
+    const prefVerbs = /(?:prefer|like|love|hate|dislike|use|using|favor|choose)\s+(\S+)/i;
+    const existingMatch = lower.match(prefVerbs);
+    const newMatch = newLower.match(prefVerbs);
+    if (existingMatch && newMatch && existingMatch[1] !== newMatch[1]) {
+      return true; // Different values for same entity+attribute
+    }
+    return false;
+  });
+
+  res.json({ ok: true, conflicts: conflicts.map(m => ({ id: m.id, text: m.text, type: m.type, created_at: m.created_at })) });
+} catch (err) {
+  res.status(500).json({ error: err.message });
+}
+});
+
 // ─── Sync Turn (called by provider.sync_turn) ──────────────────
 
 // Skip short/greeting messages that aren't worth storing
@@ -277,20 +435,32 @@ app.post('/memory/sync', async (req, res) => {
     // Store user message — skip trivial/greeting messages
     if (user_message?.trim() && !shouldSkipMessage(user_message)) {
       const type = categorizeText(user_message);
+      const userText = user_message.trim().substring(0, 500);
+      const { entity: userEntity, attribute: userAttr } = extractEntityAttribute(userText);
+      const userPrefix = generateContextPrefix(userText, type, session_id);
       let embedding = null;
       if (isEmbeddingReady()) {
-        try { embedding = new Float32Array(await embed(user_message)).buffer; } catch {}
+        try {
+          const embedText = userPrefix ? userPrefix + " " + userText : userText;
+          embedding = new Float32Array(await embed(embedText)).buffer;
+        } catch {}
       }
-      memories.push({ session_id, type, text: user_message.trim().substring(0, 500), embedding, metadata: { source: 'user', timestamp: now } });
+      memories.push({ session_id, type, text: userText, embedding, metadata: { source: "user", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr });
     }
 
     // Store assistant response — skip very short responses
-    if (assistant_response?.trim() && !shouldSkipMessage(assistant_response)) {
+      if (assistant_response?.trim() && !shouldSkipMessage(assistant_response)) {
+      const asstText = assistant_response.trim().substring(0, 500);
+      const { entity: asstEntity, attribute: asstAttr } = extractEntityAttribute(asstText);
+      const asstPrefix = generateContextPrefix(asstText, "fact", session_id);
       let embedding = null;
       if (isEmbeddingReady()) {
-        try { embedding = new Float32Array(await embed(assistant_response.substring(0, 500))).buffer; } catch {}
+        try {
+          const embedText = asstPrefix ? asstPrefix + " " + asstText : asstText;
+          embedding = new Float32Array(await embed(embedText)).buffer;
+        } catch {}
       }
-      memories.push({ session_id, type: 'fact', text: assistant_response.trim().substring(0, 500), embedding, metadata: { source: 'assistant', timestamp: now } });
+      memories.push({ session_id, type: "fact", text: asstText, embedding, metadata: { source: "assistant", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr });
     }
 
     const ids = memories.length > 0 ? storeMemories(memories) : [];
@@ -352,7 +522,7 @@ app.post('/memory/session/end', async (req, res) => {
         if (isEmbeddingReady()) {
           try { embedding = new Float32Array(await embed(m.text)).buffer; } catch {}
         }
-        const id = storeMemory({ session_id, type: m.type, text: m.text, embedding });
+        const id = storeMemory({ session_id, type: m.type, text: m.text, embedding, importance: estimateImportance(m.text, m.type) });
         ids.push(id);
       }
     }
@@ -434,7 +604,7 @@ app.post('/memory/extract', async (req, res) => {
       if (isEmbeddingReady()) {
         try { embedding = new Float32Array(await embed(m.text)).buffer; } catch {}
       }
-      const id = storeMemory({ session_id, type: m.type, text: m.text, embedding });
+      const id = storeMemory({ session_id, type: m.type, text: m.text, embedding, importance: estimateImportance(m.text, m.type) });
       ids.push(id);
     }
 

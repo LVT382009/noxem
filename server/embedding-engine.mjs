@@ -130,6 +130,8 @@ export function searchByEmbedding(queryEmbedding, storedMemories, topK = 5) {
       type: m.type,
       session_id: m.session_id,
       created_at: m.created_at,
+      importance: m.importance,
+      recall_count: m.recall_count,
       score: cosineSimilarity(queryEmbedding, m.embedding),
     }))
     .filter(m => m.score > 0.3)
@@ -205,6 +207,38 @@ export function categorizeText(text) {
   return 'fact';
 }
 
+// Estimate memory importance (0-1) based on content analysis
+// Used for retrieval weighting and consolidation priority
+export function estimateImportance(text, type) {
+  const lower = text.toLowerCase();
+  let importance = 0.5; // baseline
+
+  // Type-based defaults
+  if (type === 'profile') importance = 0.9;     // who the user is — critical
+  if (type === 'preference') importance = 0.8;  // user preferences — high
+  if (type === 'setup') importance = 0.8;       // tech stack — high
+  if (type === 'project') importance = 0.75;    // project context — high
+  if (type === 'goal') importance = 0.7;        // goals — medium-high
+  if (type === 'issue') importance = 0.6;       // issues — medium (may get resolved)
+  if (type === 'pattern') importance = 0.65;    // habits — medium
+  if (type === 'fact') importance = 0.5;        // generic facts — baseline
+  if (type === 'event') importance = 0.4;       // events — decay fast
+  if (type === 'request') importance = 0.3;     // requests — typically ephemeral
+  if (type === 'learning') importance = 0.55;   // learning — medium
+
+  // Boost for critical indicators
+  if (/critical|essential|important|must|always|never|deadline|urgent/i.test(lower)) importance = Math.min(1.0, importance + 0.15);
+  if (/password|secret|api.key|credential|token|auth/i.test(lower)) importance = Math.min(1.0, importance + 0.2); // security-critical
+  if (/my name|i am |called |role |job title/i.test(lower)) importance = Math.min(1.0, importance + 0.1); // identity
+
+  // Reduce for trivial indicators
+  if (text.trim().length < 30) importance = Math.max(0.1, importance - 0.15);  // too short to be substantial
+  if (/^(ok|okay|sure|yes|no|done|thanks|hi|hello|bye|good)\b/i.test(lower)) importance = 0.1; // trivial
+  if (/maybe|might|perhaps|possibly/i.test(lower)) importance = Math.max(0.1, importance - 0.1); // uncertain
+
+  return Math.round(Math.max(0.1, Math.min(1.0, importance)) * 100) / 100;
+}
+
 // Maximal Marginal Relevance: diversify results by penalizing similarity to already-selected items
 // lambda: 0.7 = relevance-heavy, 0.5 = balanced, 0.3 = diversity-heavy
 export function mmrRerank(queryEmbedding, candidates, topK = 5, lambda = 0.7) {
@@ -245,6 +279,62 @@ export function mmrRerank(queryEmbedding, candidates, topK = 5, lambda = 0.7) {
   }
 
   return selected;
+}
+
+// Extract entity and attribute from text for contradiction detection
+// Returns { entity, attribute } — e.g. "I prefer dark mode" → { entity: "user", attribute: "prefers_dark_mode" }
+export function extractEntityAttribute(text) {
+  const lower = text.toLowerCase();
+
+  // Common patterns for entity-attribute extraction
+  // 1. Preferences: "I prefer X" / "I like X" / "I use X"
+  const prefMatch = lower.match(/(?:i |user )?(prefer|like|love|hate|dislike|use|using|favor|choose|chose)\s+(.+?)(?:\s+(?:for|when|while|because|over|instead|than|rather|$))/i);
+  if (prefMatch) {
+    const verb = prefMatch[1];
+    const object = prefMatch[2].trim().replace(/[.!?,;]+$/, '');
+    return { entity: 'user', attribute: `${verb}_${object}`.replace(/\s+/g, '_') };
+  }
+
+  // 2. Identity: "My name is X" / "I am X" / "I work at X"
+  const idMatch = lower.match(/(?:my name is|i'?m |i am |i work at|i work for|i'?m at)\s+(.+?)(?:\s*[.!?,;]|\s*$)/i);
+  if (idMatch) {
+    const value = idMatch[1].trim();
+    if (/name|called/i.test(idMatch[0])) return { entity: 'user', attribute: 'name' };
+    if (/work|job|employ/i.test(idMatch[0])) return { entity: 'user', attribute: 'employer' };
+    return { entity: 'user', attribute: 'identity' };
+  }
+
+  // 3. Tech stack: "I use React" / "running Node 22"
+  const techMatch = lower.match(/(?:use|using|running|built with|running on|stack is)\s+(\S+)/i);
+  if (techMatch) {
+    return { entity: 'user', attribute: `tech_${techMatch[1]}`.toLowerCase() };
+  }
+
+  // 4. Project: "building X" / "working on X"
+  const projMatch = lower.match(/(?:building|working on|creating|developing|making)\s+(.+?)(?:\s+(?:with|using|for|called|named|\.|!|\?|,|;|$))/i);
+  if (projMatch) {
+    return { entity: 'user', attribute: `project_${projMatch[1].trim().replace(/\s+/g, '_')}` };
+  }
+
+  return { entity: '', attribute: '' };
+}
+
+// Generate a context prefix for contextual retrieval (Anthropic technique)
+// Prepends a short anchor to the embedding input so the embedding captures origin context
+export function generateContextPrefix(text, type, session_id = '') {
+  const parts = [];
+  if (type !== 'fact' && type !== 'general') {
+    parts.push(type.charAt(0).toUpperCase() + type.slice(1));
+  }
+  // Add entity context from text
+  const entAttr = extractEntityAttribute(text);
+  if (entAttr.entity && entAttr.attribute) {
+    parts.push(`about ${entAttr.entity}'s ${entAttr.attribute.replace(/_/g, ' ')}`);
+  }
+  if (session_id) {
+    parts.push(`in session ${session_id.slice(0, 8)}`);
+  }
+  return parts.length > 0 ? parts.join(', ') + ':' : '';
 }
 
 export { cosineSimilarity, normalize, SIMILARITY_THRESHOLD, CONTRADICTION_THRESHOLD };

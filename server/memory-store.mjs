@@ -48,17 +48,21 @@ CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 `);
 
-// Schema migrations — add recall tracking columns to existing databases
+// Schema migrations — add tracking columns to existing databases
 try { db.exec(`ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE memories ADD COLUMN last_recalled_at TEXT`); } catch {}
 try { db.exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN context_prefix TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN entity TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN attribute TEXT NOT NULL DEFAULT ''`); } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(entity, attribute)`); } catch {}
 
 // Initialize sqlite-vec for native KNN (optional — falls back to JS cosine)
 initVectorIndex(db).catch(() => {});
 
 const insert = db.prepare(
-  `INSERT INTO memories (session_id, type, text, embedding, metadata)
-   VALUES (@session_id, @type, @text, @embedding, @metadata)`
+  `INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute)
+   VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute)`
 );
 
 const insertTx = db.transaction((items) => {
@@ -100,9 +104,10 @@ const getBySessionBefore = db.prepare(`SELECT * FROM memories WHERE session_id =
 const countAll = db.prepare(`SELECT status, type, COUNT(*) as count FROM memories GROUP BY status, type`);
 const countActive = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE status = 'active'`);
 const getSuperseded = db.prepare(`SELECT * FROM memories WHERE status = 'superseded'`);
+const getByEntityAttr = db.prepare(`SELECT * FROM memories WHERE entity = ? AND attribute = ? AND status = 'active' ORDER BY created_at DESC`);
 
 const searchFts = db.prepare(`
-  SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at,
+  SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count,
          rank as score
   FROM memories_fts f
   JOIN memories m ON m.id = f.rowid
@@ -112,7 +117,7 @@ const searchFts = db.prepare(`
 `);
 
 const searchRecent = db.prepare(`
-  SELECT id, session_id, type, text, status, metadata, created_at
+  SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count
   FROM memories
   WHERE status = 'active' AND text LIKE @query
   ORDER BY created_at DESC
@@ -120,7 +125,7 @@ const searchRecent = db.prepare(`
 `);
 
 const getActiveWithEmbeddings = db.prepare(
-  `SELECT id, type, text, embedding, created_at FROM memories WHERE status = 'active' AND embedding IS NOT NULL`
+  `SELECT id, type, text, embedding, created_at, importance, recall_count FROM memories WHERE status = 'active' AND embedding IS NOT NULL`
 );
 
 const getAllWithEmbeddings = db.prepare(
@@ -141,13 +146,17 @@ function bufferToFloat32(buf) {
   return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / Float32Array.BYTES_PER_ELEMENT));
 }
 
-export function storeMemory({ session_id, type, text, embedding = null, metadata = {} }) {
+export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '' }) {
   const result = insert.run({
     session_id: session_id || '',
     type: type || 'general',
     text: text,
     embedding: embedding,
     metadata: JSON.stringify(metadata),
+    importance,
+    context_prefix,
+    entity,
+    attribute,
   });
   const id = result.lastInsertRowid;
   // Update vector index if embedding provided
@@ -167,6 +176,10 @@ export function storeMemories(items) {
     text: m.text,
     embedding: m.embedding || null,
     metadata: JSON.stringify(m.metadata || {}),
+    importance: m.importance ?? 0.5,
+    context_prefix: m.context_prefix || '',
+    entity: m.entity || '',
+    attribute: m.attribute || '',
   }));
   return insertTx(prepared);
 }
@@ -277,10 +290,17 @@ export function vectorKnnSearch(queryEmbedding, topK = 5) {
       text: mem.text,
       type: mem.type,
       session_id: mem.session_id,
+      importance: mem.importance,
+      recall_count: mem.recall_count,
       created_at: mem.created_at,
       score: h.score,
     };
   }).filter(Boolean);
+}
+
+export function getMemoriesByEntityAttr(entity, attribute) {
+  if (!entity || !attribute) return [];
+  return getByEntityAttr.all(entity, attribute);
 }
 
 export { db };
