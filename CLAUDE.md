@@ -114,13 +114,18 @@ For short queries (<6 words), Gemma 4 generates 2 alternate phrasings:
 - `POST /memory/contradiction-check` — Find memories with same entity+attribute that express different values
 
 ### Filtering
-- `GET /memory/session/:sessionId` — Get memories by session
-- `GET /memory/type/:type` — Get memories by type
+- `GET /memory/session/:sessionId?limit=N&offset=N` — Get memories by session (paginated)
+- `GET /memory/type/:type?limit=N&offset=N` — Get memories by type (paginated)
 
 ### Maintenance
 - `POST /memory/reembed` — Backfill embeddings for memories missing them
 - `POST /memory/maintenance/run` — Run dedup + contradiction + consolidation + archive cycle
 - `POST /memory/maintenance/stop` — Stop maintenance cron
+- `POST /memory/purge` — Delete low-importance old memories (importance <0.3, 0 recalls, older than AUTO_PURGE_DAYS)
+
+### Export / Import
+- `GET /memory/export` — Export all active memories as JSON (backup)
+- `POST /memory/import` — Import memories from JSON (restore/migration)
 
 ### Advisor
 - `POST /memory/advisor/compress` — Pre-compression context recovery
@@ -131,7 +136,7 @@ For short queries (<6 words), Gemma 4 generates 2 alternate phrasings:
 - `GET /search/web?q=...` — DuckDuckGo search
 
 ### Health
-- `GET /health` — Server health + feature status
+- `GET /health` — Server health + uptime + memory stats + gemma4 status + feature flags
 - `GET /ready` — Startup readiness check
 
 ## Python Plugin Tools
@@ -176,6 +181,7 @@ cd server && bash run-test.sh
 | `server/memory-maintenance.mjs` | Cron: dedup/contradiction/consolidation/archive |
 | `server/gemma4-server.mjs` | Gemma 4 model server (retry + fallback + graceful shutdown) |
 | `server/run-test.sh` | Integration test script (34 tests, WSL compatible) |
+| `server/run-embedding-test.sh` | Embedding E2E test script (full vector pipeline) |
 | `hooks/pre-llm-memory.mjs` | Shell hook: prefetch memories before LLM call |
 | `hooks/post-llm-extract.mjs` | Shell hook: extract memories after LLM response |
 
@@ -208,7 +214,7 @@ CREATE TABLE memories (
 CREATE VIRTUAL TABLE memories_fts USING fts5(text, content='memories', content_rowid='id');
 
 -- Vector index (optional, via sqlite-vec)
-CREATE VIRTUAL TABLE memory_vecs USING vec0(embedding float[256]);
+CREATE VIRTUAL TABLE memory_vecs USING vec0(embedding float[256] distance_metric=cosine);
 
 -- Indexes
 CREATE INDEX idx_memories_session ON memories(session_id);
@@ -238,3 +244,9 @@ CREATE INDEX idx_memories_entity_attr ON memories(entity, attribute);
 | `MEMORY_DB_DIR` | `./data` | SQLite database directory |
 | `MEMORY_MAX_RESULTS` | `5` | Default search result limit |
 | `MEMORY_MAX_TOKENS` | `2000` | Token budget for prefetch injection |
+| `RATE_LIMIT_MAX` | `120` | Max requests per minute per IP (0 = disable) |
+| `AUTO_PURGE_DAYS` | `365` | Days after which low-importance memories are purged |
+| `CORS_ORIGIN` | `http://localhost:* http://127.0.0.1:*` | CORS allowed origins |
+| `EMBEDDING_LOAD_TIMEOUT` | `300000` | Embedding model load timeout (ms) |
+| `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear cache on retry (set `true` for corrupt cache) |
+| `LOG_LEVEL` | `info` | Log verbosity (`silent` to suppress request logs) |

@@ -417,15 +417,21 @@ app.get('/memory/stats', (_req, res) => {
 
 app.get('/memory/session/:sessionId', (req, res) => {
   try {
-  const { limit } = req.query;
-  res.json({ results: getSessionMemories(req.params.sessionId, limit ? parseInt(limit) : 50) });
+    const { limit, offset } = req.query;
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
+    const offsetNum = Math.max(parseInt(offset) || 0, 0);
+    const all = getSessionMemories(req.params.sessionId, limitNum + offsetNum);
+    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: all.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/memory/type/:type', (req, res) => {
   try {
-  const { limit } = req.query;
-  res.json({ results: getMemoriesByType(req.params.type, limit ? parseInt(limit) : 50) });
+    const { limit, offset } = req.query;
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
+    const offsetNum = Math.max(parseInt(offset) || 0, 0);
+    const all = getMemoriesByType(req.params.type, limitNum + offsetNum);
+    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: all.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -792,6 +798,48 @@ app.post('/memory/purge', (_req, res) => {
     const result = purgeStmt.run(AUTO_PURGE_DAYS);
     const after = getMemoryStats();
     res.json({ ok: true, purged: result.changes, before: before.active, after: after.active });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Export / Import ────────────────────────────────────────────
+
+app.get('/memory/export', (_req, res) => {
+  try {
+    const memories = getAllActiveMemories();
+    const stats = getMemoryStats();
+    res.json({ ok: true, version: '2.1.0', exported_at: new Date().toISOString(), stats, memories });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/memory/import', async (req, res) => {
+  try {
+    const { memories } = req.body;
+    if (!memories?.length) return res.status(400).json({ error: 'memories array required' });
+    if (memories.length > 1000) return res.status(400).json({ error: 'batch too large (max 1000)' });
+
+    const imported = [];
+    for (const m of memories) {
+      if (!m.text || typeof m.text !== 'string') continue;
+      const embedding = m.embedding ? new Float32Array(m.embedding) : null;
+      const id = storeMemory({
+        session_id: m.session_id || '',
+        type: VALID_TYPES.includes(m.type) ? m.type : 'fact',
+        text: m.text,
+        embedding,
+        metadata: { ...(m.metadata || {}), source: 'import', imported_at: new Date().toISOString() },
+        importance: m.importance ?? 0.5,
+        context_prefix: m.context_prefix || '',
+        entity: m.entity || '',
+        attribute: m.attribute || '',
+        valid_from: m.valid_from || new Date().toISOString(),
+      });
+      imported.push(id);
+    }
+    res.json({ ok: true, imported: imported.length, ids: imported });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

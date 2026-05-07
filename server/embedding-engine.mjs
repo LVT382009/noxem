@@ -20,6 +20,16 @@ let modelReady = false;
 let loadError = null;
 let loadPromise = null;
 
+// Concurrency semaphore: serialize inference calls (transformers.js is NOT thread-safe)
+let inferenceLock = Promise.resolve();
+function withLock(fn) {
+  let release;
+  const next = new Promise(r => { release = r; });
+  const prev = inferenceLock;
+  inferenceLock = next;
+  return prev.then(() => fn()).finally(release);
+}
+
 export async function initEmbeddingEngine() {
   if (modelReady) return;
   if (loadPromise) return loadPromise;
@@ -104,26 +114,30 @@ function cosineSimilarity(a, b) {
 
 export async function embed(text, role = 'document') {
   if (!modelReady) throw new Error('Embedding engine not initialized');
-  const prefix = role === 'query' ? PREFIXES.query : PREFIXES.document;
-  const inputs = await tokenizer(prefix + text, { padding: true });
-  const { sentence_embedding } = await model(inputs);
-  const arr = Array.from(sentence_embedding.data);
-  return normalize(arr.slice(0, EMBED_DIM));
+  return withLock(async () => {
+    const prefix = role === 'query' ? PREFIXES.query : PREFIXES.document;
+    const inputs = await tokenizer(prefix + text, { padding: true });
+    const { sentence_embedding } = await model(inputs);
+    const arr = Array.from(sentence_embedding.data);
+    return normalize(arr.slice(0, EMBED_DIM));
+  });
 }
 
 export async function embedBatch(texts, role = 'document') {
   if (!modelReady) throw new Error('Embedding engine not initialized');
-  const prefixed = texts.map(t => (role === 'query' ? PREFIXES.query : PREFIXES.document) + t);
-  const inputs = await tokenizer(prefixed, { padding: true });
-  const { sentence_embedding } = await model(inputs);
-  const dim = sentence_embedding.dims[1];
-  const flat = Array.from(sentence_embedding.data);
-  const vectors = [];
-  for (let i = 0; i < texts.length; i++) {
-    const start = i * dim;
-    vectors.push(normalize(flat.slice(start, start + EMBED_DIM)));
-  }
-  return vectors;
+  return withLock(async () => {
+    const prefixed = texts.map(t => (role === 'query' ? PREFIXES.query : PREFIXES.document) + t);
+    const inputs = await tokenizer(prefixed, { padding: true });
+    const { sentence_embedding } = await model(inputs);
+    const dim = sentence_embedding.dims[1];
+    const flat = Array.from(sentence_embedding.data);
+    const vectors = [];
+    for (let i = 0; i < texts.length; i++) {
+      const start = i * dim;
+      vectors.push(normalize(flat.slice(start, start + EMBED_DIM)));
+    }
+    return vectors;
+  });
 }
 
 // Search by embedding: compare query embedding against all stored embeddings
