@@ -6,7 +6,8 @@ import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getSessionMemories, getMemoriesByType,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
-  deleteMemory, deleteInvalid, incrementRecallCounts, archiveStaleMemories, vectorKnnSearch, close,
+  deleteMemory, deleteInvalid, incrementRecallCounts, archiveStaleMemories, vectorKnnSearch,
+  getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
 } from './memory-store.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
@@ -376,6 +377,73 @@ app.get('/search/web', async (req, res) => {
   }
 });
 
+// ─── Re-embed ────────────────────────────────────────────────────
+
+app.post('/memory/reembed', async (req, res) => {
+  try {
+    if (!isEmbeddingReady()) {
+      return res.status(503).json({ error: 'Embedding engine not ready' });
+    }
+    const limit = req.body?.limit || 100;
+    const missing = getMemoriesWithoutEmbedding(limit);
+    if (!missing.length) {
+      return res.json({ ok: true, reembedded: 0, message: 'no memories missing embeddings' });
+    }
+
+    const texts = missing.map(m => m.text);
+    const embeddings = await embedBatch(texts);
+    const ids = missing.map(m => m.id);
+
+    for (let i = 0; i < ids.length; i++) {
+      const vec = new Float32Array(embeddings[i]).buffer;
+      updateMemoryEmbedding(ids[i], vec);
+    }
+    addVecsToIndex(ids, embeddings);
+
+    res.json({ ok: true, reembedded: ids.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Extract ─────────────────────────────────────────────────────
+
+app.post('/memory/extract', async (req, res) => {
+  try {
+    const { user_message, assistant_response, session_id } = req.body;
+    if (!user_message && !assistant_response) {
+      return res.status(400).json({ error: 'user_message or assistant_response required' });
+    }
+
+    let memories = [];
+    if (ENABLE_ADVISOR) {
+      const { extractMemories } = await import('./memory-extract.mjs');
+      memories = await extractMemories({ userMessage: user_message, assistantResponse: assistant_response });
+    }
+
+    // Fallback to simple rule-based extraction
+    if (!memories.length) {
+      const { extractMemoriesSimple } = await import('./memory-extract.mjs');
+      memories = extractMemoriesSimple({ userMessage: user_message, assistantResponse: assistant_response });
+    }
+
+    // Store extracted memories
+    const ids = [];
+    for (const m of memories) {
+      let embedding = null;
+      if (isEmbeddingReady()) {
+        try { embedding = new Float32Array(await embed(m.text)).buffer; } catch {}
+      }
+      const id = storeMemory({ session_id, type: m.type, text: m.text, embedding });
+      ids.push(id);
+    }
+
+    res.json({ ok: true, extracted: memories.length, stored_ids: ids, memories });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Maintenance ─────────────────────────────────────────────────
 
 app.post('/memory/maintenance/run', async (req, res) => {
@@ -393,7 +461,7 @@ app.post('/memory/maintenance/stop', (_req, res) => {
 });
 
 // ─── Start ────────────────────────────────────────────────────────
-app.listen(PORT, '127.0.0.1', () => {
+const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
   console.log(`  Port: ${PORT}`);
   console.log(`  Embedding: ${ENABLE_EMBEDDING ? 'EmbeddingGemma 300M (q8, 256d)' : 'DISABLED'}`);
@@ -403,4 +471,29 @@ app.listen(PORT, '127.0.0.1', () => {
   console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
   console.log(`  Decay half-life: ${DECAY_HALF_LIFE_DAYS} days`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+});
+
+// Graceful shutdown
+function shutdown(signal) {
+  console.log(`\n${signal} received — shutting down gracefully...`);
+  stopMaintenanceCron();
+  server.close(() => {
+    close(); // close SQLite
+    console.log('Memory server stopped.');
+    process.exit(0);
+  });
+  // Force exit after 5s if connections don't close
+  setTimeout(() => {
+    console.log('Forcing exit after timeout.');
+    process.exit(1);
+  }, 5000);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Handle uncaught errors gracefully
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err.message);
+  shutdown('UNCAUGHT_EXCEPTION');
 });

@@ -157,7 +157,27 @@ app.post('/v1/chat/completions', async (req, res) => {
 });
 
 // ── Start ──
-app.listen(PORT, '127.0.0.1', async () => {
+const server = app.listen(PORT, '127.0.0.1', async () => {
   console.log(`Gemma 4 API at http://127.0.0.1:${PORT}/v1`);
   loadModel().catch(err => console.error('Model load failed:', err.message));
+});
+
+// Graceful shutdown
+function shutdown(signal) {
+  console.log(`\n${signal} received — shutting down Gemma 4 server...`);
+  server.close(() => {
+    // Free model resources
+    model = null;
+    processor = null;
+    console.log('Gemma 4 server stopped.');
+    process.exit(0);
+  });
+  setTimeout(() => process.exit(1), 5000);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err.message);
+  shutdown('UNCAUGHT_EXCEPTION');
 });

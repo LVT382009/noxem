@@ -127,6 +127,14 @@ const getAllWithEmbeddings = db.prepare(
   `SELECT id, type, text, embedding, status, created_at FROM memories WHERE embedding IS NOT NULL`
 );
 
+const getWithoutEmbedding = db.prepare(
+  `SELECT id, text FROM memories WHERE embedding IS NULL AND status = 'active' LIMIT ?`
+);
+
+const updateEmbedding = db.prepare(
+  `UPDATE memories SET embedding = ? WHERE id = ?`
+);
+
 // Convert SQLite BLOB (Node Buffer) to a regular JS array of float32 values
 function bufferToFloat32(buf) {
   if (!buf) return null;
@@ -242,6 +250,18 @@ export function incrementRecallCounts(ids) {
 export function archiveStaleMemories() {
   const result = archiveStale.run();
   return result.changes;
+}
+
+export function getMemoriesWithoutEmbedding(limit = 100) {
+  return getWithoutEmbedding.all(Math.min(limit, 500));
+}
+
+export function updateMemoryEmbedding(id, embedding) {
+  updateEmbedding.run(embedding, id);
+}
+
+export function addVecsToIndex(ids, embeddings) {
+  insertVecBatch(db, ids, embeddings);
 }
 
 export function vectorKnnSearch(queryEmbedding, topK = 5) {

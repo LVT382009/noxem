@@ -145,27 +145,41 @@ class NoxemMemoryProvider:
             "Use `memory_search` to look up past information and `memory_store` to save important facts."
         )
 
+    MAX_MEMORY_TOKENS = int(os.environ.get("NOXEM_MAX_MEMORY_TOKENS", "2000"))
+
     def prefetch(self, query: str):
         """Inject relevant memories before each API call.
 
         Called by Hermes before each turn. Returns context text to inject.
+        Enforces a token budget to avoid overflowing the context window.
         """
         if not query or not query.strip():
             return None
         try:
             result = self._api_get(
-                f"/memory/search?q={self._urlencode(query)}&limit=5&method=hybrid"
+                f"/memory/search?q={self._urlencode(query)}&limit=10&method=hybrid"
             )
             memories = result.get("results", [])
             if not memories:
                 return None
 
+            # Build lines within token budget (~4 chars per token)
+            max_chars = self.MAX_MEMORY_TOKENS * 4
             lines = []
-            for m in memories[:5]:
+            used_chars = 0
+            for m in memories:
                 label = m.get("type", "memory").capitalize()
                 text = m.get("text", "")[:200]
                 score = m.get("score", 0)
-                lines.append(f"[{label}] {text} (rel: {score:.2f})")
+                line = f"[{label}] {text} (rel: {score:.2f})"
+                line_len = len(line) + 1  # +1 for newline
+                if used_chars + line_len > max_chars:
+                    break
+                lines.append(line)
+                used_chars += line_len
+
+            if not lines:
+                return None
 
             return f"[Noxem Memory Recall]\n" + "\n".join(lines)
         except Exception as e:
