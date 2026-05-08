@@ -186,19 +186,17 @@ if ! $INSTALLED; then
     SHELL_RC="${HOME}/.bashrc"
   fi
 
-  ALIAS_LINE="alias hermes-noxem='$HERMES_SERVER_DIR/noxem-launcher.sh'"
+ ALIAS_LINE="alias hermes-noxem='$HERMES_SERVER_DIR/noxem-launcher.sh'"
 
-  if [ ! -f "$SHELL_RC" ] || ! grep -q "alias hermes-noxem" "$SHELL_RC" 2>/dev/null; then
-    touch "$SHELL_RC" 2>/dev/null || true
-    cat >> "$SHELL_RC" << EOF
+ # Remove any existing hermes-noxem alias (may point to stale path)
+ if [ -f "$SHELL_RC" ]; then
+     sed -i '/alias hermes-noxem=/d' "$SHELL_RC" 2>/dev/null || true
+     sed -i '/# Noxem -- launch Hermes/d' "$SHELL_RC" 2>/dev/null || true
+ fi
 
-# Noxem -- launch Hermes with memory + Gemma 4 servers
-$ALIAS_LINE
-EOF
-    echo "  Added 'hermes-noxem' alias to $SHELL_RC"
-  else
-    echo "  'hermes-noxem' alias already exists in $SHELL_RC"
-  fi
+ touch "$SHELL_RC" 2>/dev/null || true
+ printf '\n# Noxem -- launch Hermes with memory + Gemma 4 servers\n%s\n' "$ALIAS_LINE" >> "$SHELL_RC"
+ echo " Added 'hermes-noxem' alias to $SHELL_RC"
 fi
 
 echo ""
