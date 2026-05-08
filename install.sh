@@ -48,8 +48,8 @@ npm install --no-audit --no-fund 2>&1 | tail -1
 echo "  Done"
 
 # ── 2. Hermes plugin (clean install) ──
-# Hermes discovers memory providers by scanning ~/.hermes/plugins/<name>/
-# and checking if <name>/__init__.py contains "register_memory_provider" or "MemoryProvider"
+# Hermes discovers memory providers at ~/.hermes/plugins/<name>/
+# and checks if <name>/__init__.py contains "register_memory_provider"
 echo "[2/6] Installing Noxem plugin for Hermes..."
 
 # Primary: install to user-plugins discovery path
@@ -82,11 +82,7 @@ cd "$HERMES_USER_PLUGIN_DIR"
 if python3 -c "from __init__ import NoxemMemoryProvider; print('  NoxemMemoryProvider imports OK')" 2>/dev/null; then
   :
 else
-  if python3 -c "import sys; sys.path.insert(0, '..'); from noxem import NoxemMemoryProvider; print('  NoxemMemoryProvider imports OK')" 2>/dev/null; then
-    :
-  else
-    echo "  Import check skipped (will work at runtime via Hermes plugin loader)"
-  fi
+  echo "  Import check skipped (will work at runtime via Hermes plugin loader)"
 fi
 
 # ── 4. Shell hooks ──
@@ -111,35 +107,19 @@ cat > "$NOXEM_CONFIG" << NOXEMEOF
 NOXEMEOF
 echo "  Wrote $NOXEM_CONFIG"
 
-# Set memory provider to noxem in hermes config using a Python script file
-# (avoids heredoc indentation issues with python -c)
-if [ -f "$HERMES_CONFIG" ]; then
-  if python3 -c "import yaml" 2>/dev/null; then
-    python3 << 'PYEOF' "$HERMES_CONFIG"
-import yaml, sys
-path = sys.argv[1]
-with open(path) as f:
-    cfg = yaml.safe_load(f) or {}
-ctx = cfg.setdefault('context', {})
-mem = ctx.setdefault('memory', {})
-current = mem.get('provider', '')
-if current in ('', None, 'built-in'):
-    mem['provider'] = 'noxem'
-    with open(path, 'w') as f:
-        yaml.dump(cfg, f, default_flow_style=False)
-    print('  Set memory provider to noxem in config.yaml')
-else:
-    print('  Memory provider already set:', current)
-PYEOF
-  elif grep -q "provider: ''" "$HERMES_CONFIG" 2>/dev/null; then
-    sed -i "/^ *memory:/,/^[^ ]/{s/provider: ''/provider: noxem/}" "$HERMES_CONFIG" 2>/dev/null && \
-      echo "  Set memory provider to noxem in config.yaml (via sed)" || \
-      echo "  Could not update config.yaml -- run: hermes memory setup"
-  else
-    echo "  Memory provider already configured in config.yaml"
-  fi
+# Use hermes config set to safely update config.yaml
+# (pyyaml.dump destroys the config structure due to multi-line strings)
+# Hermes reads memory.provider from top-level, NOT context.memory.provider
+if command -v hermes &>/dev/null; then
+  hermes config set memory.provider noxem 2>/dev/null && \
+    echo "  Set memory.provider = noxem (via hermes config set)" || \
+    echo "  Run manually: hermes config set memory.provider noxem"
+
+  # Also enable noxem in the plugins allow-list
+  hermes config set plugins.enabled '[noxem]' 2>/dev/null || true
 else
-  echo "  $HERMES_CONFIG not found -- run: hermes memory setup"
+  echo "  Run manually: hermes config set memory.provider noxem"
+  echo "  Run manually: hermes config set plugins.enabled '[noxem]'"
 fi
 
 echo "[6/6] Setting up launcher..."
