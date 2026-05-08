@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 Noxem 4
+# 🧠 Noxem
 **Persistent memory provider for Hermes Agent** — remembers what matters, forgets what doesn't.
 
 ![License](https://img.shields.io/badge/License-MIT-green)
@@ -21,12 +21,25 @@
 
 | Feature | Description |
 |---------|-------------|
-| **Vector Search** | Semantic memory lookup — finds relevant context even with different wording |
-| **Auto-Dedup** | Smart deduplication keeps your memory clean and concise |
-| **Conflict Resolution** | Automatically resolves contradictory information, keeping only what's current |
-| **Context Recovery** | Preserves critical information across session boundaries |
-| **Web-Augmented** | Can fetch fresh information when context needs verification |
-| **Hybrid Queries** | Combines multiple search strategies for best results |
+| **Semantic Search** | Hybrid vector + keyword search — finds relevant context even with different wording |
+| **Auto-Categorization** | Incoming memories are auto-tagged: preference, project, profile, goal, pattern, entity, event, issue, setup, learning, fact |
+| **Smart Dedup** | Detects duplicate memories (cosine >0.92) and merges them automatically |
+| **Conflict Resolution** | Entity-attribute matching detects contradicting memories — older ones are superseded |
+| **Significance-Gated Consolidation** | Clusters 3+ low-importance memories about the same topic into a single high-importance summary |
+| **Contextual Enrichment** | Prepends context prefixes before embedding for ~49% better retrieval (Anthropic technique) |
+| **Weibull Decay** | Type-specific recency scoring — profile memories never decay, requests expire in 3 days |
+| **Spaced Repetition** | Memories recalled more often stay relevant longer — reinforced through use |
+| **Search Feedback Loop** | Report which memories influenced your response for stronger importance boost |
+| **Background Research** | Auto-detects technical topics in conversation → web search → extract facts → store as learning memories |
+| **Research Hints** | Compact topic summaries injected into context so Hermes knows research exists without dumping all facts |
+| **Category Auto-Correction** | Rule-based validation catches misclassified memories and corrects them during maintenance |
+| **Adaptive Search Weighting** | Classifies query intent (identifier/exact/conceptual) and weights vector vs keyword search accordingly |
+| **Context Recovery** | Preserves critical information across session boundaries and context compaction |
+| **Bi-Temporal Tracking** | `valid_from`/`valid_until` timestamps track when memories are current vs superseded |
+| **Provenance Graph** | Full lineage tracking — trace any memory through its supersession history and source memory IDs |
+| **Auto-Start** | Servers start automatically when Hermes runs — no manual setup needed |
+| **Multi-Query Expansion** | Short queries get 2 alternate phrasings, merged via Reciprocal Rank Fusion for better recall |
+| **MMR Diversity** | Maximal Marginal Relevance reranking prevents returning near-identical results |
 
 ---
 
@@ -41,11 +54,12 @@
 git clone https://github.com/LVT382009/noxem.git
 cd noxem
 
-# 2. Run the installer (deps + plugin + hooks)
+# 2. Run the installer
 bash install.sh
 
-# 3. Launch Hermes with Noxem (auto-starts both servers)
-hermes-noxem
+# 3. Enable Noxem in Hermes, then run
+hermes memory setup   # Select "noxem"
+hermes chat           # Servers auto-start
 ```
 
 ### macOS
@@ -65,8 +79,9 @@ git clone https://github.com/LVT382009/noxem.git
 cd noxem
 bash install.sh
 
-# 5. Launch
-hermes-noxem
+# 5. Enable and run
+hermes memory setup   # Select "noxem"
+hermes chat
 ```
 
 ### Windows (via WSL)
@@ -82,22 +97,11 @@ wsl -d Ubuntu
 git clone https://github.com/LVT382009/noxem.git
 cd noxem
 bash install.sh
-hermes-noxem
+hermes memory setup
+hermes chat
 ```
 
-### Manual Start (any OS)
-
-```bash
-# Start each component separately
-cd server && npm install
-node memory-server.mjs     # Memory server (port 3001)
-node gemma4-server.mjs     # Gemma 4 advisor (port 8000)
-hermes chat                # Hermes agent
-```
-
-> **Device auto-detection:** In Node.js, onnxruntime-node automatically picks the best execution provider (CUDA > DirectML > CPU). WebGPU is browser-only and does not work in Node.js. Set `GEMMA4_DEVICE` only if you need to override auto-detection.
-
-> **First run** downloads the models (~2-3 GB total). Subsequent starts use the local cache.
+> **First run** downloads AI models (~2-3 GB total). Subsequent starts use the local cache. No manual server startup needed — both servers auto-start when Hermes launches.
 
 ---
 
@@ -105,37 +109,68 @@ hermes chat                # Hermes agent
 
 ```
 Hermes Agent
-      │
-      ▼
-Noxem Plugin ──HTTP──► Noxem Server (port 3001)
-                              │
-                    ┌─────────┴─────────┐
-                    │                   │
-              Embedding Engine     Advisor Engine
-              (EmbeddingGemma)      (Gemma 4 E2B)
-                    │                   │
-                    └─────────┬─────────┘
-                              │
-                           SQLite
-                      (FTS5 + Vectors)
+    │
+    ▼
+Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js, port 3001)
+    │                                │
+    │                          ┌─────┴─────┐
+    │                          │           │
+    │                     Semantic     Context
+    │                     Engine      Advisor
+    │                          │           │
+    │                          └─────┬─────┘
+    │                                │
+    │                           SQLite DB
+    │                        (FTS5 + Vectors)
+    │
+    └── Tools: memory_search, memory_store,
+        memory_supersede, memory_lineage,
+        memory_contradiction_check, memory_feedback
 ```
 
-Two processing layers work together — an **embedding engine** for semantic understanding and an **advisor engine** for context recovery and task drift detection. Both feed into a shared SQLite store.
+Two AI processing layers work together — a **semantic engine** for vector search, dedup, and categorization, and a **context advisor** for task drift detection, context recovery, and background web research. Both feed into a shared SQLite store with FTS5 full-text search and native KNN vector indexing.
+
+---
+
+## Memory Lifecycle
+
+1. **Store** — Conversation turns saved with auto-categorization, entity extraction, and importance scoring
+2. **Enrich** — Context prefix prepended to embedding input for better retrieval
+3. **Categorize** — Auto-tagged: preference, project, profile, request, learning, setup, goal, issue, pattern, entity, event, fact
+4. **Dedup** — Cosine >0.92 → merge, mark older as invalid
+5. **Contradict** — Entity-attribute matching → older marked superseded
+6. **Consolidate** — 3+ low-importance clustered memories → single high-importance summary
+7. **Clean** — Invalid memories purged; stale (90d, 0 recalls) archived
+8. **Search** — Hybrid (vector + FTS5 via Reciprocal Rank Fusion) with MMR diversity
+9. **Score** — Recency + importance + spaced-repetition weighting (type-specific Weibull decay)
+10. **Research** — Background: detect technical topic → web search → fetch pages → extract facts → store
+11. **Recover** — Context advisor preserves critical info across compaction
+12. **Feedback** — Search results that influenced the response get +0.03 importance boost
 
 ---
 
 ## Commands
 
 ```bash
-# Server management
-npm start                    # Start the memory server
-
 # Hermes CLI (after plugin is installed)
-hermes noxem status          # Server health + memory stats
+hermes noxem status       # Server health + memory stats
 hermes noxem search <query>  # Search stored memories
-hermes noxem run             # Run maintenance manually
-hermes noxem config          # Show current configuration
+hermes noxem run           # Run maintenance manually
+hermes noxem config        # Show current configuration
 ```
+
+---
+
+## Available Tools (Hermes)
+
+| Tool | Description |
+|------|-------------|
+| `memory_search` | Search with method selection: hybrid, embedding, or fts |
+| `memory_store` | Store a fact with auto-categorization |
+| `memory_supersede` | Mark an old memory as superseded by a newer one |
+| `memory_lineage` | Trace provenance chain through supersession history |
+| `memory_contradiction_check` | Check for contradicting memories with same entity+attribute |
+| `memory_feedback` | Report which memory IDs influenced your response (improves ranking) |
 
 ---
 
@@ -145,14 +180,17 @@ hermes noxem config          # Show current configuration
 |----------|---------|-------------|
 | `MEMORY_PORT` | `3001` | Server port |
 | `MEMORY_DB_DIR` | `./data` | Database directory |
-| `GEMMA_URL` | `http://127.0.0.1:8000` | Model server endpoint |
-| `GEMMA4_DEVICE` | `auto` (onnxruntime-node picks best EP) | Override inference device (CUDA/DirectML/CPU, not WebGPU) |
-| `EMBEDDING_DTYPE` | `q8` | Embedding precision (fp32/q8/q4) |
-| `EMBEDDING_DIM` | `256` | MRL embedding dimension (128/256/512/768) |
 | `DUP_THRESHOLD` | `0.92` | Deduplication sensitivity |
 | `CONTRADICT_THRESHOLD` | `0.80` | Contradiction detection threshold |
 | `ENABLE_MAINTENANCE` | `true` | Auto-cleanup every 5 minutes |
+| `ENABLE_RESEARCH` | `true` | Background web research pipeline |
+| `RESEARCH_MIN_INTERVAL` | `30000` | Min ms between research per session |
 | `MEMORY_DECAY_HALF_LIFE` | `30` | Default recency decay (days) |
+| `MEMORY_MAX_TOKENS` | `2000` | Token budget for context injection |
+| `RATE_LIMIT_MAX` | `120` | Max requests per minute per IP |
+| `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
+| `HF_FETCH_TIMEOUT` | `180000` | Model download timeout (ms) |
+| `HF_FETCH_RETRIES` | `3` | Retry count for failed model downloads |
 
 ---
 
@@ -160,18 +198,21 @@ hermes noxem config          # Show current configuration
 
 ```
 User says something
-        │
-        ▼
+    │
+    ▼
 Noxem checks memory ──► Relevant past context injected
-        │
-        ▼
+    │
+    ▼
 Turn is processed
-        │
-        ▼
-Key information extracted ──► Stored with vector index
-        │
-        ▼
-Background cleanup ──► Duplicates merged, conflicts resolved
+    │
+    ▼
+Key info extracted ──► Stored with vector index + categorization
+    │
+    ▼
+Background research ──► Technical topic? → web search → facts stored
+    │
+    ▼
+Background cleanup ──► Duplicates merged, conflicts resolved, categories corrected
 ```
 
 ---
