@@ -69,29 +69,32 @@ const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false';
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
 
-// Type-specific decay half-lives (days) — profile never decays, events decay fast
+// Weibull decay: w = exp(-(age/eta)^k) — steeper initial drop then long tail
+// eta = scale (days), k = shape (1=exponential, >1=accelerating aging, <1=rapid then slow)
 const DECAY_BY_TYPE = {
-  profile: Infinity,   // Identity — never decay
-  preference: 180,     // Preferences change slowly (6 months)
-  setup: 120,          // Tech stack changes quarterly
-  project: 60,         // Project context changes monthly
-  goal: 45,            // Goals shift frequently
-  fact: 30,            // Generic facts
-  learning: 45,        // Learning persists
-  pattern: 60,         // Habits are stable
-  entity: 90,          // Entities are relatively stable
-  issue: 14,           // Issues get resolved
-  event: 7,            // Events are time-sensitive
-  request: 3,          // Requests are ephemeral
-  general: 30,         // Default
+  profile:   { eta: Infinity, k: 1 },
+  preference:{ eta: 180, k: 1.2 },
+  setup:     { eta: 120, k: 1.3 },
+  project:   { eta: 60,  k: 1.4 },
+  goal:      { eta: 45,  k: 1.5 },
+  fact:      { eta: 30,  k: 1.0 },
+  learning:  { eta: 45,  k: 1.1 },
+  pattern:   { eta: 60,  k: 1.2 },
+  entity:    { eta: 90,  k: 1.1 },
+  issue:     { eta: 14,  k: 2.0 },
+  event:     { eta: 7,   k: 2.5 },
+  request:   { eta: 3,   k: 3.0 },
+  general:   { eta: 30,  k: 1.0 },
 };
 
-function getEffectiveHalfLife(type, importance, recallCount) {
-  const baseHalfLife = DECAY_BY_TYPE[type] ?? DECAY_HALF_LIFE_DAYS;
-  if (baseHalfLife === Infinity) return Infinity;
-  const importanceMod = 0.5 + importance;  // 0.5-1.5x multiplier
-  const recallMod = 1 + 0.3 * recallCount; // SRS: each recall extends 30%
-  return baseHalfLife * importanceMod * recallMod;
+// Get effective Weibull parameters with importance + recall adjustments
+function getDecayParams(type, importance, recallCount) {
+  const base = DECAY_BY_TYPE[type] || DECAY_BY_TYPE.general;
+  if (base.eta === Infinity) return { eta: Infinity, k: 1 };
+  // SRS: each recall extends effective eta by 30%
+  const recallMod = 1 + 0.3 * (recallCount || 0);
+  const importanceMod = 0.5 + (importance || 0.5); // 0.5-1.5x multiplier
+  return { eta: base.eta * importanceMod * recallMod, k: base.k };
 }
 
 // ─── Startup ─────────────────────────────────────────────────────
@@ -170,11 +173,10 @@ function normalizeFtsScore(results) {
   });
 }
 
-// Recency + importance + spaced-repetition weighted scoring
+// Weibull decay scoring: w = exp(-(age/eta)^k)
+// Type-specific (eta, k) params with importance + recall adjustments
 // Formula: final_score = similarity * (0.4 + 0.25 * recency_weight + 0.2 * importance + 0.15 * reinforcement)
-// recency_weight = 0.5 ** (age_days / effective_half_life) — type-specific half-lives
-// effective_half_life = type_base * (0.5 + importance) * (1 + 0.3 * recall_count)
-// reinforcement = 1 - e^(-recall_count / 3) — exponential approach to 1.0
+// reinforcement = 1 - e^(-recall_count / 3) — spaced repetition asymptote
 function applyRecencyScore(results) {
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
@@ -182,42 +184,73 @@ function applyRecencyScore(results) {
     const ts = r.created_at ? new Date(r.created_at).getTime() : now;
     const createdAt = Number.isFinite(ts) ? ts : now;
     const ageMs = Math.max(0, now - createdAt);
+    const ageDays = ageMs / dayMs;
     const recallCount = r.recall_count ?? 0;
     const importance = r.importance ?? 0.5;
     const type = r.type || 'general';
-    const halfLifeDays = getEffectiveHalfLife(type, importance, recallCount);
-    if (!Number.isFinite(halfLifeDays) || halfLifeDays <= 0) {
-      // Invalid half-life — treat as no decay
-      return { ...r, score: r.score };
-    }
-    if (halfLifeDays === Infinity) {
-      // Profile/identity memories never decay — recency always 1.0
+    const { eta, k } = getDecayParams(type, importance, recallCount);
+    if (eta === Infinity) {
+      // Profile/identity memories never decay
       const reinforcement = 1 - Math.exp(-recallCount / 3);
       const boosted = r.score * (0.4 + 0.25 + 0.2 * importance + 0.15 * reinforcement);
       return { ...r, score: Math.round(boosted * 1000) / 1000 };
     }
-    const halfLifeMs = halfLifeDays * dayMs;
-    const recencyWeight = Math.pow(0.5, ageMs / halfLifeMs);
-    // Exponential reinforcement curve: asymptotically approaches 1.0
-    // At 1 recall: 0.28, at 3: 0.63, at 6: 0.86, at 10: 0.96
+    if (!Number.isFinite(eta) || eta <= 0) {
+      return { ...r, score: r.score };
+    }
+    // Weibull decay: exp(-(age/eta)^k)
+    const recencyWeight = Math.exp(-Math.pow(ageDays / eta, k));
     const reinforcement = 1 - Math.exp(-recallCount / 3);
     const boosted = r.score * (0.4 + 0.25 * recencyWeight + 0.2 * importance + 0.15 * reinforcement);
     return { ...r, score: Math.round(boosted * 1000) / 1000 };
   });
 }
 
+// Query intent classifier for adaptive search weighting
+// Returns { fts_weight, vec_weight } based on query characteristics
+// Exact identifiers → high FTS weight; conceptual/vague → high vector weight
+function classifyQueryIntent(query) {
+  const q = query.trim();
+  // Identifier-like queries: exact names, paths, code tokens, camelCase, snake_case
+  const isIdentifier = /^[a-z_][a-z0-9_]*(?:[A-Z][a-z0-9_]*)+$/.test(q) // camelCase
+    || /^[a-z][a-z0-9_]+_[a-z0-9_]+$/.test(q) // snake_case
+    || /^[\w.\/-]+\.(py|js|ts|tsx|jsx|mjs|yaml|json|md)$/.test(q) // file paths
+    || /^(def |class |function |import |from |const |let |var )/.test(q) // code keywords
+    || /^[\w.-]+@[\w.-]+$/.test(q) // emails
+    || /^[0-9a-f]{8,}$/i.test(q); // hex IDs
+  if (isIdentifier) return { fts_weight: 0.85, vec_weight: 0.15, intent: 'identifier' };
+
+  // Exact match signals: quoted strings, specific names, technical terms
+  const hasExactSignals = /["'`]/.test(q) // quoted strings
+    || /(GET|POST|PUT|DELETE|PATCH|API|URL|HTTP|CSS|HTML|SQL|JSON|YAML)/i.test(q)
+    || /(error|exception|stack|trace|debug|crash|fail|broken)/i.test(q)
+    || /(fix|bug|issue|ticket|PR|commit|merge|branch)/i.test(q);
+  if (hasExactSignals) return { fts_weight: 0.7, vec_weight: 0.3, intent: 'exact' };
+
+  // Conceptual/vague queries: preferences, opinions, concepts, short natural language
+  const isConceptual = q.split(/\s+/).length <= 3 // very short
+    || /(prefer|like|love|hate|dislike|opinion|think|feel|want|need|should|better|best)/i.test(q)
+    || /(what|how|why|when|where|who|which)/i.test(q)
+    || /(similar|like|related|about|regarding|concerning)/i.test(q);
+  if (isConceptual) return { fts_weight: 0.3, vec_weight: 0.7, intent: 'conceptual' };
+
+  // Mixed intent: default balanced with slight FTS edge
+  return { fts_weight: 0.55, vec_weight: 0.45, intent: 'mixed' };
+}
+
 // Reciprocal Rank Fusion: merge multiple ranked lists by position
-// RRF score = sum(1 / (k + rank)) across all lists. k=60 is standard.
-function reciprocalRankFusion(lists, k = 60) {
+// Supports weighted RRF: each list can have a weight multiplier
+// RRF score = sum(weight / (k + rank)) across all lists. k=60 is standard.
+function reciprocalRankFusion(lists, k = 60, weights = null) {
   const scores = new Map(); // id -> { rrf_score, data }
-  for (const list of lists) {
-    list.forEach((item, rank) => {
+  for (let li = 0; li < lists.length; li++) {
+    const listW = weights ? (weights[li] ?? 1.0) : 1.0;
+    lists[li].forEach((item, rank) => {
       const id = item.id;
       const existing = scores.get(id);
-      const contribution = 1 / (k + rank + 1); // 0-indexed rank
+      const contribution = listW / (k + rank + 1); // 0-indexed rank
       if (existing) {
         existing.rrf_score += contribution;
-        // Keep the richer data object (prefer first seen with embedding score)
       } else {
         scores.set(id, { rrf_score: contribution, data: item });
       }
@@ -306,6 +339,10 @@ app.post('/memory/store-batch', async (req, res) => {
     }));
 
     const ids = storeMemories(items);
+    // Bulk insert into vector index for immediate KNN availability
+    if (embeddings && isVecReady()) {
+      try { addVecsToIndex(ids, embeddings); } catch {}
+    }
     res.json({ ok: true, ids });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -381,8 +418,9 @@ app.get("/memory/search", async (req, res) => {
         } else if ((method === "hybrid" || !method) && embeddingResults && embeddingResults.length > 0) {
           const allFts = queries.map(qq => applyRecencyScore(normalizeFtsScore(searchMemories({ query: qq, limit: limitNum * 3 }))));
           const ftsResults = allFts.length > 1 ? reciprocalRankFusion(allFts) : allFts[0];
-          searchResults = reciprocalRankFusion([embeddingResults, ftsResults]).slice(0, limitNum);
-          searchMethod = "hybrid" + (queries.length > 1 ? "+expanded" : "");
+          const intent = classifyQueryIntent(q);
+          searchResults = reciprocalRankFusion([embeddingResults, ftsResults], 60, [intent.vec_weight, intent.fts_weight]).slice(0, limitNum);
+          searchMethod = "hybrid+" + intent.intent + (queries.length > 1 ? "+expanded" : "");
         }
       } catch { /* fall through to FTS */ }
     }
@@ -966,7 +1004,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`  Advisor: ${ENABLE_ADVISOR ? 'Gemma 4' : 'DISABLED'}`);
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
   console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
-  console.log(`  Decay half-life: ${DECAY_HALF_LIFE_DAYS} days`);
+  console.log(`  Decay: Weibull (type-specific eta/k)`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 });
 
