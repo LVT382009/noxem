@@ -62,39 +62,46 @@ class NoxemMemoryProvider:
         self._sync_fail_count = 0
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
+        self._server_pids = []
 
-        # Try auto-starting the memory server in background if not reachable
+        # Try auto-starting both servers in background if memory server not reachable
         if not self._check_server_health():
-            self._try_start_server_async()
+            self._try_start_servers_async()
         else:
             self._check_server_health(log_init=True)
 
-    def _try_start_server_async(self):
-        """Start memory server in background thread, then check health."""
+    def _try_start_servers_async(self):
+        """Start both servers (memory + Gemma 4) in background thread, then check health."""
         def _start():
-            self._try_start_server()
+            self._try_start_servers()
             self._check_server_health(log_init=True)
         t = threading.Thread(target=_start, daemon=True)
         t.start()
 
-    def _try_start_server(self):
-        """Attempt to start the memory server from the deployed location."""
+    def _try_start_servers(self):
+        """Attempt to start both the memory server and Gemma 4 server from the deployed location."""
         import shutil
         node_bin = shutil.which("node")
         if not node_bin:
             logger.debug("Cannot auto-start: 'node' not found in PATH")
             return False
-        candidates = [
-            Path(self._hermes_home).expanduser() / "noxem-server" / "server" / "memory-server.mjs",
+
+        home = Path(self._hermes_home).expanduser()
+        env = os.environ.copy()
+        env.setdefault("ENABLE_EMBEDDING", "true")
+        env.setdefault("ENABLE_ADVISOR", "true")
+        env.setdefault("ENABLE_MAINTENANCE", "true")
+        env.setdefault("ENABLE_RESEARCH", "true")
+        env.setdefault("NODE_OPTIONS", "--dns-result-order=ipv4first")
+
+        # Start Gemma 4 server first (takes longer to initialize)
+        gemma4_candidates = [
+            home / "noxem-server" / "server" / "gemma4-server.mjs",
         ]
-        for path in candidates:
+        for path in gemma4_candidates:
             if path.exists():
                 try:
-                    env = os.environ.copy()
-                    env.setdefault("ENABLE_EMBEDDING", "true")
-                    env.setdefault("ENABLE_ADVISOR", "false")
-                    env.setdefault("ENABLE_MAINTENANCE", "true")
-                    subprocess.Popen(
+                    proc = subprocess.Popen(
                         [node_bin, str(path)],
                         cwd=str(path.parent),
                         env=env,
@@ -102,15 +109,44 @@ class NoxemMemoryProvider:
                         stderr=subprocess.DEVNULL,
                         start_new_session=True,
                     )
-                    logger.info(f"Noxem auto-started memory server from {path}")
-                    # Wait up to 30s for server to become ready
-                    for _ in range(30):
-                        time.sleep(1)
-                        if self._check_server_health():
-                            return True
-                    return False
+                    self._server_pids.append(proc.pid)
+                    logger.info(f"Noxem auto-started Gemma 4 server from {path}")
+                    break
                 except Exception as e:
-                    logger.debug(f"Failed to auto-start from {path}: {e}")
+                    logger.debug(f"Failed to auto-start Gemma 4 from {path}: {e}")
+
+        # Start memory server
+        memory_candidates = [
+            home / "noxem-server" / "server" / "memory-server.mjs",
+        ]
+        started = False
+        for path in memory_candidates:
+            if path.exists():
+                try:
+                    proc = subprocess.Popen(
+                        [node_bin, str(path)],
+                        cwd=str(path.parent),
+                        env=env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    self._server_pids.append(proc.pid)
+                    logger.info(f"Noxem auto-started memory server from {path}")
+                    started = True
+                    break
+                except Exception as e:
+                    logger.debug(f"Failed to auto-start memory server from {path}: {e}")
+
+        if not started:
+            return False
+
+        # Wait up to 60s for memory server to become ready
+        # Gemma 4 takes longer but we don't block on it — the advisor gracefully handles it
+        for _ in range(60):
+            time.sleep(1)
+            if self._check_server_health():
+                return True
         return False
 
     def _check_server_health(self, log_init=False):
@@ -138,7 +174,7 @@ class NoxemMemoryProvider:
                 logger.warning(
                     f"Noxem server NOT reachable at {self._server_url} — "
                     f"memories will NOT be saved until server starts. "
-                    f"Run 'hermes-noxem' to start both servers."
+                    f"Auto-start was attempted — check server logs."
                 )
             return False
 
@@ -168,9 +204,16 @@ class NoxemMemoryProvider:
             logger.info(f"Noxem flushed {flushed} buffered turns to memory server")
 
     def shutdown(self) -> None:
-        """Process exit cleanup."""
+        """Process exit cleanup. Kill auto-started server processes."""
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=3.0)
+        for pid in self._server_pids:
+            try:
+                os.kill(pid, 15)  # SIGTERM
+                logger.info(f"Noxem stopped auto-started server PID {pid}")
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        self._server_pids.clear()
         logger.info("Noxem shutdown complete")
 
     # ── Config ────────────────────────────────────────────────
@@ -338,7 +381,7 @@ class NoxemMemoryProvider:
     # ── Optional Hooks ────────────────────────────────────────
 
     def system_prompt_block(self):
-        status = "CONNECTED" if self._server_reachable else "OFFLINE — memories will NOT be saved. Run 'hermes-noxem' first"
+        status = "CONNECTED" if self._server_reachable else "OFFLINE — memories will NOT be saved until server starts"
         return (
             f"[Noxem Memory — {status}]\n"
             "AI-powered memory system. EmbeddingGemma 300M for search + dedup. "
@@ -532,7 +575,7 @@ class NoxemMemoryProvider:
             if self._sync_fail_count == 1:
                 logger.warning(
                     f"sync_turn failed — server at {self._server_url} not reachable. "
-                    f"Turn buffered (queue: {queue_len}). Run 'hermes-noxem' to start."
+                    f"Turn buffered (queue: {queue_len}). Server will retry on next sync."
                 )
             elif self._sync_fail_count % 20 == 0:
                 logger.warning(f"sync_turn failed {self._sync_fail_count}x — queue: {queue_len}")

@@ -205,24 +205,9 @@ echo " Installation Complete!"
 echo "========================================"
 echo ""
 echo "USE:"
-echo "  hermes-noxem"
-echo "  (starts both servers, runs Hermes, shuts down on exit)"
+echo " 1. Enable provider: hermes memory setup -> Select 'noxem'"
+echo " 2. Run Hermes: hermes chat"
 echo ""
-echo "Or manually:"
-echo "  1. Start memory server: node server/memory-server.mjs"
-echo "  2. Start Gemma 4: node server/gemma4-server.mjs"
-echo "  3. Run Hermes: hermes chat"
-echo "  4. Enable provider: hermes memory setup -> Select 'noxem'"
-echo ""
+echo "Noxem auto-starts both memory + Gemma 4 servers when Hermes runs."
 echo "First run downloads models (~2-3GB total)."
 echo "========================================"
-
-if $INSTALLED; then
-  echo "Run: hermes-noxem"
-else
-  if $IS_MACOS; then
-    echo "Run: source ~/.zshrc && hermes-noxem"
-  else
-    echo "Run: source ~/.bashrc && hermes-noxem"
-  fi
-fi
