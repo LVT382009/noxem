@@ -451,7 +451,22 @@ export function mmrRerank(queryEmbedding, candidates, topK = 5, lambda = 0.7) {
 export function extractEntityAttribute(text) {
   const lower = text.toLowerCase();
 
-  // Common patterns for entity-attribute extraction
+  // 0. Negated preferences: "I don't like X", "I no longer use X"
+  // Extract same attribute as positive form so contradiction detection can match
+  const negMatch = lower.match(/(?:i |user )?(?:don'?t|do not|not|never|no longer|used to)\s+(prefer|like|love|hate|dislike|use|using|favor|choose)\s+(.+?)(?:\s+(?:for|when|while|because|over|instead|than|rather|$))/i);
+  if (negMatch) {
+    const verb = negMatch[1];
+    const object = negMatch[2].trim().replace(/[.!?,;]+$/, '');
+    return { entity: 'user', attribute: `${verb}_${object}`.replace(/\s+/g, '_') };
+  }
+
+  // 0b. State changes: "switched from X to Y" — attribute is the verb+object
+  const switchMatch = lower.match(/(?:i |user )?(?:switched|moved|changed|migrated)\s+from\s+\S+\s+to\s+(.+?)(?:\s+(?:for|when|while|because|over|instead|than|rather|$))/i);
+  if (switchMatch) {
+    const object = switchMatch[1].trim().replace(/[.!?,;]+$/, '');
+    return { entity: 'user', attribute: `use_${object}`.replace(/\s+/g, '_') };
+  }
+
   // 1. Preferences: "I prefer X" / "I like X" / "I use X"
   const prefMatch = lower.match(/(?:i |user )?(prefer|like|love|hate|dislike|use|using|favor|choose|chose)\s+(.+?)(?:\s+(?:for|when|while|because|over|instead|than|rather|$))/i);
   if (prefMatch) {

@@ -1,4 +1,4 @@
-import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, db } from './memory-store.mjs';
+import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, estimateImportance, extractEntityAttribute, normalize, cosineSimilarity } from './embedding-engine.mjs';
 
 let maintenanceInterval = null;
@@ -32,8 +32,35 @@ export async function runMaintenance() {
     }
 
     // 1. Deduplication
+    // For small sets (<500): brute-force O(n²) pairwise cosine
+    // For large sets (>=500): KNN-based — find nearest neighbors per memory via index
     try {
-      const dupes = findDuplicates(memories);
+      const withEmbedding = memories.filter(m => m.embedding);
+      const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
+      let dupes = [];
+
+      if (withEmbedding.length < 500 || !vectorKnnSearch) {
+        // Brute-force for small sets
+        dupes = findDuplicates(memories);
+      } else {
+        // KNN-based dedup: for each memory, find top-K nearest via index
+        // Only compute cosine for candidates near the threshold
+        const seen = new Set();
+        for (const m of withEmbedding) {
+          if (seen.has(m.id)) continue;
+          const neighbors = vectorKnnSearch(m.embedding, 20);
+          if (!neighbors) { dupes = findDuplicates(memories); break; }
+          for (const n of neighbors) {
+            if (n.id === m.id || seen.has(n.id)) continue;
+            if (n.score > DUP_THRESHOLD) {
+              const [older, newer] = m.id < n.id ? [m, n] : [n, m];
+              dupes.push({ a: older, b: newer, similarity: n.score });
+              seen.add(older.id);
+            }
+          }
+        }
+      }
+
       for (const d of dupes) {
         const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
         updateMemoryStatus(older.id, 'invalid');
@@ -45,8 +72,7 @@ export async function runMaintenance() {
     }
 
     // 2. Contradiction detection (entity-attribute matching - directional)
-    // Same entity+attribute with different values = older superseded by newer
-    // This avoids the bidirectional bug where both A->B and B->A were superseding
+    // Handles: preference changes, negation flips, temporal updates, state changes
     try {
       const entityAttrMap = new Map();
       for (const m of memories) {
@@ -58,20 +84,16 @@ export async function runMaintenance() {
 
       for (const [key, mems] of entityAttrMap) {
         if (mems.length < 2) continue;
-        // Sort by id ascending (older first)
         mems.sort((a, b) => a.id - b.id);
-        // Check pairs: if consecutive memories about same entity+attribute
-        // express different preference values, the newer supersedes the older
-        const prefVerb = /(?:prefer|like|love|hate|dislike|use|using|favor|choose|chose)\s+(\S+)/i;
+
         for (let i = 0; i < mems.length - 1; i++) {
           const older = mems[i];
           const newer = mems[i + 1];
-          const olderMatch = older.text.toLowerCase().match(prefVerb);
-          const newerMatch = newer.text.toLowerCase().match(prefVerb);
-          if (olderMatch && newerMatch && olderMatch[1] !== newerMatch[1]) {
+          const contradiction = detectContradiction(older.text, newer.text);
+          if (contradiction) {
             updateMemoryStatus(older.id, 'superseded', newer.id);
             results.contradictions++;
-            console.log(`[Maintenance] Contradiction: "${older.text}" -> superseded by "${newer.text}" (${key})`);
+            console.log(`[Maintenance] Contradiction (${contradiction}): "${older.text}" -> superseded by "${newer.text}" (${key})`);
           }
         }
       }
@@ -126,6 +148,60 @@ export async function runMaintenance() {
   } finally {
     maintenanceRunning = false;
   }
+}
+
+// Extract the value/polarity from a memory text about a preference or state
+function extractValue(text) {
+  const lower = text.toLowerCase();
+
+  // Negated preference: "I don't like X", "I no longer use X"
+  const negMatch = lower.match(/(?:don'?t|do not|not|never|no longer|used to)\s+(?:prefer|like|love|hate|dislike|use|using|favor|choose)\s+(\S+)/i);
+  if (negMatch) return { value: negMatch[1], negated: true };
+
+  // Temporal past: "I used to X", "previously X", "formerly X"
+  const pastMatch = lower.match(/(?:used to|previously|formerly|before)\s+(?:prefer|like|love|use|using)\s+(\S+)/i);
+  if (pastMatch) return { value: pastMatch[1], negated: true, temporal: 'past' };
+
+  // State change: "switched from X to Y", "moved from X to Y"
+  const switchMatch = lower.match(/(?:switched|moved|changed|migrated)\s+from\s+(\S+)\s+to\s+(\S+)/i);
+  if (switchMatch) return { value: switchMatch[2], negated: false, replaced: switchMatch[1] };
+
+  // Positive preference: "I prefer/like/use X"
+  const posMatch = lower.match(/(?:prefer|like|love|hate|dislike|use|using|favor|choose|chose)\s+(\S+)/i);
+  if (posMatch) return { value: posMatch[1], negated: false };
+
+  // Identity attribute: "My name is X"
+  const idMatch = lower.match(/(?:my name is|i'?m |i am |call me)\s+(.+?)(?:\s*[.!?,;]|\s*$)/i);
+  if (idMatch) return { value: idMatch[1].trim(), negated: false };
+
+  return null;
+}
+
+// Detect contradiction between two memories about the same entity+attribute
+// Returns the contradiction type or null if no contradiction
+function detectContradiction(olderText, newerText) {
+  const olderVal = extractValue(olderText);
+  const newerVal = extractValue(newerText);
+  if (!olderVal || !newerVal) return null;
+
+  // Case 1: Different values for same attribute → newer supersedes older
+  if (olderVal.value !== newerVal.value && !olderVal.negated && !newerVal.negated) {
+    return 'preference_change';
+  }
+  // Case 2: Negation flip — "I like X" → "I don't like X" (or vice versa)
+  if (olderVal.value === newerVal.value && olderVal.negated !== newerVal.negated) {
+    return 'negation_flip';
+  }
+  // Case 3: Temporal update — past preference superseded by current
+  if (olderVal.temporal === 'past' && !newerVal.temporal) {
+    return 'temporal_update';
+  }
+  // Case 4: State change — "switched from X to Y" contradicts "I use X"
+  if (newerVal.replaced && olderVal.value === newerVal.replaced) {
+    return 'state_change';
+  }
+
+  return null;
 }
 
 // Significance-gated consolidation:

@@ -247,6 +247,25 @@ R=$(curl -s http://127.0.0.1:3001/memory/2)
 echo "$R"
 echo "$R" | grep -q 'source_memory_ids' && check "source_memory_ids field" "true" || check "source_memory_ids field" "FAIL"
 
+echo "=== Contradiction: negation flip ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"I like vim for editing","type":"preference"}')
+echo "$R"
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"I don'"'"'t like vim for editing","type":"preference"}')
+echo "$R"
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/contradiction-check -H "Content-Type: application/json" -d '{"entity":"user","attribute":"like_vim","text":"I don'"'"'t like vim"}')
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "negation contradiction check" "true" || check "negation contradiction" "FAIL"
+
+echo "=== Contradiction: state change ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"I switched from vim to vscode","type":"preference"}')
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "state change stored" "true" || check "state change store" "FAIL"
+
+echo "=== Maintenance with negation + state change patterns ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/maintenance/run -H "Content-Type: application/json")
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "maintenance with new patterns" "true" || check "maintenance patterns" "FAIL"
+
 echo ""
 echo "========================================"
 echo "Results: $PASS passed, $FAIL failed"
