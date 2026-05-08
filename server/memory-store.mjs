@@ -105,7 +105,7 @@ const removeByStatus = db.prepare(`DELETE FROM memories WHERE status = 'invalid'
 const archiveStale = db.prepare(`UPDATE memories SET status = 'archived', updated_at = datetime('now') WHERE status = 'active' AND recall_count = 0 AND created_at < datetime('now', '-90 days')`);
 
 const incrementRecall = db.prepare(
-  `UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = datetime('now') WHERE id = ?`
+  `UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = datetime('now'), importance = MIN(1.0, importance + 0.01) WHERE id = ?`
 );
 const incrementRecallTx = db.transaction((ids) => {
   for (const id of ids) incrementRecall.run(id);
