@@ -42,24 +42,26 @@ Hermes Agent
 
 ## Scoring System
 
-### Type-Specific Decay Half-Lives
+### Type-Specific Weibull Decay
 
-Memories decay at different rates based on their type:
+Memories decay using Weibull function: `w = exp(-(age/eta)^k)`
 
-| Type | Half-Life | Rationale |
-|------|-----------|-----------|
-| profile | ∞ (never) | Identity never expires |
-| preference | 180 days | Preferences change slowly |
-| setup | 120 days | Tech stack changes quarterly |
-| project | 60 days | Projects evolve monthly |
-| pattern | 60 days | Habits are stable |
-| goal | 45 days | Goals shift frequently |
-| learning | 45 days | Learning persists |
-| entity | 90 days | Entities are relatively stable |
-| fact | 30 days | Generic facts |
-| issue | 14 days | Issues get resolved |
-| event | 7 days | Events are time-sensitive |
-| request | 3 days | Requests are ephemeral |
+| Type | eta (days) | k (shape) | Behavior |
+|------|-----------|-----------|----------|
+| profile | ∞ | 1.0 | Never decays |
+| preference | 180 | 1.2 | Slow start, long tail |
+| setup | 120 | 1.3 | Moderate acceleration |
+| project | 60 | 1.4 | Evolving decay |
+| goal | 45 | 1.5 | Faster decay |
+| pattern | 60 | 1.2 | Stable with tail |
+| learning | 45 | 1.1 | Slightly better retention |
+| entity | 90 | 1.1 | Stable |
+| fact | 30 | 1.0 | Standard exponential |
+| issue | 14 | 2.0 | Sharp cutoff (resolves or lingers) |
+| event | 7 | 2.5 | Very fast decay |
+| request | 3 | 3.0 | Extremely ephemeral |
+
+k > 1 = aging accelerates over time; k = 1 = standard exponential; k < 1 = rapid initial then slow
 
 ### Composite Score Formula
 
@@ -67,9 +69,21 @@ Memories decay at different rates based on their type:
 final_score = similarity × (0.4 + 0.25 × recency + 0.2 × importance + 0.15 × reinforcement)
 ```
 
-- `recency = 0.5^(age / effective_half_life)` — Ebbinghaus decay
-- `effective_half_life = type_base × (0.5 + importance) × (1 + 0.3 × recall_count)` — SRS-style
+- `recency = exp(-(age/eta)^k)` — Weibull decay with type-specific (eta, k)
+- `effective_eta = eta_base × (0.5 + importance) × (1 + 0.3 × recall_count)` — SRS extends lifespan
 - `reinforcement = 1 - e^(-recall_count / 3)` — exponential approach to 1.0
+- `importance_boost = +0.01 per recall` — capped at 1.0
+
+### Adaptive Search Weighting
+
+Hybrid search classifies query intent and weights embedding vs FTS accordingly:
+
+| Intent | Vector Weight | FTS Weight | Trigger |
+|--------|--------------|------------|---------|
+| identifier | 0.15 | 0.85 | camelCase, file paths, code keywords |
+| exact | 0.30 | 0.70 | quoted strings, error/debug terms, HTTP verbs |
+| conceptual | 0.70 | 0.30 | preferences, WH-questions, short queries |
+| mixed | 0.45 | 0.55 | Default balanced |
 
 ### Contextual Enrichment
 
@@ -96,8 +110,8 @@ For short queries (<6 words), Gemma 4 generates 2 alternate phrasings:
 
 ### Core CRUD
 - `POST /memory/store` — Store a memory with auto-categorization, entity extraction, importance estimation, contextual enrichment, bi-temporal `valid_from`
-- `POST /memory/store-batch` — Batch store with enrichment
-- `GET /memory/search?q=...&limit=N&method=hybrid|embedding|fts&session_id=...` — Hybrid search with RRF + MMR + recency scoring + session filter + multi-query expansion
+- `POST /memory/store-batch` — Batch store with enrichment + vector index bulk insert
+- `GET /memory/search?q=...&limit=N&method=hybrid|embedding|fts&session_id=...&expand=true|false` — Hybrid search with adaptive RRF weighting + MMR + Weibull recency scoring + session filter + multi-query expansion
 - `GET /memory/:id` — Get a single memory (includes all fields)
 - `DELETE /memory/:id` — Delete a memory by ID
 - `GET /memory/stats` — Memory statistics
@@ -118,6 +132,7 @@ For short queries (<6 words), Gemma 4 generates 2 alternate phrasings:
 - `GET /memory/type/:type?limit=N&offset=N` — Get memories by type (paginated)
 
 ### Maintenance
+- `POST /memory/dedup` — On-demand dedup check (dry run or auto_mark). Returns duplicate pairs with similarity scores
 - `POST /memory/reembed` — Backfill embeddings for memories missing them
 - `POST /memory/maintenance/run` — Run dedup + contradiction + consolidation + archive cycle
 - `POST /memory/maintenance/stop` — Stop maintenance cron
@@ -247,6 +262,7 @@ CREATE INDEX idx_memories_entity_attr ON memories(entity, attribute);
 | `RATE_LIMIT_MAX` | `120` | Max requests per minute per IP (0 = disable) |
 | `AUTO_PURGE_DAYS` | `365` | Days after which low-importance memories are purged |
 | `CORS_ORIGIN` | `http://localhost:* http://127.0.0.1:*` | CORS allowed origins |
+| `MEMORY_API_KEY` | (empty = disabled) | Bearer token for API auth. Health/ready endpoints exempt |
 | `EMBEDDING_LOAD_TIMEOUT` | `300000` | Embedding model load timeout (ms) |
 | `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear cache on retry (set `true` for corrupt cache) |
 | `LOG_LEVEL` | `info` | Log verbosity (`silent` to suppress request logs) |
