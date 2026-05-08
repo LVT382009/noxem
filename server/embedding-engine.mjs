@@ -3,10 +3,12 @@ if (!process.env.NODE_OPTIONS?.includes('ipv4first')) {
   process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --dns-result-order=ipv4first`.trim();
 }
 
-// Patch globalThis.fetch to add per-request timeout for HuggingFace CDN downloads
+// Patch globalThis.fetch to add per-request timeout + retry for HuggingFace CDN downloads
 // and limit concurrent connections to prevent CDN saturation
-const FETCH_TIMEOUT_MS = parseInt(process.env.HF_FETCH_TIMEOUT || '120000');
-const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.HF_MAX_CONCURRENT || '4');
+const FETCH_TIMEOUT_MS = parseInt(process.env.HF_FETCH_TIMEOUT || '180000'); // 3 min default
+const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.HF_MAX_CONCURRENT || '3');
+const HF_FETCH_RETRIES = parseInt(process.env.HF_FETCH_RETRIES || '3');
+const HF_FETCH_BACKOFF_MS = parseInt(process.env.HF_FETCH_BACKOFF || '2000');
 const _origFetch = globalThis.fetch;
 let _hfActiveFetches = 0;
 const _hfFetchQueue = [];
@@ -16,24 +18,47 @@ function dequeueFetch() {
   const { url, opts, resolve, reject } = _hfFetchQueue.shift();
   _hfActiveFetches++;
   _origFetch(url, opts)
-    .then(resolve)
-    .catch(reject)
-    .finally(() => { _hfActiveFetches--; dequeueFetch(); });
+  .then(resolve)
+  .catch(reject)
+  .finally(() => { _hfActiveFetches--; dequeueFetch(); });
+}
+
+// Retry a failed HuggingFace fetch with exponential backoff
+async function fetchWithRetry(url, opts, retries = HF_FETCH_RETRIES) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      // Create a fresh AbortSignal for each attempt (signals are single-use)
+      const retryOpts = { ...opts };
+      if (!opts.signal) {
+        retryOpts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+      }
+      const result = await _origFetch(url, retryOpts);
+      return result;
+    } catch (err) {
+      const isRetryable = err.message?.includes('fetch failed')
+        || err.message?.includes('ECONNREFUSED')
+        || err.message?.includes('ECONNRESET')
+        || err.message?.includes('ETIMEDOUT')
+        || err.message?.includes('ConnectTimeoutError')
+        || err.name === 'AbortError';
+      if (!isRetryable || attempt >= retries) throw err;
+      const delay = HF_FETCH_BACKOFF_MS * Math.pow(2, attempt);
+      console.log(`[HF Fetch] Retry ${attempt + 1}/${retries} for ${String(url).substring(0, 80)}... (wait ${delay}ms)`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
 }
 
 globalThis.fetch = function patchedFetch(url, opts = {}) {
   const isHF = typeof url === 'string' && (url.includes('huggingface') || url.includes('hf.co'));
   if (isHF) {
-    if (!opts.signal) {
-      opts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
-    }
     if (_hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) {
       return new Promise((resolve, reject) => {
         _hfFetchQueue.push({ url, opts, resolve, reject });
       });
     }
     _hfActiveFetches++;
-    return _origFetch(url, opts).finally(() => { _hfActiveFetches--; dequeueFetch(); });
+    return fetchWithRetry(url, opts).finally(() => { _hfActiveFetches--; dequeueFetch(); });
   }
   return _origFetch(url, opts);
 };

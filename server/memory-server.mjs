@@ -1054,12 +1054,20 @@ app.get('/memory/research/status', (_req, res) => {
   res.json({ ok: true, ...getResearchStatus() });
 });
 
-// Research hint injection: add recent research topics to release output
-// This is called by the Python plugin's prefetch() for context injection
+// Research hint injection: compact topic summaries for the Python plugin's prefetch()
+// Returns recently researched topics with fact counts so Hermes knows background research
+// exists without dumping all facts into context. Hermes calls memory_search if it wants details.
 app.get('/memory/research/hints', (req, res) => {
   const sessionId = req.query.session_id || '';
   const topics = getRecentResearch(sessionId);
-  res.json({ ok: true, topics });
+  // Enrich hints with a short summary extracted from stored research memories
+  const enriched = topics.map(t => ({
+    topic: t.topic,
+    fact_count: t.factCount,
+    query: t.query || '',
+    age_seconds: Math.round((Date.now() - t.timestamp) / 1000),
+  }));
+  res.json({ ok: true, topics: enriched });
 });
 
 // ─── Start ────────────────────────────────────────────────────────
@@ -1070,6 +1078,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'}`);
   console.log(`  Advisor: ${ENABLE_ADVISOR ? 'Gemma 4' : 'DISABLED'}`);
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
+  console.log(` Research: ${ENABLE_RESEARCH ? 'Background pipeline (topic → DDG → fetch → extract)' : 'DISABLED'}`);
   console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
   console.log(`  Decay: Weibull (type-specific eta/k)`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);

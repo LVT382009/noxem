@@ -12,6 +12,7 @@
     "better-sqlite3": "^11.0.0",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
+    "duck-duck-scrape": "^2.2.7",
     "express": "^4.21.0",
     "node-fetch": "^3.3.2",
     "sharp": "^0.34.5",

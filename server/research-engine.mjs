@@ -24,6 +24,8 @@ const RESEARCH_MAX_TOPICS_PER_SESSION = 50; // per session lifetime
 const RESEARCH_MAX_DDQ_RESULTS = 5;
 const RESEARCH_MAX_FETCH_PAGES = 2;
 
+const CURRENT_YEAR = new Date().getFullYear();
+
 // ── Research State ──────────────────────────────────────────
 
 // Track last research time per session to rate-limit
@@ -193,13 +195,13 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
 
 // ── Topic Detection (Gemma 4) ──────────────────────────────
 
-async function callGemma(messages, maxTokens = 256, temperature = 0.1) {
+async function callGemma(messages, maxTokens = 256, temperature = 0.1, timeout = 15_000) {
   try {
     const res = await fetch(GEMMA_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: GEMMA_MODEL, messages, max_tokens: maxTokens, temperature }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeout),
     });
     if (!res.ok) throw new Error(`Gemma4 HTTP ${res.status}`);
     const data = await res.json();
@@ -222,6 +224,7 @@ async function detectTopic(userMessage, assistantResponse) {
   if (skipNonTechnical(combined)) return result;
 
   // If Gemma 4 is unavailable, use regex-based fallback
+  // Topic detection needs more time — use 30s timeout
   const gemmaResponse = await callGemma([
     {
       role: 'system',
@@ -240,6 +243,8 @@ NOT technical (skip research):
 - Opinions without technical content
 - Meta-questions about the agent itself
 - Simple lookups of already-known information
+- Mentions of bugs/errors in passing (not actively debugging)
+- Questions about AI tools or agents themselves
 
 Respond in this EXACT format:
 TOPIC: [the technical topic in 2-5 words, or "NONE"]
@@ -261,7 +266,7 @@ User: "ok thanks"
       role: 'user',
       content: `User: ${(userMessage || '').substring(0, 500)}\nAssistant: ${(assistantResponse || '').substring(0, 500)}`,
     },
-  ], 150, 0.1);
+  ], 150, 0.1, 30_000); // 30s timeout for topic detection
 
   if (!gemmaResponse) {
     // Fallback: regex-based detection
@@ -297,36 +302,136 @@ function skipNonTechnical(text) {
   // Skip very short messages
   if (lower.length < 10) return true;
 
-  // Skip common non-technical patterns
+  // Skip common non-technical conversational patterns
   const nonTechnical = /^(ok|okay|sure|yes|no|got it|thanks|thank you|done|continue|go ahead|please|yep|yeah|nope|cool|great|good|fine|right|correct|agreed|hi|hello|hey|bye|goodbye|see you|what\??|hmm|oh|wow)[\s!.?]*$/i;
   if (nonTechnical.test(lower)) return true;
+
+  // Skip informational/retrieval questions that don't need research
+  const infoPatterns = [
+    /\bwhat\b[\s']s?\s+(is|are)\b/i,            // "what is X", "what's X", "what are X"
+    /\btell\s+me\s+about\b/i,                     // "tell me about X"
+    /\bexplain\b/i,                                // "explain X"
+    /\bdescribe\b/i,                               // "describe X"
+    /\bwho\b[\s']s?\s+(is|are)\b/i,               // "who is X", "who's X", "who are X"
+    /\bdefine\b/i,                                 // "define X"
+    /\bmeaning\s+of\b/i,                          // "meaning of X"
+  ];
+  for (const p of infoPatterns) {
+    if (p.test(lower)) return true;
+  }
+
+  // Skip meta-questions about AI agents/tools
+  const metaPatterns = [
+    /\bclaude\s*code\b/i,
+    /\bhermes\s*(agent|memory|plugin)?\b/i,
+    /\bwhat\b[\s']s?\s+hermes\b/i,
+    /\bnoxem\b/i,
+    /\bgemma\s*\d?\b/i,
+    /\bopenai\b/i,
+    /\bai\s+(agent|tool|assistant|model)\b/i,
+  ];
+  for (const p of metaPatterns) {
+    if (p.test(lower)) return true;
+  }
+
+  // Skip very short queries that are just names (single-word-ish)
+  const wordsOnly = lower.replace(/[^a-z0-9\s]/g, '').trim();
+  if (wordsOnly.split(/\s+/).length <= 2 && wordsOnly.length < 15) return true;
 
   return false;
 }
 
 /**
  * Fallback regex-based topic detection when Gemma 4 is unavailable.
+ * Conservative: only triggers for active BUILD/INSTALL/FIX tasks, not passive mentions.
  */
 function regexTopicDetection(text) {
   const result = { needsResearch: false, topic: '', searchQuery: '', entity: '' };
 
-  // Detect technical task patterns
+  // Negative patterns — topics that should NEVER trigger research
+  const negativePatterns = [
+    /\bwhat\b[\s']s?\s+(is|are)\s/i,        // "what is X" — just asking for info
+    /\btell\s+me\s+about\b/i,               // "tell me about X"
+    /\bwho\b[\s']s?\s+(is|are)\s/i,         // "who is X"
+    /\bexplain\b/i,                          // "explain X"
+    /\bdescribe\b/i,                         // "describe X"
+    /\bdefine\b/i,                           // "define X"
+    /\bmeaning\s+of\b/i,                    // "meaning of X"
+    /\bclaude\s*code\b/i,                    // AI tool mentions
+    /\bhermes\b/i,                           // agent mention
+    /\bnoxem\b/i,                            // agent mention
+    /\bai\s+(agent|tool|assistant)\b/i,      // AI agent discussion
+    /\bmentioned\b.*\b(bug|error|issue)\b/i, // "mentioned a bug" — passive reference
+    /\btalked?\s+about\b/i,                  // "talked about X" — passive
+    /\bheard\s+about\b/i,                    // "heard about X" — passive
+    /\bsaid\s+.*\b(bug|error|crash)\b/i,     // "said there was a bug" — passive
+  ];
+  for (const neg of negativePatterns) {
+    if (neg.test(text)) return result;
+  }
+
+  // Positive patterns that SHOULD trigger research — must be active task intent
   const techPatterns = [
-    { pattern: /\b(build|create|make|generate|set up|setup|install|deploy)\s+(?:a\s+|an\s+)?(\w[\w\s-]{2,30}?)(?:\.|,|!|;|$)/i, type: 'build' },
-    { pattern: /\b(how\s+to|how\s+do\s+i|how\s+can\s+i)\s+(\w[\w\s-]{2,40}?)(?:\?|$)/i, type: 'howto' },
-    { pattern: /\b(fix|debug|resolve|solve|troubleshoot)\s+(?:the\s+|a\s+)?(\w[\w\s-]{2,30}?)(?:\?|\.|!|$)/i, type: 'fix' },
-    { pattern: /\b(use|using|configure|config)\s+(\w[\w\s-]{2,30}?)(?:\s+(?:with|for|in|on)\b|$)/i, type: 'config' },
-    { pattern: /\b(error|exception|bug|issue|fail|crash|broken)\s*(?::|–|-)?\s*["']?(\w[\w\s-]{2,30}?)["']?(?:\s|$)/i, type: 'error' },
+    // Build/create intent — user wants to make something
+    {
+      pattern: /\b(build\s+me|create\s+(?:a\s+|an\s+)?|make\s+(?:me\s+)?(?:a\s+|an\s+)?)\s*(\w[\w.-]{1,20}(?:\s+[\w.-]{1,15}){0,2})/i,
+      type: 'build',
+    },
+    // Install/setup intent
+    {
+      pattern: /\b(install|set\s+up|setup|configure)\s+(?:a\s+|an\s+|the\s+)?(\w[\w.-]{1,20}(?:\s+[\w.-]{1,15}){0,2})/i,
+      type: 'build',
+    },
+    // How-to questions — the user is asking how to DO something
+    {
+      pattern: /\bhow\s+(?:do\s+i|to|can\s+i)\s+(\w[\w.-]{1,15}(?:\s+[\w.-]{1,15}){0,3})/i,
+      type: 'howto',
+    },
+    // Fix/debug intent — user is actively trying to resolve an issue
+    {
+      pattern: /\b(fix|debug|resolve|solve|troubleshoot)\s+(?:the\s+|a\s+|this\s+)?(\w[\w.-]{1,20}(?:\s+[\w.-]{1,15}){0,2})/i,
+      type: 'fix',
+    },
+    // Error patterns — requires actual error signal (error/exception + context)
+    {
+      pattern: /\b(?:error|exception|traceback|panic)\s*(?::|—|–|-)\s*["']?(\w[\w.-]{1,20}(?:\s+[\w.-]{1,15}){0,2})/i,
+      type: 'error',
+    },
+    // Specific error codes or messages
+    {
+      pattern: /\b(?:error|errno|exit\s+code)\s+([\w#]{2,15})/i,
+      type: 'error',
+    },
   ];
 
   for (const { pattern, type } of techPatterns) {
     const match = text.match(pattern);
     if (match) {
-      const topicText = match[2] || match[0].substring(0, 30);
+      const topicText = (match[2] || match[1] || '').trim();
+      if (!topicText || topicText.length < 3) continue;
+
       result.needsResearch = true;
-      result.topic = topicText.trim();
-      result.searchQuery = `${type === 'howto' ? '' : 'how to '}${topicText.trim()} 2026`;
-      result.entity = topicText.trim().replace(/\s+/g, '_').toLowerCase().substring(0, 30);
+      result.topic = topicText;
+
+      // Craft query based on pattern type — no blind "how to" prepending
+      switch (type) {
+        case 'build':
+          result.searchQuery = `how to build ${topicText} ${CURRENT_YEAR}`;
+          break;
+        case 'howto':
+          result.searchQuery = `${topicText} ${CURRENT_YEAR}`;
+          break;
+        case 'fix':
+          result.searchQuery = `how to fix ${topicText} ${CURRENT_YEAR}`;
+          break;
+        case 'error':
+          result.searchQuery = `${topicText} fix`;
+          break;
+        default:
+          result.searchQuery = `${topicText} ${CURRENT_YEAR}`;
+      }
+
+      result.entity = topicText.replace(/\s+/g, '_').toLowerCase().substring(0, 30);
       break;
     }
   }
