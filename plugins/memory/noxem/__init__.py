@@ -16,6 +16,7 @@ Resilience features:
 import json
 import logging
 import os
+import subprocess
 import time
 import threading
 import urllib.parse
@@ -47,7 +48,7 @@ class NoxemMemoryProvider:
                 data = json.loads(resp.read().decode())
                 return data.get("ok", False)
         except Exception:
-            return True
+            return False
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Called at agent startup."""
@@ -61,7 +62,55 @@ class NoxemMemoryProvider:
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
 
-        self._check_server_health(log_init=True)
+        # Try auto-starting the memory server in background if not reachable
+        if not self._check_server_health():
+            self._try_start_server_async()
+        else:
+            self._check_server_health(log_init=True)
+
+    def _try_start_server_async(self):
+        """Start memory server in background thread, then check health."""
+        def _start():
+            self._try_start_server()
+            self._check_server_health(log_init=True)
+        t = threading.Thread(target=_start, daemon=True)
+        t.start()
+
+    def _try_start_server(self):
+        """Attempt to start the memory server from the deployed location."""
+        import shutil
+        node_bin = shutil.which("node")
+        if not node_bin:
+            logger.debug("Cannot auto-start: 'node' not found in PATH")
+            return False
+        candidates = [
+            Path(self._hermes_home).expanduser() / "noxem-server" / "server" / "memory-server.mjs",
+        ]
+        for path in candidates:
+            if path.exists():
+                try:
+                    env = os.environ.copy()
+                    env.setdefault("ENABLE_EMBEDDING", "true")
+                    env.setdefault("ENABLE_ADVISOR", "false")
+                    env.setdefault("ENABLE_MAINTENANCE", "true")
+                    subprocess.Popen(
+                        [node_bin, str(path)],
+                        cwd=str(path.parent),
+                        env=env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    logger.info(f"Noxem auto-started memory server from {path}")
+                    # Wait up to 30s for server to become ready
+                    for _ in range(30):
+                        time.sleep(1)
+                        if self._check_server_health():
+                            return True
+                    return False
+                except Exception as e:
+                    logger.debug(f"Failed to auto-start from {path}: {e}")
+        return False
 
     def _check_server_health(self, log_init=False):
         """Probe /health and update server_reachable state."""
@@ -237,7 +286,8 @@ class NoxemMemoryProvider:
             query = urllib.parse.quote(args.get('query', ''), safe='')
             method = args.get('method', 'hybrid')
             url = f"/memory/search?q={query}&limit={args.get('limit', 5)}&method={method}"
-            return self._api_get(url)
+            result = self._api_get(url)
+            return json.dumps(result)
         elif name == "memory_store":
             result = self._api_post("/memory/store", {
                 "text": args["text"],

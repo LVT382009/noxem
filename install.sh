@@ -25,6 +25,9 @@ if [ "$OS" = "Darwin" ]; then
   IS_MACOS=true
 fi
 
+# Clear bash hash cache so hermes-noxem points to the right path
+hash -r 2>/dev/null || true
+
 echo "========================================"
 echo " Noxem Installation for Hermes Agent"
 echo "========================================"
@@ -146,6 +149,12 @@ mkdir -p "$HERMES_SERVER_DIR"
 # Copy full repo structure (server, plugins, hooks, launcher, scripts)
 rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' "$APP_DIR/" "$HERMES_SERVER_DIR/" 2>/dev/null || \
   cp -r "$APP_DIR/"* "$HERMES_SERVER_DIR/" 2>/dev/null || true
+# Fix CRLF line endings (Windows git checkout can introduce 
+)
+find "$HERMES_SERVER_DIR" -type f \( -name "*.sh" -o -name "*.mjs" -o -name "*.js" \) -exec sed -i 's/
+$//' {} + 2>/dev/null || true
+chmod +x "$HERMES_SERVER_DIR/noxem-launcher.sh" 2>/dev/null || true
+chmod +x "$HERMES_SERVER_DIR/server/"*.sh 2>/dev/null || true
 # Install npm dependencies in the deployed server
 cd "$HERMES_SERVER_DIR/server" 2>/dev/null && npm install --no-audit --no-fund 2>&1 | tail -1
 echo " Deployed to $HERMES_SERVER_DIR"
