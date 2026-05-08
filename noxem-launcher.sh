@@ -109,6 +109,8 @@ export MEMORY_PORT
 export ENABLE_EMBEDDING=${ENABLE_EMBEDDING:-true}
 export ENABLE_ADVISOR=${ENABLE_ADVISOR:-true}
 export ENABLE_MAINTENANCE=${ENABLE_MAINTENANCE:-true}
+# Prefer IPv4 for HuggingFace CDN downloads (WSL IPv6 can cause ConnectTimeoutError)
+export NODE_OPTIONS="${NODE_OPTIONS:-} --dns-result-order=ipv4first"
 node "$MEMORY_SERVER" &
 MEMORY_PID=$!
 wait_for_port $MEMORY_PORT "Memory server" 180

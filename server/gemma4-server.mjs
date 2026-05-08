@@ -19,7 +19,7 @@ const DTYPE = process.env.GEMMA4_DTYPE || 'q4f16';
 const MAX_NEW_TOKENS = parseInt(process.env.GEMMA4_MAX_TOKENS || '1024');
 // Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
 const CACHE_DIR = process.env.GEMMA4_CACHE || resolve(PROJECT_ROOT, '.cache/gemma4');
-const MAX_RETRIES = parseInt(process.env.GEMMA4_LOAD_RETRIES || '2');
+const MAX_RETRIES = parseInt(process.env.GEMMA4_LOAD_RETRIES || '3');
 
 // In Node.js, onnxruntime-node auto-selects the best EP (CUDA > DirectML > CPU).
 // WebGPU is browser-only — setting device:'webgpu' in Node causes "fetch failed".
@@ -196,10 +196,12 @@ async function loadModel() {
         // auto-selects the best execution provider (CUDA/DirectML/CPU)
         if (DEVICE) loadOpts.device = DEVICE;
 
-        [processor, model] = await Promise.all([
-          AutoProcessor.from_pretrained(MODEL_ID, { cache_dir: CACHE_DIR }),
-          Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, loadOpts),
-        ]);
+        // Load sequentially (not Promise.all) to avoid CDN connection timeouts.
+        // Transformers.js fires many concurrent fetch() requests for model files;
+        // loading processor + model in parallel doubles the concurrent connections,
+        // which triggers ConnectTimeoutError on HuggingFace CDN (xethub.hf.co).
+        processor = await AutoProcessor.from_pretrained(MODEL_ID, { cache_dir: CACHE_DIR });
+        model = await Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, loadOpts);
 
         const elapsed = ((Date.now() - start) / 1000).toFixed(1);
         console.log(`Gemma 4 ready in ${elapsed}s`);
