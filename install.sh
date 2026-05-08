@@ -41,13 +41,13 @@ fi
 echo ""
 
 # ── 1. Node.js dependencies ──
-echo "[1/5] Installing server dependencies..."
+echo "[1/6] Installing server dependencies..."
 cd "$SERVER_DIR"
 npm install --no-audit --no-fund 2>&1 | tail -1
 echo " ✓"
 
 # ── 2. Hermes plugin (clean install) ──
-echo "[2/5] Installing Noxem plugin for Hermes..."
+echo "[2/6] Installing Noxem plugin for Hermes..."
 rm -rf "$HERMES_PLUGIN_DIR"
 mkdir -p "$HERMES_PLUGIN_DIR"
 cp "$PLUGIN_DIR/"* "$HERMES_PLUGIN_DIR/"
@@ -64,7 +64,7 @@ for f in plugin.yaml __init__.py cli.py; do
 done
 
 # ── 3. Verify Python imports ──
-echo "[3/5] Verifying Python imports..."
+echo "[3/6] Verifying Python imports..."
 cd "$HERMES_PLUGIN_DIR"
 if python3 -c "from __init__ import NoxemMemoryProvider; print('  ✓ NoxemMemoryProvider imports successfully')" 2>/dev/null; then
   :
@@ -77,14 +77,58 @@ else
 fi
 
 # ── 4. Shell hooks ──
-echo "[4/5] Installing shell hooks..."
+echo "[4/6] Installing shell hooks..."
 mkdir -p "$HERMES_HOOKS_DIR"
 cp "$APP_DIR/hooks/"*.mjs "$HERMES_HOOKS_DIR/" 2>/dev/null || true
 chmod +x "$HERMES_HOOKS_DIR/"*.mjs 2>/dev/null || true
 echo " ✓"
 
 # ── 5. Launcher ──
-echo "[5/5] Setting up launcher..."
+
+# ── 5. Configure memory provider ──
+echo "[5/6] Configuring noxem as memory provider..."
+HERMES_CONFIG="${HOME}/.hermes/config.yaml"
+NOXEM_CONFIG="${HOME}/.hermes/noxem.json"
+
+# Write noxem server config
+cat > "$NOXEM_CONFIG" << NOXEMEOF
+{
+  "memory_server": "http://127.0.0.1:${MEMORY_PORT:-3001}",
+  "gemma_url": "http://127.0.0.1:${GEMMA4_PORT:-8000}/v1/chat/completions",
+  "embedding_enabled": "true"
+}
+NOXEMEOF
+echo " ✓ Wrote $NOXEM_CONFIG"
+
+# Set memory provider to noxem in hermes config
+if [ -f "$HERMES_CONFIG" ]; then
+  # Try python3+yaml first (most reliable), then fall back to sed
+  if python3 -c "import yaml" 2>/dev/null; then
+    python3 -c "
+import yaml, sys
+path = sys.argv[1]
+with open(path) as f: cfg = yaml.safe_load(f) or {}
+ctx = cfg.setdefault('context', {})
+mem = ctx.setdefault('memory', {})
+if mem.get('provider', '') in ('', None):
+  mem['provider'] = 'noxem'
+  with open(path, 'w') as f: yaml.dump(cfg, f, default_flow_style=False)
+  print('  ✓ Set memory provider to noxem in config.yaml')
+else:
+  print('  ℹ Memory provider already set:', mem.get('provider'))
+" "$HERMES_CONFIG"
+  elif grep -q "provider: ''" "$HERMES_CONFIG" 2>/dev/null; then
+    # Fallback: sed replace first empty provider under memory section with noxem
+    sed -i "/^ *memory:/,/^[^ ]/{s/provider: ''/provider: noxem/}" "$HERMES_CONFIG" 2>/dev/null && \
+      echo "  ✓ Set memory provider to noxem in config.yaml (via sed)" || \
+      echo "  ⚠ Could not update config.yaml — run: hermes memory setup → Select 'noxem'"
+  else
+    echo "  ℹ Memory provider already configured in config.yaml"
+  fi
+else
+  echo "  ⚠ $HERMES_CONFIG not found — run: hermes memory setup → Select 'noxem'"
+fi
+echo "[6/6] Setting up launcher..."
 chmod +x "$APP_DIR/noxem-launcher.sh" 2>/dev/null || true
 INSTALLED=false
 

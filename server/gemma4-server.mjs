@@ -4,12 +4,21 @@
 
 import express from 'express';
 import cors from 'cors';
+import { fileURLToPath } from 'url';
+import { dirname, resolve, join, basename } from 'path';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// Project root is one level up from server/ directory
+const PROJECT_ROOT = resolve(__dirname, '..');
 
 const PORT = process.env.GEMMA4_PORT || 8000;
 const MODEL_ID = process.env.GEMMA4_MODEL || 'onnx-community/gemma-4-E2B-it-ONNX';
 const DTYPE = process.env.GEMMA4_DTYPE || 'q4f16';
 const MAX_NEW_TOKENS = parseInt(process.env.GEMMA4_MAX_TOKENS || '1024');
-const CACHE_DIR = process.env.GEMMA4_CACHE || './.cache/gemma4';
+// Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
+const CACHE_DIR = process.env.GEMMA4_CACHE || resolve(PROJECT_ROOT, '.cache/gemma4');
 const MAX_RETRIES = parseInt(process.env.GEMMA4_LOAD_RETRIES || '2');
 
 // In Node.js, onnxruntime-node auto-selects the best EP (CUDA > DirectML > CPU).
@@ -48,8 +57,100 @@ function startErrorLogger() {
   }, 5000).unref();
 }
 
+
+// Validate cache directory: check if tokenizer_config.json exists and is non-empty.
+// If missing or empty, the cache is corrupted — clear it before loading.
+function validateCacheDir(cacheDir) {
+  try {
+    const resolved = resolve(cacheDir);
+    if (!fs.existsSync(resolved)) return; // no cache yet — fine
+
+    // 1. Find and fix .tmp files from interrupted downloads
+    //    Transformers.js downloads to .tmp.RANDOM.suffix, then renames.
+    //    If process is killed before rename, the .tmp lingers and target file is missing.
+    const tmpFiles = [];
+    function findTmpFiles(dir) {
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) findTmpFiles(full);
+          else if (/\.tmp\.[a-z0-9]+\.[a-z0-9]+$/i.test(entry.name)) tmpFiles.push(full);
+        }
+      } catch {}
+    }
+    findTmpFiles(resolved);
+    for (const tmpFile of tmpFiles) {
+      const targetFile = tmpFile.replace(/\.tmp\.[a-z0-9]+\.[a-z0-9]+$/i, '');
+      console.log(`Cache validator: found temp file from interrupted download: ${basename(tmpFile)}`);
+      if (!fs.existsSync(targetFile)) {
+        try {
+          fs.renameSync(tmpFile, targetFile);
+          console.log(`  Renamed to ${basename(targetFile)}`);
+        } catch (e) {
+          console.log(`  Rename failed: ${e.message} — clearing cache`);
+          fs.rmSync(resolved, { recursive: true, force: true });
+          return;
+        }
+      } else {
+        try { fs.unlinkSync(tmpFile); } catch {}
+      }
+    }
+
+    // 2. Walk directories looking for empty or corrupt tokenizer_config.json
+    function checkDir(dir) {
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const tcPath = join(dir, entry.name, 'tokenizer_config.json');
+          if (fs.existsSync(tcPath)) {
+            const stat = fs.statSync(tcPath);
+            if (stat.size === 0) {
+              console.log('Cache validator: empty tokenizer_config.json — clearing cache');
+              fs.rmSync(resolved, { recursive: true, force: true });
+              return true;
+            }
+            try { JSON.parse(fs.readFileSync(tcPath, 'utf8')); }
+            catch {
+              console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
+              fs.rmSync(resolved, { recursive: true, force: true });
+              return true;
+            }
+          }
+          if (entry.name.startsWith('models--')) {
+            const snapDir = join(dir, entry.name, 'snapshots');
+            if (fs.existsSync(snapDir)) {
+              for (const hash of fs.readdirSync(snapDir)) {
+                const tcFile = join(snapDir, hash, 'tokenizer_config.json');
+                if (fs.existsSync(tcFile)) {
+                  if (fs.statSync(tcFile).size === 0) {
+                    console.log('Cache validator: empty tokenizer_config.json — clearing cache');
+                    fs.rmSync(resolved, { recursive: true, force: true });
+                    return true;
+                  }
+                  try { JSON.parse(fs.readFileSync(tcFile, 'utf8')); }
+                  catch {
+                    console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
+                    fs.rmSync(resolved, { recursive: true, force: true });
+                    return true;
+                  }
+                }
+              }
+            }
+          }
+          if (checkDir(join(dir, entry.name))) return true;
+        }
+      } catch {}
+      return false;
+    }
+    checkDir(resolved);
+  } catch (e) {
+    console.error('Cache validator error:', e.message);
+  }
+}
+
 async function loadModel() {
   if (loadPromise) return loadPromise;
+  validateCacheDir(CACHE_DIR);
   loadPromise = (async () => {
     // Dynamic import — Gemma4ForConditionalGeneration may not exist in older versions
     let AutoProcessor, Gemma4ForConditionalGeneration;
@@ -75,13 +176,17 @@ async function loadModel() {
         if (attempt > 0) {
           console.log(`Model load retry ${attempt}/${MAX_RETRIES}...`);
           // Only clear cache on second+ attempt if explicitly requested
-          if (process.env.GEMMA4_CLEAR_CACHE_ON_RETRY === 'true') {
+          // Auto-detect corrupted cache: if previous error was "fetch failed" or "tokenizer_class",
+          // the cache is corrupt — clear it regardless of GEMMA4_CLEAR_CACHE_ON_RETRY setting
+          const prevError = loadError?.message || '';
+          const cacheCorrupted = prevError.includes('fetch failed') || prevError.includes('tokenizer_class') || prevError.includes('Cannot read properties');
+          if (cacheCorrupted || process.env.GEMMA4_CLEAR_CACHE_ON_RETRY === 'true') {
             const fs = await import('fs');
             const path = await import('path');
             const cachePath = path.resolve(CACHE_DIR);
             if (fs.existsSync(cachePath)) {
               fs.rmSync(cachePath, { recursive: true, force: true });
-              console.log('  Cleared model cache (GEMMA4_CLEAR_CACHE_ON_RETRY=true)');
+              console.log('  Cleared model cache (corrupted — ' + (cacheCorrupted ? 'auto-detected' : 'GEMMA4_CLEAR_CACHE_ON_RETRY=true') + ')');
             }
           } else {
             console.log('  Retrying with existing cache...');
@@ -222,7 +327,7 @@ function shutdown(signal) {
     console.log('Gemma 4 server stopped.');
     process.exit(0);
   });
-  setTimeout(() => process.exit(1), 5000);
+  setTimeout(() => process.exit(1), 8000);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

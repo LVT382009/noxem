@@ -1,9 +1,18 @@
 import { AutoModel, AutoTokenizer } from '@huggingface/transformers';
+import { fileURLToPath } from 'url';
+import { dirname, resolve, join, basename } from 'path';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// Project root is one level up from server/ directory
+const PROJECT_ROOT = resolve(__dirname, '..');
 
 const MODEL_ID = process.env.EMBEDDING_MODEL || 'onnx-community/embeddinggemma-300m-ONNX';
 const DTYPE = process.env.EMBEDDING_DTYPE || 'q8'; // q8: 68.13 vs fp32: 68.36 on MTEB — negligible diff, much smaller/faster
 const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '256'); // MRL 256d: only 1.5% loss vs 768d, 3x less storage
-const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || './.cache/embedding';
+// Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
+const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || resolve(PROJECT_ROOT, '.cache/embedding');
 const MAX_RETRIES = parseInt(process.env.EMBEDDING_LOAD_RETRIES || '2');
 const LOAD_TIMEOUT_MS = parseInt(process.env.EMBEDDING_LOAD_TIMEOUT || '300000'); // 5 min default
 const SIMILARITY_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
@@ -30,22 +39,123 @@ function withLock(fn) {
   return prev.then(() => fn()).finally(release);
 }
 
+
+// Validate cache directory: check if tokenizer_config.json exists and is non-empty.
+// If missing or empty, the cache is corrupted — clear it before loading.
+function validateCacheDir(cacheDir) {
+  try {
+    const resolved = resolve(cacheDir);
+    if (!fs.existsSync(resolved)) return; // no cache yet — fine
+
+    // 1. Find and fix .tmp files from interrupted downloads
+    //    Transformers.js downloads to .tmp.RANDOM.suffix, then renames.
+    //    If process is killed before rename, the .tmp lingers and target file is missing.
+    const tmpFiles = [];
+    function findTmpFiles(dir) {
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) findTmpFiles(full);
+          else if (/\.tmp\.[a-z0-9]+\.[a-z0-9]+$/i.test(entry.name)) tmpFiles.push(full);
+        }
+      } catch {}
+    }
+    findTmpFiles(resolved);
+    for (const tmpFile of tmpFiles) {
+      // Target name: strip .tmp.RANDOM.suffix suffix
+      const targetFile = tmpFile.replace(/\.tmp\.[a-z0-9]+\.[a-z0-9]+$/i, '');
+      console.log(`Cache validator: found temp file from interrupted download: ${basename(tmpFile)}`);
+      if (!fs.existsSync(targetFile)) {
+        try {
+          fs.renameSync(tmpFile, targetFile);
+          console.log(`  Renamed to ${basename(targetFile)}`);
+        } catch (e) {
+          console.log(`  Rename failed: ${e.message} — clearing cache`);
+          fs.rmSync(resolved, { recursive: true, force: true });
+          return;
+        }
+      } else {
+        // Target exists but .tmp also exists — delete the .tmp
+        try { fs.unlinkSync(tmpFile); } catch {}
+      }
+    }
+
+    // 2. Walk directories looking for empty or corrupt tokenizer_config.json
+    function checkDir(dir) {
+      try {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          // Direct structure: cache_dir/org/model/tokenizer_config.json
+          const tcPath = join(dir, entry.name, 'tokenizer_config.json');
+          if (fs.existsSync(tcPath)) {
+            const stat = fs.statSync(tcPath);
+            if (stat.size === 0) {
+              console.log('Cache validator: empty tokenizer_config.json — clearing cache');
+              fs.rmSync(resolved, { recursive: true, force: true });
+              return true;
+            }
+            try { JSON.parse(fs.readFileSync(tcPath, 'utf8')); }
+            catch {
+              console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
+              fs.rmSync(resolved, { recursive: true, force: true });
+              return true;
+            }
+          }
+          // HuggingFace hub structure: cache_dir/models--org--model/snapshots/<hash>/
+          if (entry.name.startsWith('models--')) {
+            const snapDir = join(dir, entry.name, 'snapshots');
+            if (fs.existsSync(snapDir)) {
+              for (const hash of fs.readdirSync(snapDir)) {
+                const tcFile = join(snapDir, hash, 'tokenizer_config.json');
+                if (fs.existsSync(tcFile)) {
+                  if (fs.statSync(tcFile).size === 0) {
+                    console.log('Cache validator: empty tokenizer_config.json — clearing cache');
+                    fs.rmSync(resolved, { recursive: true, force: true });
+                    return true;
+                  }
+                  try { JSON.parse(fs.readFileSync(tcFile, 'utf8')); }
+                  catch {
+                    console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
+                    fs.rmSync(resolved, { recursive: true, force: true });
+                    return true;
+                  }
+                }
+              }
+            }
+          }
+          // Recurse into subdirectories
+          if (checkDir(join(dir, entry.name))) return true;
+        }
+      } catch {}
+      return false;
+    }
+    checkDir(resolved);
+  } catch (e) {
+    console.error('Cache validator error:', e.message);
+  }
+}
+
 export async function initEmbeddingEngine() {
   if (modelReady) return;
   if (loadPromise) return loadPromise;
+  validateCacheDir(EMBED_CACHE_DIR);
 
   loadPromise = (async () => {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         if (attempt > 0) {
           console.log(`Embedding model load retry ${attempt}/${MAX_RETRIES}...`);
-          if (process.env.EMBEDDING_CLEAR_CACHE_ON_RETRY === 'true') {
+          // Auto-detect corrupted cache: if previous error was "fetch failed" or "tokenizer_class",
+          // the cache is corrupt — clear it regardless of EMBEDDING_CLEAR_CACHE_ON_RETRY setting
+          const prevError = loadError?.message || '';
+          const cacheCorrupted = prevError.includes('fetch failed') || prevError.includes('tokenizer_class') || prevError.includes('Cannot read properties');
+          if (cacheCorrupted || process.env.EMBEDDING_CLEAR_CACHE_ON_RETRY === 'true') {
             const fs = await import('fs');
             const path = await import('path');
             const cachePath = path.resolve(EMBED_CACHE_DIR);
             if (fs.existsSync(cachePath)) {
               fs.rmSync(cachePath, { recursive: true, force: true });
-              console.log('  Cleared embedding model cache (EMBEDDING_CLEAR_CACHE_ON_RETRY=true)');
+              console.log('  Cleared embedding model cache (corrupted — ' + (cacheCorrupted ? 'auto-detected' : 'EMBEDDING_CLEAR_CACHE_ON_RETRY=true') + ')');
             }
           } else {
             console.log('  Retrying with existing cache...');

@@ -1,9 +1,13 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch } from './vector-index.mjs';
 
-const DB_DIR = process.env.MEMORY_DB_DIR || './data';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+// Resolve DB path relative to project root (not CWD) — prevents "db not found" when launched from different CWD
+const DB_DIR = process.env.MEMORY_DB_DIR || path.join(PROJECT_ROOT, 'data');
 const DB_PATH = path.join(DB_DIR, 'hermes-memory.db');
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });

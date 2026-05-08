@@ -29,11 +29,26 @@ cleanup() {
   local code=$?
   echo ""
   dim "Shutting down Noxem servers..."
-  [ -n "$MEMORY_PID" ] && kill "$MEMORY_PID" 2>/dev/null && dim "  Memory server stopped"
-  [ -n "$GEMMA4_PID" ] && kill "$GEMMA4_PID" 2>/dev/null && dim "  Gemma 4 stopped"
-  # Wait briefly for graceful shutdown
+  # Send SIGTERM to allow graceful shutdown (flushes model cache writes)
+  [ -n "$MEMORY_PID" ] && kill "$MEMORY_PID" 2>/dev/null && dim " Memory server stopping..."
+  [ -n "$GEMMA4_PID" ] && kill "$GEMMA4_PID" 2>/dev/null && dim " Gemma 4 stopping..."
+  # Wait up to 8s for servers to flush model cache to disk
+  # This prevents cache corruption that causes "fetch failed" on next startup
+  local waited=0
+  while [ $waited -lt 8 ]; do
+    if ! kill -0 "$MEMORY_PID" 2>/dev/null && ! kill -0 "$GEMMA4_PID" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  # Force kill if still running
+  kill -9 "$MEMORY_PID" 2>/dev/null || true
+  kill -9 "$GEMMA4_PID" 2>/dev/null || true
   wait "$MEMORY_PID" 2>/dev/null || true
   wait "$GEMMA4_PID" 2>/dev/null || true
+  dim " Memory server stopped"
+  dim " Gemma 4 stopped"
   green "Noxem cleaned up."
   # Prevent double-run on INT/TERM + EXIT
   trap - EXIT
@@ -79,6 +94,8 @@ wait_for_port() {
 }
 
 # ── Start servers ──
+# cd into NOXEM_DIR so relative cache paths (./.cache/) resolve correctly
+cd "$NOXEM_DIR"
 echo ""
 green "╔═══════════════════════════════════╗"
 green "║ Noxem — Starting Servers          ║"
