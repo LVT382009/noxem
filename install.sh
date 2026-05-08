@@ -3,7 +3,16 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 SERVER_DIR="$APP_DIR/server"
-PLUGIN_DIR="$APP_DIR/plugins/memory/noxem"
+# Detect plugin location: could be in repo structure or already in hermes plugins dir
+if [ -f "$APP_DIR/plugins/memory/noxem/__init__.py" ]; then
+  PLUGIN_DIR="$APP_DIR/plugins/memory/noxem"
+elif [ -f "$APP_DIR/__init__.py" ]; then
+  # Already installed as ~/.hermes/plugins/noxem/ — plugin files are at root
+  PLUGIN_DIR="$APP_DIR"
+else
+  echo "ERROR: Cannot find plugin __init__.py. Run from the noxem repo root."
+  exit 1
+fi
 HERMES_USER_PLUGIN_DIR="${HOME}/.hermes/plugins/noxem"
 HERMES_NESTED_PLUGIN_DIR="${HOME}/.hermes/plugins/memory/noxem"
 HERMES_HOOKS_DIR="${HOME}/.hermes/agent-hooks"
@@ -53,19 +62,26 @@ echo "  Done"
 # and checks if <name>/__init__.py contains "register_memory_provider"
 echo "[2/6] Installing Noxem plugin for Hermes..."
 
-# Primary: install to user-plugins discovery path
-rm -rf "$HERMES_USER_PLUGIN_DIR"
-mkdir -p "$HERMES_USER_PLUGIN_DIR"
-cp "$PLUGIN_DIR/__init__.py" "$HERMES_USER_PLUGIN_DIR/"
-cp "$PLUGIN_DIR/plugin.yaml" "$HERMES_USER_PLUGIN_DIR/"
-cp "$PLUGIN_DIR/cli.py" "$HERMES_USER_PLUGIN_DIR/" 2>/dev/null || true
-echo "  Installed to $HERMES_USER_PLUGIN_DIR"
+# Skip copy if already running from the correct plugin discovery path
+if [ "$PLUGIN_DIR" = "$HERMES_USER_PLUGIN_DIR" ]; then
+  echo "  Already in plugin discovery path ($HERMES_USER_PLUGIN_DIR)"
+else
+  # Primary: install to user-plugins discovery path
+  rm -rf "$HERMES_USER_PLUGIN_DIR"
+  mkdir -p "$HERMES_USER_PLUGIN_DIR"
+  cp "$PLUGIN_DIR/__init__.py" "$HERMES_USER_PLUGIN_DIR/"
+  cp "$PLUGIN_DIR/plugin.yaml" "$HERMES_USER_PLUGIN_DIR/"
+  cp "$PLUGIN_DIR/cli.py" "$HERMES_USER_PLUGIN_DIR/" 2>/dev/null || true
+  echo "  Installed to $HERMES_USER_PLUGIN_DIR"
+fi
 
-# Fallback: also install to nested path
-rm -rf "$HERMES_NESTED_PLUGIN_DIR"
-mkdir -p "$HERMES_NESTED_PLUGIN_DIR"
-cp "$PLUGIN_DIR/"* "$HERMES_NESTED_PLUGIN_DIR/"
-echo "  Also installed to $HERMES_NESTED_PLUGIN_DIR"
+# Fallback: also install to nested path (if different from primary)
+if [ "$HERMES_NESTED_PLUGIN_DIR" != "$HERMES_USER_PLUGIN_DIR" ]; then
+  rm -rf "$HERMES_NESTED_PLUGIN_DIR"
+  mkdir -p "$HERMES_NESTED_PLUGIN_DIR"
+  cp "$PLUGIN_DIR/"* "$HERMES_NESTED_PLUGIN_DIR/" 2>/dev/null || true
+  echo "  Also installed to $HERMES_NESTED_PLUGIN_DIR"
+fi
 
 # Verifying plugin structure
 echo "  Verifying plugin structure..."
