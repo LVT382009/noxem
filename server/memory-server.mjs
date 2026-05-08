@@ -415,6 +415,59 @@ app.get('/memory/stats', (_req, res) => {
   res.json(getMemoryStats());
 });
 
+// Release endpoint: curated context for LLM injection
+// Selects top memories by importance×recency, deduplicates by entity+attribute,
+// and returns formatted text ready for LLM context
+app.get('/memory/release', async (req, res) => {
+  try {
+    const tokenBudget = Math.min(Math.max(parseInt(req.query.tokens) || 2000, 100), 8000);
+    const sessionId = req.query.session_id || '';
+
+    let memories = getAllActiveMemories();
+    if (sessionId) memories = memories.filter(m => m.session_id === sessionId);
+
+    // Score and rank by composite: recency × importance
+    const scored = applyRecencyScore(
+      memories.map(m => ({
+        ...m,
+        score: m.importance ?? 0.5,
+      }))
+    ).sort((a, b) => b.score - a.score);
+
+    // Deduplicate: keep only the highest-scored memory per entity+attribute pair
+    const seen = new Set();
+    const deduped = scored.filter(m => {
+      const key = m.entity && m.attribute ? `${m.entity}::${m.attribute}` : null;
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // Build formatted text within token budget (rough: 1 token ≈ 4 chars)
+    const charBudget = tokenBudget * 4;
+    const lines = [];
+    let chars = 0;
+    for (const m of deduped) {
+      const prefix = m.context_prefix ? `[${m.context_prefix}] ` : '';
+      const line = `- (${m.type}) ${prefix}${m.text}`;
+      if (chars + line.length > charBudget) break;
+      lines.push(line);
+      chars += line.length;
+    }
+
+    res.json({
+      ok: true,
+      memories: lines.length,
+      total_candidates: scored.length,
+      token_budget: tokenBudget,
+      text: lines.join('\n'),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/memory/session/:sessionId', (req, res) => {
   try {
     const { limit, offset } = req.query;
@@ -433,6 +486,49 @@ app.get('/memory/type/:type', (req, res) => {
     const all = getMemoriesByType(req.params.type, limitNum + offsetNum);
     res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: all.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ─── Export / Import ────────────────────────────────────────────
+
+app.get('/memory/export', (_req, res) => {
+  try {
+    const memories = getAllActiveMemories();
+    const stats = getMemoryStats();
+    res.json({ ok: true, version: '2.1.0', exported_at: new Date().toISOString(), stats, memories });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/memory/import', async (req, res) => {
+  try {
+    const { memories } = req.body;
+    if (!memories?.length) return res.status(400).json({ error: 'memories array required' });
+    if (memories.length > 1000) return res.status(400).json({ error: 'batch too large (max 1000)' });
+
+    const imported = [];
+    for (const m of memories) {
+      if (!m.text || typeof m.text !== 'string') continue;
+      const embedding = m.embedding ? new Float32Array(m.embedding) : null;
+      const id = storeMemory({
+        session_id: m.session_id || '',
+        type: VALID_TYPES.includes(m.type) ? m.type : 'fact',
+        text: m.text,
+        embedding,
+        metadata: { ...(m.metadata || {}), source: 'import', imported_at: new Date().toISOString() },
+        importance: m.importance ?? 0.5,
+        context_prefix: m.context_prefix || '',
+        entity: m.entity || '',
+        attribute: m.attribute || '',
+        valid_from: m.valid_from || new Date().toISOString(),
+      });
+      imported.push(id);
+    }
+    res.json({ ok: true, imported: imported.length, ids: imported });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/memory/:id', (req, res) => {
@@ -802,49 +898,6 @@ app.post('/memory/purge', (_req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// ─── Export / Import ────────────────────────────────────────────
-
-app.get('/memory/export', (_req, res) => {
-  try {
-    const memories = getAllActiveMemories();
-    const stats = getMemoryStats();
-    res.json({ ok: true, version: '2.1.0', exported_at: new Date().toISOString(), stats, memories });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/memory/import', async (req, res) => {
-  try {
-    const { memories } = req.body;
-    if (!memories?.length) return res.status(400).json({ error: 'memories array required' });
-    if (memories.length > 1000) return res.status(400).json({ error: 'batch too large (max 1000)' });
-
-    const imported = [];
-    for (const m of memories) {
-      if (!m.text || typeof m.text !== 'string') continue;
-      const embedding = m.embedding ? new Float32Array(m.embedding) : null;
-      const id = storeMemory({
-        session_id: m.session_id || '',
-        type: VALID_TYPES.includes(m.type) ? m.type : 'fact',
-        text: m.text,
-        embedding,
-        metadata: { ...(m.metadata || {}), source: 'import', imported_at: new Date().toISOString() },
-        importance: m.importance ?? 0.5,
-        context_prefix: m.context_prefix || '',
-        entity: m.entity || '',
-        attribute: m.attribute || '',
-        valid_from: m.valid_from || new Date().toISOString(),
-      });
-      imported.push(id);
-    }
-    res.json({ ok: true, imported: imported.length, ids: imported });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ─── Start ────────────────────────────────────────────────────────
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
@@ -861,6 +914,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
 // Graceful shutdown
 function shutdown(signal) {
   console.log(`\n${signal} received — shutting down gracefully...`);
+  if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
   server.close(() => {
     close(); // close SQLite
@@ -877,12 +931,40 @@ function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Handle uncaught errors gracefully
+// Handle uncaught errors gracefully — debounce non-fatal errors like gemma4-server
+const _errorCounts = new Map();
+let _errorLogInterval = null;
+function _startErrorLogger() {
+  if (_errorLogInterval) return;
+  _errorLogInterval = setInterval(() => {
+    for (const [msg, count] of _errorCounts) {
+      if (count > 1) {
+        console.error(`Uncaught exception (non-fatal, ${count}x): ${msg}`);
+      }
+      _errorCounts.delete(msg);
+    }
+  }, 5000).unref();
+}
+
+const FATAL_ERROR_PATTERNS = [/EADDRINUSE/, /ENOMEM/, /heap out of memory/, /SQLITE_CORRUPT/];
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err.message);
-  shutdown('UNCAUGHT_EXCEPTION');
+  const msg = err.message || String(err);
+  const isFatal = FATAL_ERROR_PATTERNS.some(p => p.test(msg));
+  if (isFatal) {
+    console.error('Fatal uncaught exception:', msg);
+    shutdown('FATAL_EXCEPTION');
+    return;
+  }
+  // Non-fatal: debounce and count
+  const count = (_errorCounts.get(msg) || 0) + 1;
+  _errorCounts.set(msg, count);
+  if (count === 1) {
+    console.error(`Uncaught exception (non-fatal): ${msg}`);
+    _startErrorLogger();
+  }
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled rejection:', reason instanceof Error ? reason.message : reason);
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  console.error('Unhandled rejection:', msg);
 });

@@ -1,3 +1,43 @@
+// Prefer IPv4 for HuggingFace CDN downloads — WSL IPv6 can cause ConnectTimeoutError
+if (!process.env.NODE_OPTIONS?.includes('ipv4first')) {
+  process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --dns-result-order=ipv4first`.trim();
+}
+
+// Patch globalThis.fetch to add per-request timeout for HuggingFace CDN downloads
+// and limit concurrent connections to prevent CDN saturation
+const FETCH_TIMEOUT_MS = parseInt(process.env.HF_FETCH_TIMEOUT || '120000');
+const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.HF_MAX_CONCURRENT || '4');
+const _origFetch = globalThis.fetch;
+let _hfActiveFetches = 0;
+const _hfFetchQueue = [];
+
+function dequeueFetch() {
+  if (_hfFetchQueue.length === 0 || _hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) return;
+  const { url, opts, resolve, reject } = _hfFetchQueue.shift();
+  _hfActiveFetches++;
+  _origFetch(url, opts)
+    .then(resolve)
+    .catch(reject)
+    .finally(() => { _hfActiveFetches--; dequeueFetch(); });
+}
+
+globalThis.fetch = function patchedFetch(url, opts = {}) {
+  const isHF = typeof url === 'string' && (url.includes('huggingface') || url.includes('hf.co'));
+  if (isHF) {
+    if (!opts.signal) {
+      opts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+    }
+    if (_hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) {
+      return new Promise((resolve, reject) => {
+        _hfFetchQueue.push({ url, opts, resolve, reject });
+      });
+    }
+    _hfActiveFetches++;
+    return _origFetch(url, opts).finally(() => { _hfActiveFetches--; dequeueFetch(); });
+  }
+  return _origFetch(url, opts);
+};
+
 import { AutoModel, AutoTokenizer } from '@huggingface/transformers';
 import { fileURLToPath } from 'url';
 import { dirname, resolve, join, basename } from 'path';
@@ -154,14 +194,19 @@ export async function initEmbeddingEngine() {
 
         console.log(`Loading EmbeddingGemma 300M (${DTYPE}, dim=${EMBED_DIM})...`);
         const start = Date.now();
+        // Load sequentially (not Promise.all) to avoid CDN connection timeouts.
+        // Transformers.js fires many concurrent fetch() requests for model files;
+        // loading tokenizer + model in parallel doubles the concurrent connections,
+        // which triggers ConnectTimeoutError on HuggingFace CDN (xethub.hf.co).
         const loadWithTimeout = Promise.race([
-          Promise.all([
-            AutoTokenizer.from_pretrained(MODEL_ID, { cache_dir: EMBED_CACHE_DIR }),
-            AutoModel.from_pretrained(MODEL_ID, {
+          (async () => {
+            const tok = await AutoTokenizer.from_pretrained(MODEL_ID, { cache_dir: EMBED_CACHE_DIR });
+            const mod = await AutoModel.from_pretrained(MODEL_ID, {
               dtype: DTYPE,
               cache_dir: EMBED_CACHE_DIR,
-            }),
-          ]),
+            });
+            return [tok, mod];
+          })(),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error(`Model load timed out after ${LOAD_TIMEOUT_MS / 1000}s`)), LOAD_TIMEOUT_MS)
           ),

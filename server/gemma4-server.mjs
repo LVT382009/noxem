@@ -2,11 +2,54 @@
 // Gemma 4 E2B — OpenAI-compatible API server using Transformers.js
 // Provides /v1/chat/completions endpoint for the Noxem advisor.
 
+// Prefer IPv4 for HuggingFace CDN downloads — WSL IPv6 can cause ConnectTimeoutError
+// Must be set before any fetch() calls (i.e., before transformers.js imports)
+if (!process.env.NODE_OPTIONS?.includes('ipv4first')) {
+  process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --dns-result-order=ipv4first`.trim();
+}
+
+// Patch globalThis.fetch to add per-request timeout (default 120s for model files)
+// Without this, a single stalled connection to xethub.hf.co can block the entire model load
+const FETCH_TIMEOUT_MS = parseInt(process.env.HF_FETCH_TIMEOUT || '120000');
+const MAX_CONCURRENT_DOWNLOADS = parseInt(process.env.HF_MAX_CONCURRENT || '4');
+const _origFetch = globalThis.fetch;
+let _hfActiveFetches = 0;
+const _hfFetchQueue = [];
+
+function dequeueFetch() {
+  if (_hfFetchQueue.length === 0 || _hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) return;
+  const { url, opts, resolve, reject } = _hfFetchQueue.shift();
+  _hfActiveFetches++;
+  _origFetch(url, opts)
+    .then(resolve)
+    .catch(reject)
+    .finally(() => { _hfActiveFetches--; dequeueFetch(); });
+}
+
+globalThis.fetch = function patchedFetch(url, opts = {}) {
+  const isHF = typeof url === 'string' && (url.includes('huggingface') || url.includes('hf.co'));
+  if (isHF) {
+    if (!opts.signal) {
+      opts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+    }
+    // Concurrency limiter: queue if too many concurrent HuggingFace downloads
+    if (_hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) {
+      return new Promise((resolve, reject) => {
+        _hfFetchQueue.push({ url, opts, resolve, reject });
+      });
+    }
+    _hfActiveFetches++;
+    return _origFetch(url, opts).finally(() => { _hfActiveFetches--; dequeueFetch(); });
+  }
+  return _origFetch(url, opts);
+};
+
 import express from 'express';
 import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, resolve, join, basename } from 'path';
 import fs from 'fs';
+import { runNetworkDiagnostics } from './network-diagnostics.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -142,6 +185,7 @@ function validateCacheDir(cacheDir) {
 
 async function loadModel() {
   if (loadPromise) return loadPromise;
+  runNetworkDiagnostics();
   validateCacheDir(CACHE_DIR);
   loadPromise = (async () => {
     // Dynamic import — Gemma4ForConditionalGeneration may not exist in older versions

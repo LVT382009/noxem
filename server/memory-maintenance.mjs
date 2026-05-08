@@ -8,7 +8,7 @@ const RUN_INTERVAL_MS = parseInt(process.env.MAINTENANCE_INTERVAL || '300000'); 
 
 export async function runMaintenance() {
   if (maintenanceRunning) {
-    console.log('[Maintenance] Already running — skipping');
+    console.log('[Maintenance] Already running - skipping');
     return { skipped: true, reason: 'already running' };
   }
   maintenanceRunning = true;
@@ -26,7 +26,7 @@ export async function runMaintenance() {
     const memories = getActiveWithEmbedding();
 
     if (memories.length < 2) {
-      console.log(`[Maintenance] Only ${memories.length} memories — skipping dedup/contradiction`);
+      console.log(`[Maintenance] Only ${memories.length} memories - skipping dedup/contradiction`);
       results.message = 'too few memories';
       return results;
     }
@@ -44,14 +44,36 @@ export async function runMaintenance() {
       console.error('[Maintenance] Dedup error:', err.message);
     }
 
-    // 2. Contradiction detection
+    // 2. Contradiction detection (entity-attribute matching - directional)
+    // Same entity+attribute with different values = older superseded by newer
+    // This avoids the bidirectional bug where both A->B and B->A were superseding
     try {
-      const contradictions = findContradictions(memories);
-      for (const c of contradictions) {
-        const [older, newer] = c.a.id < c.b.id ? [c.a, c.b] : [c.b, c.a];
-        updateMemoryStatus(older.id, 'superseded', newer.id);
-        results.contradictions++;
-        console.log(`[Maintenance] Contradiction: "${older.text}" → superseded by "${newer.text}" (sim: ${c.similarity.toFixed(3)})`);
+      const entityAttrMap = new Map();
+      for (const m of memories) {
+        if (!m.entity || !m.attribute) continue;
+        const key = `${m.entity}::${m.attribute}`;
+        if (!entityAttrMap.has(key)) entityAttrMap.set(key, []);
+        entityAttrMap.get(key).push(m);
+      }
+
+      for (const [key, mems] of entityAttrMap) {
+        if (mems.length < 2) continue;
+        // Sort by id ascending (older first)
+        mems.sort((a, b) => a.id - b.id);
+        // Check pairs: if consecutive memories about same entity+attribute
+        // express different preference values, the newer supersedes the older
+        const prefVerb = /(?:prefer|like|love|hate|dislike|use|using|favor|choose|chose)\s+(\S+)/i;
+        for (let i = 0; i < mems.length - 1; i++) {
+          const older = mems[i];
+          const newer = mems[i + 1];
+          const olderMatch = older.text.toLowerCase().match(prefVerb);
+          const newerMatch = newer.text.toLowerCase().match(prefVerb);
+          if (olderMatch && newerMatch && olderMatch[1] !== newerMatch[1]) {
+            updateMemoryStatus(older.id, 'superseded', newer.id);
+            results.contradictions++;
+            console.log(`[Maintenance] Contradiction: "${older.text}" -> superseded by "${newer.text}" (${key})`);
+          }
+        }
       }
     } catch (err) {
       console.error('[Maintenance] Contradiction error:', err.message);
@@ -209,7 +231,7 @@ async function consolidateMemories(memories) {
         }
 
         consolidatedCount++;
-        console.log(`[Maintenance] Consolidated ${cluster.length} memories about "${entity}" → #${newId} (importance: ${newImportance})`);
+        console.log(`[Maintenance] Consolidated ${cluster.length} memories about "${entity}" -> #${newId} (importance: ${newImportance})`);
       } catch (err) {
         console.error('[Maintenance] Cluster consolidation error:', err.message);
       }
