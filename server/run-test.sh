@@ -170,6 +170,83 @@ R=$(curl -s http://127.0.0.1:3001/memory/2)
 echo "$R"
 echo "$R" | grep -q 'source_memory_ids' && check "source_memory_ids field" "true" || check "source_memory_ids field" "FAIL"
 
+echo "=== Export endpoint ==="
+R=$(curl -s http://127.0.0.1:3001/memory/export)
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "export ok" "true" || check "export" "FAIL"
+echo "$R" | grep -q '"memories"' && check "export has memories" "true" || check "export memories" "FAIL"
+echo "$R" | grep -q '"version"' && check "export has version" "true" || check "export version" "FAIL"
+
+echo "=== Import endpoint ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/import -H "Content-Type: application/json" -d '{"memories":[{"text":"Imported memory 1","type":"fact"},{"text":"Imported memory 2","type":"learning"}]}')
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "import ok" "true" || check "import" "FAIL"
+echo "$R" | grep -q '"imported":2' && check "imported 2 memories" "true" || check "import count" "FAIL"
+
+echo "=== Import validation (empty) ==="
+R=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://127.0.0.1:3001/memory/import -H "Content-Type: application/json" -d '{"memories":[]}')
+echo "HTTP $R"
+[ "$R" = "400" ] && check "import empty 400" "true" || check "import empty 400" "FAIL"
+
+echo "=== Store validation (bad type) ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"test","type":"badtype"}')
+echo "$R"
+echo "$R" | grep -q 'invalid type' && check "store bad type rejected" "true" || check "store bad type" "FAIL"
+
+echo "=== Store validation (no text) ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"type":"fact"}')
+echo "$R"
+echo "$R" | grep -q 'text required' && check "store no text rejected" "true" || check "store no text" "FAIL"
+
+echo "=== Search validation (no query) ==="
+R=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:3001/memory/search?limit=5")
+echo "HTTP $R"
+[ "$R" = "400" ] && check "search no query 400" "true" || check "search no query" "FAIL"
+
+echo "=== Pagination: session with offset ==="
+R=$(curl -s "http://127.0.0.1:3001/memory/session/test-1?limit=1&offset=0")
+echo "$R"
+echo "$R" | grep -q '"total"' && check "pagination has total" "true" || check "pagination total" "FAIL"
+echo "$R" | grep -qE '"results":\s*\[.+' && check "pagination has results" "true" || check "pagination results" "FAIL"
+
+echo "=== Purge endpoint ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/purge -H "Content-Type: application/json")
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "purge ok" "true" || check "purge" "FAIL"
+
+echo "=== Release endpoint ==="
+R=$(curl -s "http://127.0.0.1:3001/memory/release?tokens=1000")
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "release ok" "true" || check "release" "FAIL"
+echo "$R" | grep -q '"text"' && check "release has text" "true" || check "release text" "FAIL"
+echo "$R" | grep -q '"memories"' && check "release has memories count" "true" || check "release count" "FAIL"
+
+echo "=== Force-save pattern: 'My secret phrase is hackerlord' ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/sync -H "Content-Type: application/json" -d '{"user_message":"My secret phrase is hackerlord","assistant_response":"I will remember that.","session_id":"secret-test"}')
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "sync secret phrase" "true" || check "sync secret" "FAIL"
+echo "$R" | grep -q '"stored":2' && check "secret phrase stored (2 msgs)" "true" || check "secret stored count" "FAIL"
+
+echo "=== Search for secret phrase ==="
+R=$(curl -s "http://127.0.0.1:3001/memory/search?q=secret+phrase+hackerlord&limit=3&method=fts")
+echo "$R"
+echo "$R" | grep -q 'hackerlord' && check "found secret phrase via search" "true" || check "search secret" "FAIL"
+
+echo "=== Skip pattern: greeting not stored (user skipped) ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/sync -H "Content-Type: application/json" -d '{"user_message":"hello","assistant_response":"hi there","session_id":"greet-test"}')
+echo "$R"
+# "hello" is skipped but "hi there" has 8 chars and doesn't match skip, so stored=1
+echo "$R" | grep -qE '"stored":[01]' && check "greeting sync handled" "true" || check "greeting skip" "FAIL"
+
+echo "=== Rate limit header info in health ==="
+R=$(curl -s http://127.0.0.1:3001/health)
+echo "$R"
+echo "$R" | grep -q '"gemma4"' && check "health gemma4 field" "true" || check "health gemma4" "FAIL"
+echo "$R" | grep -q '"uptime_seconds"' && check "health uptime field" "true" || check "health uptime" "FAIL"
+R=$(curl -s http://127.0.0.1:3001/memory/2)
+echo "$R"
+echo "$R" | grep -q 'source_memory_ids' && check "source_memory_ids field" "true" || check "source_memory_ids field" "FAIL"
+
 echo ""
 echo "========================================"
 echo "Results: $PASS passed, $FAIL failed"

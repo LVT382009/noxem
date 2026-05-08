@@ -666,12 +666,25 @@ try {
 const SKIP_PATTERNS = [
   /^(ok|okay|sure|yes|no|got it|thanks|thank you|done|continue|go ahead|please|yep|yeah|nope|cool|great|good|fine|right|correct|agreed)$/i,
   /^(hi|hello|hey|good morning|good afternoon|good evening|bye|goodbye|see you)$/i,
-  /^\s*.{0,15}\s*$/, // Very short messages (<16 chars)
+  /^\s*.{0,4}\s*$/, // Very short messages (<5 chars: "ok", "yes", etc.)
+];
+
+// Patterns that always bypass skip (even if they match a skip pattern) —
+// these signal important self-disclosure or preferences
+const FORCE_SAVE_PATTERNS = [
+  /\b(my name is|i'm called|call me)\b/i,
+  /\b(i prefer|i like|i love|i hate|i dislike|i use|i'm using)\b/i,
+  /\b(my secret|my password|my phrase|my key)\b/i,
+  /\b(i work on|i'm working on|my project)\b/i,
+  /\b(remember this|don't forget|write this down|save this)\b/i,
+  /\b(my goal|my plan|i want to|i need to)\b/i,
 ];
 
 function shouldSkipMessage(text) {
   const trimmed = text.trim();
   if (!trimmed) return true;
+  // Force-save: important self-disclosure always stored
+  if (FORCE_SAVE_PATTERNS.some(p => p.test(trimmed))) return false;
   return SKIP_PATTERNS.some(p => p.test(trimmed));
 }
 

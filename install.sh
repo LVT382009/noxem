@@ -7,6 +7,7 @@ PLUGIN_DIR="$APP_DIR/plugins/memory/noxem"
 HERMES_USER_PLUGIN_DIR="${HOME}/.hermes/plugins/noxem"
 HERMES_NESTED_PLUGIN_DIR="${HOME}/.hermes/plugins/memory/noxem"
 HERMES_HOOKS_DIR="${HOME}/.hermes/agent-hooks"
+HERMES_SERVER_DIR="${HOME}/.hermes/noxem-server"
 
 # ── OS detection ──
 OS="$(uname -s)"
@@ -122,7 +123,19 @@ else
   echo "  Run manually: hermes config set plugins.enabled '[noxem]'"
 fi
 
-echo "[6/6] Setting up launcher..."
+# ── 6. Server deployment ──
+echo "[6/7] Deploying server to persistent location..."
+rm -rf "$HERMES_SERVER_DIR"
+mkdir -p "$HERMES_SERVER_DIR"
+# Copy full repo structure (server, plugins, hooks, launcher, scripts)
+rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' "$APP_DIR/" "$HERMES_SERVER_DIR/" 2>/dev/null || \
+  cp -r "$APP_DIR/"* "$HERMES_SERVER_DIR/" 2>/dev/null || true
+# Install npm dependencies in the deployed server
+cd "$HERMES_SERVER_DIR/server" 2>/dev/null && npm install --no-audit --no-fund 2>&1 | tail -1
+echo " Deployed to $HERMES_SERVER_DIR"
+
+# ── 7. Launcher setup ──
+echo "[7/7] Setting up launcher..."
 chmod +x "$APP_DIR/noxem-launcher.sh" 2>/dev/null || true
 INSTALLED=false
 
@@ -130,7 +143,7 @@ INSTALLED=false
 WRAPPER_PATH="/usr/local/bin/hermes-noxem"
 WRAPPER_CONTENT='#!/usr/bin/env bash
 set -euo pipefail
-exec '"$APP_DIR"'/noxem-launcher.sh "$@"'
+exec '"$HERMES_SERVER_DIR"'/noxem-launcher.sh "$@"'
 
 # Try writeable first (no sudo needed), then sudo with TTY check,
 # then sudo with NOPASSWD. Avoids hanging on non-interactive shells.
@@ -150,7 +163,7 @@ if ! $INSTALLED; then
     SHELL_RC="${HOME}/.bashrc"
   fi
 
-  ALIAS_LINE="alias hermes-noxem='$APP_DIR/noxem-launcher.sh'"
+  ALIAS_LINE="alias hermes-noxem='$HERMES_SERVER_DIR/noxem-launcher.sh'"
 
   if [ ! -f "$SHELL_RC" ] || ! grep -q "alias hermes-noxem" "$SHELL_RC" 2>/dev/null; then
     touch "$SHELL_RC" 2>/dev/null || true
