@@ -63,6 +63,22 @@ app.use((req, res, next) => {
 
 app.use(rateLimiter);
 
+// Optional API key authentication — enable by setting MEMORY_API_KEY env var
+const MEMORY_API_KEY = process.env.MEMORY_API_KEY || '';
+if (MEMORY_API_KEY) {
+  const EXEMPT_PATHS = ['/health', '/ready'];
+  app.use((req, res, next) => {
+    if (EXEMPT_PATHS.some(p => req.path === p)) return next();
+    const auth = req.headers.authorization || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : req.query.api_key || '';
+    if (token !== MEMORY_API_KEY) {
+      return res.status(401).json({ error: 'Unauthorized: invalid or missing API key' });
+    }
+    next();
+  });
+  console.log('API key authentication: ENABLED');
+}
+
 const PORT = process.env.MEMORY_PORT || 3001;
 const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
 const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false';

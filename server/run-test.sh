@@ -279,6 +279,10 @@ echo "$R"
 echo "$R" | grep -q '"ok":true' && check "dedup auto mark" "true" || check "dedup auto mark" "FAIL"
 echo "$R" | grep -q '"marked_invalid"' && check "dedup marked_invalid field" "true" || check "dedup marked_invalid" "FAIL"
 
+echo "=== Health exempt from auth ==="
+R=$(curl -s http://127.0.0.1:3001/health)
+echo "$R" | grep -q '"ok":true' && check "health no auth needed" "true" || check "health auth" "FAIL"
+
 echo ""
 echo "========================================"
 echo "Results: $PASS passed, $FAIL failed"
