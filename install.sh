@@ -55,7 +55,7 @@ fi
 echo ""
 
 # ── 1. Node.js dependencies ──
-echo "[1/6] Installing server dependencies..."
+echo "[1/7] Installing server dependencies..."
 cd "$SERVER_DIR"
 npm install --no-audit --no-fund 2>&1 | tail -1
 echo "  Done"
@@ -63,7 +63,7 @@ echo "  Done"
 # ── 2. Hermes plugin (clean install) ──
 # Hermes discovers memory providers at ~/.hermes/plugins/<name>/
 # and checks if <name>/__init__.py contains "register_memory_provider"
-echo "[2/6] Installing Noxem plugin for Hermes..."
+echo "[2/7] Installing Noxem plugin for Hermes..."
 
 # Skip copy if already running from the correct plugin discovery path
 if [ "$PLUGIN_DIR" = "$HERMES_USER_PLUGIN_DIR" ]; then
@@ -97,7 +97,7 @@ for f in plugin.yaml __init__.py cli.py; do
 done
 
 # ── 3. Verify Python imports ──
-echo "[3/6] Verifying Python imports..."
+echo "[3/7] Verifying Python imports..."
 cd "$HERMES_USER_PLUGIN_DIR"
 if python3 -c "from __init__ import NoxemMemoryProvider; print('  NoxemMemoryProvider imports OK')" 2>/dev/null; then
   :
@@ -106,14 +106,14 @@ else
 fi
 
 # ── 4. Shell hooks ──
-echo "[4/6] Installing shell hooks..."
+echo "[4/7] Installing shell hooks..."
 mkdir -p "$HERMES_HOOKS_DIR"
 cp "$APP_DIR/hooks/"*.mjs "$HERMES_HOOKS_DIR/" 2>/dev/null || true
 chmod +x "$HERMES_HOOKS_DIR/"*.mjs 2>/dev/null || true
 echo "  Done"
 
 # ── 5. Configure memory provider ──
-echo "[5/6] Configuring noxem as memory provider..."
+echo "[5/7] Configuring noxem as memory provider..."
 HERMES_CONFIG="${HOME}/.hermes/config.yaml"
 NOXEM_CONFIG="${HOME}/.hermes/noxem.json"
 
@@ -149,10 +149,8 @@ mkdir -p "$HERMES_SERVER_DIR"
 # Copy full repo structure (server, plugins, hooks, launcher, scripts)
 rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' "$APP_DIR/" "$HERMES_SERVER_DIR/" 2>/dev/null || \
   cp -r "$APP_DIR/"* "$HERMES_SERVER_DIR/" 2>/dev/null || true
-# Fix CRLF line endings (Windows git checkout can introduce 
-)
-find "$HERMES_SERVER_DIR" -type f \( -name "*.sh" -o -name "*.mjs" -o -name "*.js" \) -exec sed -i 's/
-$//' {} + 2>/dev/null || true
+# Fix CRLF line endings (Windows git checkout can introduce carriage returns)
+find "$HERMES_SERVER_DIR" -type f \( -name "*.sh" -o -name "*.mjs" -o -name "*.js" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
 chmod +x "$HERMES_SERVER_DIR/noxem-launcher.sh" 2>/dev/null || true
 chmod +x "$HERMES_SERVER_DIR/server/"*.sh 2>/dev/null || true
 # Install npm dependencies in the deployed server
