@@ -17,7 +17,7 @@ Hermes Agent
 │   │   - Context recovery after compaction
 │   │   - Task drift warnings
 │   │   - Multi-query expansion for vague searches
-│   │   - DuckDuckGo web search
+│   │   - Background web research (DDG → fetch → extract → store)
 │   │   - Session-end memory extraction
 │   │
 │   └── SQLite + FTS5 + Embeddings + sqlite-vec
@@ -38,7 +38,10 @@ Hermes Agent
 11. **Search** — Hybrid (EmbeddingGemma KNN + FTS5 via Reciprocal Rank Fusion) with MMR diversity + multi-query expansion
 12. **Score** — Recency + importance + spaced-repetition weighting (type-specific half-lives)
 13. **Recover** — `on_pre_compress`: Gemma 4 preserves critical context
-14. **Advise** — Gemma 4 + DDG web search watches for task drift
+13b. **Research** — Background: detect topic → DDG search → fetch pages → extract facts → store as type:learning
+14. **Advise** — Gemma 4 advisor watches for task drift + context recovery
+15. **Feedback** — Search results used by Hermes boost importance (+0.03 vs +0.01 for mere retrieval)
+16. **Auto-correct** — Rule-based category validation: detect misclassified memories and correct type
 
 ## Scoring System
 
@@ -70,7 +73,7 @@ final_score = similarity × (0.4 + 0.25 × recency + 0.2 × importance + 0.15 ×
 ```
 
 - `recency = exp(-(age/eta)^k)` — Weibull decay with type-specific (eta, k)
-- `effective_eta = eta_base × (0.5 + importance) × (1 + 0.3 × recall_count)` — SRS extends lifespan
+- `effective_eta = eta_base × (0.5 + importance) × (1 + 0.3 × recall_count) × (1 + 0.5 × use_count)` — SRS + feedback extends lifespan (capped at 10x)
 - `reinforcement = 1 - e^(-recall_count / 3)` — exponential approach to 1.0
 - `importance_boost = +0.01 per recall` — capped at 1.0
 
@@ -191,8 +194,10 @@ cd server && bash run-test.sh
 | `server/embedding-engine.mjs` | EmbeddingGemma 300M + entity extraction + context prefix + importance |
 | `server/vector-index.mjs` | sqlite-vec native KNN (optional, falls back to JS cosine) |
 | `server/memory-extract.mjs` | LLM memory extraction |
-| `server/advisor-engine.mjs` | Gemma 4 advisor + DDG |
-| `server/ddg-search.mjs` | DuckDuckGo search |
+| `server/advisor-engine.mjs` | Gemma 4 advisor (drift detection + context recovery) |
+| `server/ddg-search.mjs` | DuckDuckGo search (used by research pipeline) |
+| `server/research-engine.mjs` | Background research pipeline (topic detection → DDG → fetch → extract → store) |
+| `server/web-fetch.mjs` | Zero-dep web page fetcher + HTML-to-text extraction |
 | `server/memory-maintenance.mjs` | Cron: dedup/contradiction/consolidation/archive |
 | `server/gemma4-server.mjs` | Gemma 4 model server (retry + fallback + graceful shutdown) |
 | `server/run-test.sh` | Integration test script (34 tests, WSL compatible) |
@@ -262,6 +267,9 @@ CREATE INDEX idx_memories_entity_attr ON memories(entity, attribute);
 | `RATE_LIMIT_MAX` | `120` | Max requests per minute per IP (0 = disable) |
 | `AUTO_PURGE_DAYS` | `365` | Days after which low-importance memories are purged |
 | `CORS_ORIGIN` | `http://localhost:* http://127.0.0.1:*` | CORS allowed origins |
+| `RESEARCH_ENABLED` | `true` | Enable background research pipeline |
+| `RESEARCH_MIN_INTERVAL` | `30000` | Min ms between research per session |
+| `ENABLE_RESEARCH` | `true` | Enable research trigger on sync_turn |
 | `MEMORY_API_KEY` | (empty = disabled) | Bearer token for API auth. Health/ready endpoints exempt |
 | `EMBEDDING_LOAD_TIMEOUT` | `300000` | Embedding model load timeout (ms) |
 | `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear cache on retry (set `true` for corrupt cache) |

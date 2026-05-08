@@ -6,12 +6,13 @@ import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getSessionMemories, getMemoriesByType,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
-  deleteMemory, deleteInvalid, incrementRecallCounts, archiveStaleMemories, vectorKnnSearch,
+  deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
   getMemoriesByEntityAttr, db,
 } from './memory-store.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
+import { triggerResearch, getRecentResearch, getResearchStatus } from './research-engine.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
 
 const app = express();
@@ -83,6 +84,7 @@ const PORT = process.env.MEMORY_PORT || 3001;
 const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
 const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false';
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
+const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false';
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
 
 // Weibull decay: w = exp(-(age/eta)^k) — steeper initial drop then long tail
@@ -103,14 +105,18 @@ const DECAY_BY_TYPE = {
   general:   { eta: 30,  k: 1.0 },
 };
 
-// Get effective Weibull parameters with importance + recall adjustments
-function getDecayParams(type, importance, recallCount) {
+// Get effective Weibull parameters with importance + recall + use-count adjustments
+function getDecayParams(type, importance, recallCount, useCount) {
   const base = DECAY_BY_TYPE[type] || DECAY_BY_TYPE.general;
   if (base.eta === Infinity) return { eta: Infinity, k: 1 };
   // SRS: each recall extends effective eta by 30%
   const recallMod = 1 + 0.3 * (recallCount || 0);
+  // Feedback loop: memories that were actually used (not just retrieved) get 50% more extension per use
+  const useMod = 1 + 0.5 * (useCount || 0);
   const importanceMod = 0.5 + (importance || 0.5); // 0.5-1.5x multiplier
-  return { eta: base.eta * importanceMod * recallMod, k: base.k };
+  // Cap total extension at 10x base eta to prevent unbounded growth
+  const totalMod = Math.min(importanceMod * recallMod * useMod, 10);
+  return { eta: base.eta * totalMod, k: base.k };
 }
 
 // ─── Startup ─────────────────────────────────────────────────────
@@ -158,6 +164,7 @@ app.get('/health', async (_req, res) => {
     advisor: ENABLE_ADVISOR,
     gemma4: gemma4Ok,
     maintenance: ENABLE_MAINTENANCE,
+    research: ENABLE_RESEARCH,
     mode: 'hybrid-ai',
     memory: {
       active: stats.active,
@@ -204,7 +211,9 @@ function applyRecencyScore(results) {
     const recallCount = r.recall_count ?? 0;
     const importance = r.importance ?? 0.5;
     const type = r.type || 'general';
-    const { eta, k } = getDecayParams(type, importance, recallCount);
+    const meta = typeof r.metadata === 'string' ? JSON.parse(r.metadata || '{}') : (r.metadata || {});
+      const useCount = meta.use_count ?? 0;
+      const { eta, k } = getDecayParams(type, importance, recallCount, useCount);
     if (eta === Infinity) {
       // Profile/identity memories never decay
       const reinforcement = 1 - Math.exp(-recallCount / 3);
@@ -462,6 +471,21 @@ app.get("/memory/search", async (req, res) => {
     } catch {}
 
     res.json({ ok: true, method: searchMethod, queries: queries.length > 1 ? queries : undefined, results: searchResults });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Search feedback loop: Hermes reports which memory IDs actually influenced its response
+// This gives a stronger importance boost (+0.03) vs mere retrieval (+0.01)
+app.post('/memory/search/feedback', (req, res) => {
+  try {
+    const { memory_ids } = req.body;
+    if (!Array.isArray(memory_ids) || !memory_ids.length) {
+      return res.status(400).json({ error: 'memory_ids array required' });
+    }
+    const ids = memory_ids.map(id => parseInt(id)).filter(id => id > 0).slice(0, 50);
+    if (!ids.length) return res.status(400).json({ error: 'no valid memory IDs' });
+    const boosted = boostUsedMemories(ids);
+    res.json({ ok: true, boosted });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -784,8 +808,20 @@ app.post('/memory/sync', async (req, res) => {
     }
 
     const ids = memories.length > 0 ? storeMemories(memories) : [];
-    res.json({ ok: true, stored: ids.length, ids });
-  } catch (err) {
+ res.json({ ok: true, stored: ids.length, ids });
+
+ // Trigger background research pipeline (non-blocking, async)
+ if (ENABLE_ADVISOR && user_message?.trim()) {
+   triggerResearch({
+     sessionId: session_id || '',
+     userMessage: user_message,
+     assistantResponse: assistant_response || '',
+     storeMemoryFn: storeMemory,
+     embedFn: embed,
+     isEmbeddingReadyFn: isEmbeddingReady,
+   });
+ }
+} catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -1011,6 +1047,21 @@ app.post('/memory/purge', (_req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ─── Research ──────────────────────────────────────────────────
+
+app.get('/memory/research/status', (_req, res) => {
+  res.json({ ok: true, ...getResearchStatus() });
+});
+
+// Research hint injection: add recent research topics to release output
+// This is called by the Python plugin's prefetch() for context injection
+app.get('/memory/research/hints', (req, res) => {
+  const sessionId = req.query.session_id || '';
+  const topics = getRecentResearch(sessionId);
+  res.json({ ok: true, topics });
+});
+
 // ─── Start ────────────────────────────────────────────────────────
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);

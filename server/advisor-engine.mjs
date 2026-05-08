@@ -1,9 +1,20 @@
-import { searchWeb, formatSearchResults } from './ddg-search.mjs';
+/**
+ * Advisor Engine — Brain 2 advisor for drift detection + context recovery.
+ *
+ * DDG web search has been moved to research-engine.mjs.
+ * This module focuses on:
+ * - Pre-compression context preservation
+ * - Task drift detection
+ * - Session-end memory extraction
+ * - Advice and guidance
+ *
+ * If research memories exist for the session, they are available
+ * via memory_search — the advisor doesn't need to do web searches itself.
+ */
 
 const GEMMA_URL = process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const GEMMA_MODEL = process.env.GEMMA_MODEL || 'onnx-community/gemma-4-E2B-it-ONNX';
 const ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
-const ENABLE_WEB_SEARCH = process.env.ADVISOR_WEB_SEARCH !== 'false';
 
 function callGemma(messages, maxTokens = 1024, temperature = 0.3) {
   return fetch(GEMMA_URL, {
@@ -33,19 +44,6 @@ export async function analyzeBeforeCompress(conversationHistory, sessionMemories
     `[${m.type}] ${m.text}`
   ).join('\n');
 
-  let webContext = '';
-  if (ENABLE_WEB_SEARCH) {
-    try {
-      const searchResults = await searchWeb(
-        `latest information about: ${recentTurns[recentTurns.length - 1]?.content?.substring(0, 100) || ''}`,
-        3
-      );
-      webContext = formatSearchResults(searchResults);
-    } catch (err) {
-      console.error('Advisor web search failed (compress):', err.message);
-    }
-  }
-
   const messages = [
     {
       role: 'system',
@@ -55,7 +53,8 @@ export async function analyzeBeforeCompress(conversationHistory, sessionMemories
 2. Detect any "task drift" — the agent forgetting important task parameters (e.g. building in wrong OS/environment, using wrong tools)
 3. Warn about anything the agent might have forgotten or gotten wrong
 4. Extract specific facts, preferences, and decisions made during this conversation
-5. If web search results are available, incorporate them to correct or enhance the agent's knowledge
+
+Note: Web research is handled by a separate research pipeline. Research memories (type: learning) may already be in the session memories above.
 
 Your output must be in this format:
 CRITICAL_CONTEXT: (what must survive)
@@ -67,7 +66,7 @@ Stay factual and concise. Only flag real issues, not hypothetical ones.`,
     },
     {
       role: 'user',
-      content: `Session memories:\n${memorySummary || 'None yet'}\n\nRecent conversation:\n${convoText}\n\n${webContext ? `Web search results:\n${webContext}\n\n` : ''}Analyze for compaction survival:`,
+      content: `Session memories:\n${memorySummary || 'None yet'}\n\nRecent conversation:\n${convoText}\n\nAnalyze for compaction survival:`,
     },
   ];
 
@@ -81,7 +80,7 @@ Stay factual and concise. Only flag real issues, not hypothetical ones.`,
   }
 }
 
-// Proactive advisor: called periodically during long tasks
+// Proactive advisor: called when advice is explicitly requested
 // Checks task context, warns about drift, provides guidance
 export async function getAdvice({ userMessage, conversationHistory, activeMemories, currentTaskContext }) {
   if (!ADVISOR_ENABLED) return fallbackAdvice();
@@ -98,17 +97,6 @@ export async function getAdvice({ userMessage, conversationHistory, activeMemori
     `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 500)}`
   ).join('\n');
 
-  let webContext = '';
-  if (ENABLE_WEB_SEARCH) {
-    try {
-      const query = userMessage ? userMessage.substring(0, 150) : 'latest technology news';
-      const searchResults = await searchWeb(query, 3);
-      webContext = formatSearchResults(searchResults);
-    } catch (err) {
-      console.error('Advisor web search failed (advice):', err.message);
-    }
-  }
-
   const messages = [
     {
       role: 'system',
@@ -117,13 +105,14 @@ export async function getAdvice({ userMessage, conversationHistory, activeMemori
 1. TASK MONITORING — Track what the user is building and flag if Hermes drifts from user's intended setup (wrong OS, wrong directory, wrong tools)
 2. MEMORY ENHANCEMENT — If Hermes seems confused or has forgotten something from earlier in the conversation, remind it using the stored memories
 3. CONTEXT RECOVERY — After context compaction, help Hermes recover critical information
-4. WEB-AUGMENTED — Use web search results to keep advice current and accurate
+
+Note: Web research is handled separately by the research pipeline. Research memories (type: learning) are available in the session memories above.
 
 Respond concisely. If everything looks fine, say "All good — no issues detected." Only flag real problems.`,
     },
     {
       role: 'user',
-      content: `Current memories:\n${memoryBlock || 'None stored yet'}\n${taskSummary}\n\nRecent conversation:\n${recentTurns || 'Starting new conversation'}\n\nUser says: ${(userMessage || '').substring(0, 500)}\n\n${webContext ? `Web search results:\n${webContext}\n\n` : ''}Provide advice:`,
+      content: `Current memories:\n${memoryBlock || 'None stored yet'}\n${taskSummary}\n\nRecent conversation:\n${recentTurns || 'Starting new conversation'}\n\nUser says: ${(userMessage || '').substring(0, 500)}\n\nProvide advice:`,
     },
   ];
 

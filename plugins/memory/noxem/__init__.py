@@ -2,7 +2,7 @@
 
 Two-brain architecture:
 - Brain 1: EmbeddingGemma 300M → embedding search, dedup, contradiction detection
-- Brain 2: Gemma 4 E2B → advisor, context recovery, DDG-augmented guidance
+- Brain 2: Gemma 4 E2B → advisor, context recovery, background web research
 
 Communicates with the Hermes Memory Server (Node.js) over HTTP.
 
@@ -16,6 +16,7 @@ Resilience features:
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 import threading
@@ -161,7 +162,7 @@ class NoxemMemoryProvider:
                     self._pending_queue.appendleft(data)
                     for remaining in items[items.index(data) + 1:]:
                         self._pending_queue.append(remaining)
-                break
+                    break
 
         if flushed > 0:
             logger.info(f"Noxem flushed {flushed} buffered turns to memory server")
@@ -279,6 +280,21 @@ class NoxemMemoryProvider:
                     "required": ["entity", "attribute"],
                 },
             },
+            {
+                "name": "memory_feedback",
+                "description": "Report which memory IDs were actually used in your response (improves future ranking). Call after memory_search if results were helpful.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "memory_ids": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "IDs of memories that influenced your response",
+                        },
+                    },
+                    "required": ["memory_ids"],
+                },
+            },
         ]
 
     def handle_tool_call(self, name: str, args: dict) -> str:
@@ -312,6 +328,11 @@ class NoxemMemoryProvider:
                 "text": args.get("text", ""),
             })
             return json.dumps(result)
+        elif name == "memory_feedback":
+            result = self._api_post("/memory/search/feedback", {
+                "memory_ids": args.get("memory_ids", []),
+            })
+            return json.dumps(result)
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     # ── Optional Hooks ────────────────────────────────────────
@@ -321,7 +342,7 @@ class NoxemMemoryProvider:
         return (
             f"[Noxem Memory — {status}]\n"
             "AI-powered memory system. EmbeddingGemma 300M for search + dedup. "
-            "Gemma 4 for advisor + context recovery.\n"
+            "Gemma 4 for advisor + context recovery + background web research.\n"
             "Memory types: preference, fact, project, goal, pattern, entity, event, issue, setup, learning, profile.\n"
             "Use `memory_search` to look up past info and `memory_store` to save facts."
         )
@@ -329,12 +350,15 @@ class NoxemMemoryProvider:
     MAX_MEMORY_TOKENS = int(os.environ.get("NOXEM_MAX_MEMORY_TOKENS", "2000"))
 
     def prefetch(self, query: str, **kwargs):
-        """Curated context injection via /memory/release, fallback to /memory/search."""
+        """Curated context injection via /memory/release + research hints, fallback to /memory/search."""
         if not query or not query.strip():
             return None
 
+        parts = []
+        session_id = kwargs.get("session_id", self._session_id or "")
+
+        # 1) Main memory recall via /memory/release
         try:
-            session_id = kwargs.get("session_id", self._session_id or "")
             result = self._api_get(
                 f"/memory/release?tokens={self.MAX_MEMORY_TOKENS}&session_id={self._urlencode(session_id)}"
             )
@@ -342,10 +366,36 @@ class NoxemMemoryProvider:
             count = result.get("memories", 0)
             if text and text.strip():
                 self._server_reachable = True
-                return f"[Noxem Memory Recall — {count} memories]\n{text}"
+                parts.append(f"[Noxem Memory Recall — {count} memories]\n{text}")
         except Exception:
             pass
 
+        # 2) Research hint injection — compact hints (~20 tokens each)
+        #    Tells Hermes that background-researched facts exist, without dumping them into context.
+        #    Hermes calls memory_search if it wants the full details.
+        try:
+            hints = self._api_get(f"/memory/research/hints?session_id={self._urlencode(session_id)}")
+            topics = hints.get("topics", [])
+            if topics:
+                hint_lines = []
+                for t in topics[:5]:
+                    topic = t.get("topic", "")
+                    fact_count = t.get("fact_count", 0)
+                    if topic and fact_count > 0:
+                        hint_lines.append(f'"{topic}" — {fact_count} facts available')
+                if hint_lines:
+                    parts.append(
+                        "[Noxem Research — background web research ready]\n"
+                        + "\n".join(hint_lines)
+                        + "\nUse memory_search to retrieve research facts."
+                    )
+        except Exception:
+            pass
+
+        if parts:
+            return "\n\n".join(parts)
+
+        # 3) Fallback: direct search if /memory/release returned nothing
         try:
             result = self._api_get(
                 f"/memory/search?q={self._urlencode(query)}&limit=10&method=hybrid"
@@ -375,13 +425,65 @@ class NoxemMemoryProvider:
         return None
 
     def queue_prefetch(self, query: str, **kwargs) -> None:
+        """Smarter prefetch: warm release endpoint + keyword-based search + research hints."""
+        session_id = kwargs.get("session_id", self._session_id or "")
+
         def _warm():
+            # 1) Warm /memory/release (the primary prefetch endpoint)
             try:
-                self._api_get(f"/memory/search?q={self._urlencode(query)}&limit=3&method=hybrid")
+                self._api_get(
+                    f"/memory/release?tokens={self.MAX_MEMORY_TOKENS}&session_id={self._urlencode(session_id)}"
+                )
             except Exception:
                 pass
+
+            # 2) Warm search by full query
+            if query and query.strip():
+                try:
+                    self._api_get(f"/memory/search?q={self._urlencode(query)}&limit=3&method=hybrid")
+                except Exception:
+                    pass
+
+            # 3) Extract keywords from query for additional warmup
+            keywords = self._extract_keywords(query or "")
+            for kw in keywords[:3]:
+                try:
+                    self._api_get(f"/memory/search?q={self._urlencode(kw)}&limit=2&method=hybrid")
+                except Exception:
+                    pass
+
+            # 4) Warm research hints
+            try:
+                self._api_get(f"/memory/research/hints?session_id={self._urlencode(session_id)}")
+            except Exception:
+                pass
+
         t = threading.Thread(target=_warm, daemon=True)
         t.start()
+
+    @staticmethod
+    def _extract_keywords(text, max_keywords=5):
+        """Extract meaningful keywords from a query for prefetch warmup."""
+        # Remove common stop words
+        stop_words = frozenset({
+            'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+            'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+            'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought',
+            'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
+            'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
+            'between', 'out', 'off', 'over', 'under', 'again', 'further', 'then',
+            'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each',
+            'every', 'both', 'few', 'more', 'most', 'other', 'some', 'such', 'no',
+            'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very',
+            'just', 'because', 'but', 'and', 'or', 'if', 'while', 'about', 'up',
+            'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those',
+            'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'him', 'his',
+            'she', 'her', 'it', 'its', 'they', 'them', 'their',
+        })
+        # Split on non-alphanumeric, filter stop words and short tokens
+        tokens = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{2,}', text)
+        keywords = [t for t in tokens if t.lower() not in stop_words]
+        return keywords[:max_keywords]
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Health-check every 10 turns if server was unreachable. Flush queue on reconnect."""

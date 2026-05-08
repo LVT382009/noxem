@@ -111,6 +111,14 @@ const incrementRecallTx = db.transaction((ids) => {
   for (const id of ids) incrementRecall.run(id);
 });
 
+// Search feedback loop: stronger boost for memories that actually influenced the response
+const boostUsedMemory = db.prepare(
+  `UPDATE memories SET importance = MIN(1.0, importance + 0.03), metadata = json_set(COALESCE(metadata, '{}'), '$.use_count', COALESCE(json_extract(metadata, '$.use_count'), 0) + 1), updated_at = datetime('now') WHERE id = ? AND status = 'active'`
+);
+const boostUsedMemoriesTx = db.transaction((ids) => {
+  for (const id of ids) boostUsedMemory.run(id);
+});
+
 const getById = db.prepare(`SELECT * FROM memories WHERE id = ?`);
 
 const getActive = db.prepare(`SELECT * FROM memories WHERE status = 'active' ORDER BY created_at DESC LIMIT ?`);
@@ -292,6 +300,12 @@ export function getSupersededMemories() {
 export function incrementRecallCounts(ids) {
   if (!ids?.length) return;
   incrementRecallTx(ids);
+}
+
+export function boostUsedMemories(ids) {
+  if (!ids?.length) return 0;
+  boostUsedMemoriesTx(ids);
+  return ids.length;
 }
 
 export function archiveStaleMemories() {

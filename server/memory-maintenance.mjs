@@ -1,4 +1,4 @@
-import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db } from './memory-store.mjs';
+import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, estimateImportance, extractEntityAttribute, normalize, cosineSimilarity } from './embedding-engine.mjs';
 
 let maintenanceInterval = null;
@@ -114,8 +114,16 @@ export async function runMaintenance() {
       }
     } catch (err) {
       console.error('[Maintenance] Categorization error:', err.message);
-    }
+  }
 
+  // 3b. Category auto-correction: validate typed memories against content
+  try {
+    const corrected = autoCorrectCategories(memories, 25);
+    results.category_corrected = corrected;
+    if (corrected > 0) console.log(`[Maintenance] Auto-corrected ${corrected} memory categories`);
+  } catch (err) {
+    console.error('[Maintenance] Category auto-correction error:', err.message);
+  }
     // 4. Clean invalid
     try {
       const cleaned = deleteInvalid();
@@ -148,6 +156,47 @@ export async function runMaintenance() {
   } finally {
     maintenanceRunning = false;
   }
+}
+
+// Category auto-correction: check if typed memories are misclassified
+// Uses rule-based heuristics to detect common category mismatches
+function autoCorrectCategories(memories, maxCorrections = 25) {
+  let corrected = 0;
+  const skipTypes = new Set(['profile', 'general']); // never auto-correct these
+
+  // Rule-based heuristics for detecting misclassified memories
+  const rules = [
+    // "I prefer/like/dislike X" should be 'preference', not 'fact'
+    { pattern: /(?:i |user )?(?:prefer|like|love|hate|dislike|favor|choose|can't stand)s/i, correctType: 'preference', wrongTypes: ['fact', 'entity', 'pattern'] },
+    // "My name/is/am" should be 'profile'
+    { pattern: /(?:my name|i'?m |i am |call me)s/i, correctType: 'profile', wrongTypes: ['fact', 'entity', 'preference'] },
+    // Errors/bugs/issues should be 'issue'
+    { pattern: /(?:error|bug|issue|fail|crash|broken|exception|stack trace|traceback)/i, correctType: 'issue', wrongTypes: ['fact', 'event', 'entity'] },
+    // Goals/intentions
+    { pattern: /(?:goal|planning to|want to|intend to|aim to|going to|will build|i need to)/i, correctType: 'goal', wrongTypes: ['fact', 'project'] },
+    // Events with temporal markers
+    { pattern: /(?:yesterday|last week|on w+day|at d{1,2}(?:am|pm)|happened|occurred)/i, correctType: 'event', wrongTypes: ['fact'] },
+    // Setup/config
+    { pattern: /(?:installed|configured|set up|setup|deployed|running on|using version|environment)/i, correctType: 'setup', wrongTypes: ['fact', 'entity'] },
+    // Learning/research
+    { pattern: /(?:learned|research|according to|documentation says|docs say|web search found)/i, correctType: 'learning', wrongTypes: ['fact', 'entity'] },
+  ];
+
+  for (const m of memories) {
+    if (corrected >= maxCorrections) break;
+    if (skipTypes.has(m.type)) continue;
+
+    for (const rule of rules) {
+      if (rule.pattern.test(m.text) && rule.wrongTypes.includes(m.type)) {
+        updateMemoryType(m.id, rule.correctType);
+        console.log(`[Maintenance] Category corrected: #${m.id} "${m.type}" -> "${rule.correctType}" (text: "${m.text.substring(0, 60)}...")`);
+        corrected++;
+        break; // Only apply first matching rule per memory
+      }
+    }
+  }
+
+  return corrected;
 }
 
 // Extract the value/polarity from a memory text about a preference or state
