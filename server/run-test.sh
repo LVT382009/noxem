@@ -266,6 +266,19 @@ R=$(curl -s -X POST http://127.0.0.1:3001/memory/maintenance/run -H "Content-Typ
 echo "$R"
 echo "$R" | grep -q '"ok":true' && check "maintenance with new patterns" "true" || check "maintenance patterns" "FAIL"
 
+echo "=== Dedup endpoint (dry run) ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/dedup -H "Content-Type: application/json" -d '{"threshold":0.90}')
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "dedup dry run" "true" || check "dedup dry run" "FAIL"
+echo "$R" | grep -q '"duplicates"' && check "dedup has duplicates" "true" || check "dedup duplicates" "FAIL"
+echo "$R" | grep -q '"count"' && check "dedup has count" "true" || check "dedup count" "FAIL"
+
+echo "=== Dedup with auto_mark ==="
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/dedup -H "Content-Type: application/json" -d '{"threshold":0.90,"auto_mark":true}')
+echo "$R"
+echo "$R" | grep -q '"ok":true' && check "dedup auto mark" "true" || check "dedup auto mark" "FAIL"
+echo "$R" | grep -q '"marked_invalid"' && check "dedup marked_invalid field" "true" || check "dedup marked_invalid" "FAIL"
+
 echo ""
 echo "========================================"
 echo "Results: $PASS passed, $FAIL failed"

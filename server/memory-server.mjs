@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
 import { isVecReady } from './vector-index.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
@@ -881,6 +881,52 @@ app.post('/memory/extract', async (req, res) => {
 });
 
 // ─── Maintenance ─────────────────────────────────────────────────
+
+// On-demand dedup check — returns duplicate pairs without marking anything invalid
+app.post('/memory/dedup', async (req, res) => {
+  try {
+    const { threshold, auto_mark } = req.body;
+    const DUP_THRESHOLD = parseFloat(threshold || process.env.DUP_THRESHOLD || '0.92');
+    const memories = getActiveWithEmbedding();
+    const withEmbedding = memories.filter(m => m.embedding);
+    if (withEmbedding.length < 2) return res.json({ ok: true, duplicates: [], count: 0, marked_invalid: 0 });
+
+    let dupes = [];
+    if (withEmbedding.length < 500 || !vectorKnnSearch) {
+      dupes = findDuplicates(withEmbedding);
+    } else {
+      const seen = new Set();
+      for (const m of withEmbedding) {
+        if (seen.has(m.id)) continue;
+        const neighbors = vectorKnnSearch(m.embedding, 20);
+        if (!neighbors) { dupes = findDuplicates(withEmbedding); break; }
+        for (const n of neighbors) {
+          if (n.id === m.id || seen.has(n.id)) continue;
+          if (n.score > DUP_THRESHOLD) {
+            const [older, newer] = m.id < n.id ? [m, n] : [n, m];
+            dupes.push({ older: { id: older.id, text: older.text, type: older.type, created_at: older.created_at }, newer: { id: newer.id, text: newer.text, type: newer.type, created_at: newer.created_at }, similarity: n.score });
+            seen.add(older.id);
+          }
+        }
+      }
+    }
+
+    // Filter to only those above the requested threshold
+    dupes = dupes.filter(d => d.similarity > DUP_THRESHOLD);
+
+    let marked = 0;
+    if (auto_mark && dupes.length > 0) {
+      for (const d of dupes) {
+        const olderId = d.older?.id || d.a?.id;
+        if (olderId) { updateMemoryStatus(olderId, 'invalid'); marked++; }
+      }
+    }
+
+    res.json({ ok: true, duplicates: dupes, count: dupes.length, marked_invalid: marked });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.post('/memory/maintenance/run', async (req, res) => {
   try {
