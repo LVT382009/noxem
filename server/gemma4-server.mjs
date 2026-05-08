@@ -65,36 +65,28 @@ function validateCacheDir(cacheDir) {
     const resolved = resolve(cacheDir);
     if (!fs.existsSync(resolved)) return; // no cache yet — fine
 
-    // 1. Find and fix .tmp files from interrupted downloads
-    //    Transformers.js downloads to .tmp.RANDOM.suffix, then renames.
-    //    If process is killed before rename, the .tmp lingers and target file is missing.
-    const tmpFiles = [];
-    function findTmpFiles(dir) {
-      try {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          const full = join(dir, entry.name);
-          if (entry.isDirectory()) findTmpFiles(full);
-          else if (/\.tmp\.[a-z0-9]+\.[a-z0-9]+$/i.test(entry.name)) tmpFiles.push(full);
-        }
-      } catch {}
-    }
-    findTmpFiles(resolved);
-    for (const tmpFile of tmpFiles) {
-      const targetFile = tmpFile.replace(/\.tmp\.[a-z0-9]+\.[a-z0-9]+$/i, '');
-      console.log(`Cache validator: found temp file from interrupted download: ${basename(tmpFile)}`);
-      if (!fs.existsSync(targetFile)) {
-        try {
-          fs.renameSync(tmpFile, targetFile);
-          console.log(`  Renamed to ${basename(targetFile)}`);
-        } catch (e) {
-          console.log(`  Rename failed: ${e.message} — clearing cache`);
-          fs.rmSync(resolved, { recursive: true, force: true });
-          return;
-        }
-      } else {
-        try { fs.unlinkSync(tmpFile); } catch {}
+  // 1. Find .tmp files from interrupted downloads
+  // Transformers.js downloads to .tmp.RANDOM.suffix, then renames on completion.
+  // If process is killed before rename, the .tmp lingers and target file is missing.
+  // Since .tmp files may be incomplete (download interrupted mid-write), we can't
+  // safely rename them — clearing the entire cache is the only safe recovery.
+  const tmpFiles = [];
+  function findTmpFiles(dir) {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) findTmpFiles(full);
+        else if (/\.tmp\.[a-z0-9]+\.[a-z0-9]+$/i.test(entry.name)) tmpFiles.push(full);
       }
-    }
+    } catch {}
+  }
+  findTmpFiles(resolved);
+  if (tmpFiles.length > 0) {
+    console.log(`Cache validator: found ${tmpFiles.length} temp file(s) from interrupted download(s) — clearing cache`);
+    for (const f of tmpFiles) console.log(`  ${basename(f)}`);
+    fs.rmSync(resolved, { recursive: true, force: true });
+    return;
+  }
 
     // 2. Walk directories looking for empty or corrupt tokenizer_config.json
     function checkDir(dir) {
