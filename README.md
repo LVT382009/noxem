@@ -93,16 +93,6 @@ bash install.sh
 hermes-noxem
 ```
 
-### Windows (via WSL)
-
-```cmd
-wsl -d Ubuntu
-git clone https://github.com/LVT382009/noxem.git
-cd noxem
-bash install.sh
-hermes-noxem
-```
-
 > [!NOTE]
 > First run downloads brain components (~300 MB for Brain 1, ~2-3 GB total with Brain 2). Subsequent starts use the local cache.
 
