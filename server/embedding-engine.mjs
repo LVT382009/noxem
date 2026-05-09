@@ -49,15 +49,22 @@ async function fetchWithRetry(url, opts, retries = HF_FETCH_RETRIES) {
 }
 
 globalThis.fetch = function patchedFetch(url, opts = {}) {
-  const isHF = typeof url === 'string' && (url.includes('huggingface') || url.includes('hf.co'));
+  // Rewrite HF URLs to mirror if env.remoteHost has been switched
+  let fetchUrl = url;
+  if (typeof url === 'string' && env.remoteHost && env.remoteHost !== 'https://huggingface.co/' && url.startsWith('https://huggingface.co/')) {
+    fetchUrl = url.replace('https://huggingface.co/', env.remoteHost);
+  } else if (typeof url === 'string' && env.remoteHost && env.remoteHost !== 'https://huggingface.co/' && url.includes('hf.co')) {
+    fetchUrl = url.replace(/https?://[^/]*hf.co/, env.remoteHost.replace(//$/, ''));
+  }
+  const isHF = typeof fetchUrl === 'string' && (fetchUrl.includes('huggingface') || fetchUrl.includes('hf.co'));
   if (isHF) {
     if (_hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) {
       return new Promise((resolve, reject) => {
-        _hfFetchQueue.push({ url, opts, resolve, reject });
+        _hfFetchQueue.push({ url: fetchUrl, opts, resolve, reject });
       });
     }
     _hfActiveFetches++;
-    return fetchWithRetry(url, opts).finally(() => { _hfActiveFetches--; dequeueFetch(); });
+    return fetchWithRetry(fetchUrl, opts).finally(() => { _hfActiveFetches--; dequeueFetch(); });
   }
   return _origFetch(url, opts);
 };
@@ -207,8 +214,10 @@ export async function initEmbeddingEngine() {
           // Auto-detect corrupted cache: if previous error was "fetch failed" or "tokenizer_class",
           // the cache is corrupt — clear it regardless of EMBEDDING_CLEAR_CACHE_ON_RETRY setting
           const prevError = loadError?.message || '';
-          const cacheCorrupted = prevError.includes('fetch failed') || prevError.includes('tokenizer_class') || prevError.includes('Cannot read properties');
-          if (cacheCorrupted || process.env.EMBEDDING_CLEAR_CACHE_ON_RETRY === 'true') {
+          const cacheCorrupted = prevError.includes('fetch failed') || prevError.includes('tokenizer_class') || prevError.includes('Cannot read properties') || prevError.includes('Unable to fetch file metadata');
+          // Always clear cache on mirror fallback — old host downloads are incomplete
+          const mirrorSwitched = !HF_MIRROR && env.remoteHost !== 'https://huggingface.co/';
+          if (cacheCorrupted || mirrorSwitched || process.env.EMBEDDING_CLEAR_CACHE_ON_RETRY === 'true') {
             const fs = await import('fs');
             const path = await import('path');
             const cachePath = path.resolve(EMBED_CACHE_DIR);

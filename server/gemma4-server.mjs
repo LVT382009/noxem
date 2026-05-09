@@ -54,17 +54,24 @@ async function fetchWithRetry(url, opts, retries = HF_FETCH_RETRIES) {
 }
 
 globalThis.fetch = function patchedFetch(url, opts = {}) {
-  const isHF = typeof url === 'string' && (url.includes('huggingface') || url.includes('hf.co'));
+  // Rewrite HF URLs to mirror if active
+  let fetchUrl = url;
+  if (typeof url === 'string' && _effectiveMirror && url.startsWith('https://huggingface.co/')) {
+    fetchUrl = url.replace('https://huggingface.co/', _effectiveMirror);
+  } else if (typeof url === 'string' && _effectiveMirror && url.includes('hf.co')) {
+    fetchUrl = url.replace(/https?://[^/]*hf.co/, _effectiveMirror.replace(//$/, ''));
+  }
+  const isHF = typeof fetchUrl === 'string' && (fetchUrl.includes('huggingface') || fetchUrl.includes('hf.co'));
   if (isHF) {
     if (_hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) {
       return new Promise((resolve, reject) => {
-        _hfFetchQueue.push({ url, opts, resolve, reject });
+        _hfFetchQueue.push({ url: fetchUrl, opts, resolve, reject });
       });
     }
     _hfActiveFetches++;
-    return fetchWithRetry(url, opts).finally(() => { _hfActiveFetches--; dequeueFetch(); });
+    return fetchWithRetry(fetchUrl, opts).finally(() => { _hfActiveFetches--; dequeueFetch(); });
   }
-  return _origFetch(url, opts);
+  return _origFetch(fetchUrl, opts);
 };
 
 import express from 'express';
@@ -79,6 +86,8 @@ const __dirname = dirname(__filename);
 // Project root is one level up from server/ directory
 const PROJECT_ROOT = resolve(__dirname, '..');
 
+const HF_MIRROR = process.env.HF_ENDPOINT || '';
+let _effectiveMirror = HF_MIRROR || '';
 const PORT = process.env.GEMMA4_PORT || 8000;
 const MODEL_ID = process.env.GEMMA4_MODEL || 'onnx-community/gemma-4-E2B-it-ONNX';
 const DTYPE = process.env.GEMMA4_DTYPE || 'q4f16';
@@ -212,11 +221,16 @@ async function loadModel() {
   validateCacheDir(CACHE_DIR);
   loadPromise = (async () => {
     // Dynamic import — Gemma4ForConditionalGeneration may not exist in older versions
-    let AutoProcessor, Gemma4ForConditionalGeneration;
+      let AutoProcessor, Gemma4ForConditionalGeneration, transformers;
     try {
-      const transformers = await import('@huggingface/transformers');
+      transformers = await import('@huggingface/transformers');
       AutoProcessor = transformers.AutoProcessor;
       Gemma4ForConditionalGeneration = transformers.Gemma4ForConditionalGeneration;
+      if (HF_MIRROR && transformers.env) {
+          transformers.env.remoteHost = HF_MIRROR;
+          _effectiveMirror = HF_MIRROR;
+          console.log(`Model download: using mirror ${HF_MIRROR}`);
+      }
     } catch (err) {
       loadError = err;
       console.error(`Failed to import transformers.js: ${err.message}`);
@@ -238,27 +252,26 @@ async function loadModel() {
           // Auto-detect corrupted cache: if previous error was "fetch failed" or "tokenizer_class",
           // the cache is corrupt — clear it regardless of GEMMA4_CLEAR_CACHE_ON_RETRY setting
           const prevError = loadError?.message || '';
-          const cacheCorrupted = prevError.includes('fetch failed') || prevError.includes('tokenizer_class') || prevError.includes('Cannot read properties');
-          if (cacheCorrupted || process.env.GEMMA4_CLEAR_CACHE_ON_RETRY === 'true') {
+          const cacheCorrupted = prevError.includes('fetch failed') || prevError.includes('tokenizer_class') || prevError.includes('Cannot read properties') || prevError.includes('Unable to fetch file metadata');
+          // Always clear cache on mirror fallback — old host downloads are incomplete
+          const mirrorSwitched = !HF_MIRROR && _effectiveMirror && _effectiveMirror !== 'https://huggingface.co/';
+          if (cacheCorrupted || mirrorSwitched || process.env.GEMMA4_CLEAR_CACHE_ON_RETRY === 'true') {
             const fs = await import('fs');
             const path = await import('path');
             const cachePath = path.resolve(CACHE_DIR);
             if (fs.existsSync(cachePath)) {
               fs.rmSync(cachePath, { recursive: true, force: true });
-              console.log('  Cleared model cache (corrupted — ' + (cacheCorrupted ? 'auto-detected' : 'GEMMA4_CLEAR_CACHE_ON_RETRY=true') + ')');
+          console.log(' Cleared model cache (' + (mirrorSwitched ? 'mirror switch' : cacheCorrupted ? 'auto-detected corruption' : 'GEMMA4_CLEAR_CACHE_ON_RETRY=true') + ')');
             }
           } else {
             console.log('  Retrying with existing cache...');
           }
-          // Mirror fallback: on 2nd+ retry, switch to hf-mirror.com if not already set
-          if (!HF_MIRROR) {
-            try {
-              const t = await import('@huggingface/transformers');
-              if (t.env.remoteHost === 'https://huggingface.co/') {
-                t.env.remoteHost = 'https://hf-mirror.com/';
-                console.log('  Switched to hf-mirror.com for this retry');
-              }
-            } catch {}
+      // Mirror fallback: on 2nd+ retry, switch to hf-mirror.com if not already set
+      if (!HF_MIRROR && transformers?.env?.remoteHost === 'https://huggingface.co/') {
+        transformers.env.remoteHost = 'https://hf-mirror.com/';
+        _effectiveMirror = 'https://hf-mirror.com/';
+        console.log('  Switched to hf-mirror.com for this retry');
+      }
           }
         }
 

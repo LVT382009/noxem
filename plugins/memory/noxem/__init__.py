@@ -93,10 +93,14 @@ class NoxemMemoryProvider:
         env.setdefault("ENABLE_MAINTENANCE", "true")
         env.setdefault("ENABLE_RESEARCH", "true")
         env.setdefault("NODE_OPTIONS", "--dns-result-order=ipv4first")
+        # Propagate HF mirror setting if configured
+        if "HF_ENDPOINT" not in env and os.environ.get("HF_ENDPOINT"):
+            env["HF_ENDPOINT"] = os.environ["HF_ENDPOINT"]
 
         # Start Gemma 4 server first (takes longer to initialize)
         gemma4_candidates = [
             home / "noxem-server" / "server" / "gemma4-server.mjs",
+            home / ".hermes" / "noxem-server" / "server" / "gemma4-server.mjs",
         ]
         for path in gemma4_candidates:
             if path.exists():
@@ -110,7 +114,8 @@ class NoxemMemoryProvider:
                         start_new_session=True,
                     )
                     self._server_pids.append(proc.pid)
-                    logger.info(f"Noxem auto-started Gemma 4 server from {path}")
+                    logger.info(f"Noxem auto-started Gemma 4 server from {path} (PID {proc.pid})")
+                    print(f"[Noxem] Auto-starting Gemma 4 server... (PID {proc.pid})")
                     break
                 except Exception as e:
                     logger.debug(f"Failed to auto-start Gemma 4 from {path}: {e}")
@@ -118,6 +123,7 @@ class NoxemMemoryProvider:
         # Start memory server
         memory_candidates = [
             home / "noxem-server" / "server" / "memory-server.mjs",
+            home / ".hermes" / "noxem-server" / "server" / "memory-server.mjs",
         ]
         started = False
         for path in memory_candidates:
@@ -132,7 +138,8 @@ class NoxemMemoryProvider:
                         start_new_session=True,
                     )
                     self._server_pids.append(proc.pid)
-                    logger.info(f"Noxem auto-started memory server from {path}")
+                    logger.info(f"Noxem auto-started memory server from {path} (PID {proc.pid})")
+                    print(f"[Noxem] Auto-starting memory server... (PID {proc.pid})")
                     started = True
                     break
                 except Exception as e:
@@ -141,12 +148,22 @@ class NoxemMemoryProvider:
         if not started:
             return False
 
-        # Wait up to 60s for memory server to become ready
+        # Wait up to 90s for memory server to become ready
         # Gemma 4 takes longer but we don't block on it — the advisor gracefully handles it
-        for _ in range(60):
+        for i in range(90):
             time.sleep(1)
-            if self._check_server_health():
-                return True
+            # Check /ready endpoint first (faster than full /health)
+            try:
+                url = f"{self._server_url}/ready"
+                req = Request(url, headers={"Accept": "application/json"})
+                with urlopen(req, timeout=2) as resp:
+                    data = json.loads(resp.read().decode())
+                    if data.get("ok"):
+                        logger.info(f"Noxem memory server ready after {i+1}s")
+                        self._server_reachable = True
+                        return True
+            except Exception:
+                pass
         return False
 
     def _check_server_health(self, log_init=False):

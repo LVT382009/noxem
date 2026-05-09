@@ -151,8 +151,9 @@ Rules:
   try {
     const res = await callGemma(messages, 1024, 0.1);
     const data = await res.json();
-    const content = data?.choices?.[0]?.message?.content || '[]';
-    const jsonMatch = content.match(/\[[\s\S]*?\]/);
+    const content = data?.choices?.[0]?.message?.content || '';
+    if (!content || content.startsWith('[Gemma 4 un')) return [];
+        const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return [];
     const memories = JSON.parse(jsonMatch[0]);
     return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];
