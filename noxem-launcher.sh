@@ -46,13 +46,23 @@ cleanup() {
   echo ""
   dim "Shutting down Noxem servers..."
   # Send SIGTERM to allow graceful shutdown (flushes model cache writes)
-  [ -n "$MEMORY_PID" ] && kill "$MEMORY_PID" 2>/dev/null && dim " Memory server stopping..."
-[ -n "$LLM_PID" ] && [ "$BRAIN2_ENABLED" = "1" ] && kill "$LLM_PID" 2>/dev/null && dim " Brain 2 stopping..."
+  if [ -n "$MEMORY_PID" ]; then
+    kill "$MEMORY_PID" 2>/dev/null && dim " Memory server stopping..." || true
+  fi
+  if [ -n "$LLM_PID" ] && [ "$BRAIN2_ENABLED" = "1" ]; then
+    kill "$LLM_PID" 2>/dev/null && dim " Brain 2 stopping..." || true
+  fi
   # Wait up to 8s for servers to flush model cache to disk
   # This prevents cache corruption that causes "fetch failed" on next startup
   local waited=0
   while [ $waited -lt 8 ]; do
-    if ! kill -0 "$MEMORY_PID" 2>/dev/null && ! kill -0 "$LLM_PID" 2>/dev/null; then
+    mem_alive=false
+    llm_alive=false
+    kill -0 "$MEMORY_PID" 2>/dev/null && mem_alive=true
+    if [ "$BRAIN2_ENABLED" = "1" ]; then
+      kill -0 "$LLM_PID" 2>/dev/null && llm_alive=true
+    fi
+    if [ "$mem_alive" = "false" ] && [ "$llm_alive" = "false" ]; then
       break
     fi
     sleep 1
@@ -60,11 +70,13 @@ cleanup() {
   done
   # Force kill if still running
   kill -9 "$MEMORY_PID" 2>/dev/null || true
-[ "$BRAIN2_ENABLED" = "1" ] && kill -9 "$LLM_PID" 2>/dev/null || true
+  if [ "$BRAIN2_ENABLED" = "1" ]; then
+    kill -9 "$LLM_PID" 2>/dev/null || true
+    wait "$LLM_PID" 2>/dev/null || true
+    dim " Brain 2 stopped"
+  fi
   wait "$MEMORY_PID" 2>/dev/null || true
-[ "$BRAIN2_ENABLED" = "1" ] && wait "$LLM_PID" 2>/dev/null || true
   dim " Memory server stopped"
-  dim " Brain 2 stopped"
   green "Noxem cleaned up."
   # Prevent double-run on INT/TERM + EXIT
   trap - EXIT
@@ -209,7 +221,4 @@ if [ "$BRAIN2_ENABLED" = "1" ]; then
   green "Hermes session ended. (Both brains were active)"
 else
   green "Hermes session ended. (Brain 1 only)"
-fi
-else
-  green "Hermes session ended. (Brain 1 only — LLM was off)"
 fi
