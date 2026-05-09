@@ -16,7 +16,7 @@
 import { searchWeb } from './ddg-search.mjs';
 import { fetchPages, isFetchableUrl } from './web-fetch.mjs';
 
-const GEMMA_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
+const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'onnx-community/Qwen3-0.6B-ONNX';
 const RESEARCH_ENABLED = process.env.RESEARCH_ENABLED !== 'false';
 const RESEARCH_MIN_INTERVAL_MS = parseInt(process.env.RESEARCH_MIN_INTERVAL || '30000'); // 30s
@@ -197,7 +197,7 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
 
 async function callLLM(messages, maxTokens = 256, temperature = 0.1, timeout = 15_000) {
   try {
-    const res = await fetch(GEMMA_URL, {
+    const res = await fetch(LLM_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: LLM_MODEL, messages, max_tokens: maxTokens, temperature }),

@@ -1,4 +1,4 @@
-const GEMMA_URL = process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
+const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'onnx-community/Qwen3-0.6B-ONNX';
 const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use LLM
 
@@ -25,7 +25,7 @@ ASSISTANT: {{assistantResponse}}
 Memories:`;
 
 export async function extractMemories({ userMessage, assistantResponse, llmUrl, llmModel }) {
-  const url = gemmaUrl || GEMMA_URL;
+  const url = llmUrl || LLM_URL;
   const model = llmModel || LLM_MODEL;
 
   const prompt = EXTRACTION_PROMPT
