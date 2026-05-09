@@ -17,6 +17,15 @@ LLM_SERVER="$NOXEM_DIR/server/gemma4-server.mjs"
 MEMORY_PID=""
 LLM_PID=""
 
+# Brain 2 (Qwen3 LLM) — optional, controlled by flag or interactive prompt
+BRAIN2_ENABLED=""  # unset = ask; 1 = on; 0 = off
+for _arg in "$@"; do
+  case "$_arg" in
+    --brain2)   BRAIN2_ENABLED=1; shift ;; 
+    --no-brain2) BRAIN2_ENABLED=0; shift ;;
+  esac
+done
+
 # OS detection
 OS="$(uname -s)"
 
@@ -38,7 +47,7 @@ cleanup() {
   dim "Shutting down Noxem servers..."
   # Send SIGTERM to allow graceful shutdown (flushes model cache writes)
   [ -n "$MEMORY_PID" ] && kill "$MEMORY_PID" 2>/dev/null && dim " Memory server stopping..."
-  [ -n "$LLM_PID" ] && kill "$LLM_PID" 2>/dev/null && dim " LLM stopping..."
+[ -n "$LLM_PID" ] && [ "$BRAIN2_ENABLED" = "1" ] && kill "$LLM_PID" 2>/dev/null && dim " LLM stopping..."
   # Wait up to 8s for servers to flush model cache to disk
   # This prevents cache corruption that causes "fetch failed" on next startup
   local waited=0
@@ -51,9 +60,9 @@ cleanup() {
   done
   # Force kill if still running
   kill -9 "$MEMORY_PID" 2>/dev/null || true
-  kill -9 "$LLM_PID" 2>/dev/null || true
+[ "$BRAIN2_ENABLED" = "1" ] && kill -9 "$LLM_PID" 2>/dev/null || true
   wait "$MEMORY_PID" 2>/dev/null || true
-  wait "$LLM_PID" 2>/dev/null || true
+[ "$BRAIN2_ENABLED" = "1" ] && wait "$LLM_PID" 2>/dev/null || true
   dim " Memory server stopped"
   dim " LLM stopped"
   green "Noxem cleaned up."
@@ -103,40 +112,84 @@ wait_for_port() {
 # ── Start servers ──
 # cd into NOXEM_DIR so relative cache paths (./.cache/) resolve correctly
 cd "$NOXEM_DIR"
+
+# ── Brain 2 selection ──
+if [ -z "$BRAIN2_ENABLED" ]; then
+  if [ ! -t 0 ]; then
+    # Non-interactive (piped input, cron, etc.) — default: Brain 2 off
+    BRAIN2_ENABLED=0
+  else
+    echo ""
+    green '╔═══════════════════════════════════╗'
+    green '║ Noxem — Brain Selection           ║'
+    green '╚═══════════════════════════════════╝'
+    echo ""
+    echo 'Enable Brain 2 (Qwen3 LLM) for this session?'
+    echo ""
+    echo '  [1] Yes  — full memory + LLM advisor + research + extraction'
+    echo '  [2] No   — memory search only (faster startup, less RAM)'
+    echo '  [3] Quit'
+    echo ""
+    read -rp 'Choose [1-3]: ' _brain_choice
+    case "$_brain_choice" in
+      1) BRAIN2_ENABLED=1 ;;
+      2) BRAIN2_ENABLED=0 ;;
+      3) exit 0 ;;
+      *) BRAIN2_ENABLED=0 ;;
+    esac
+  fi
+fi
+export BRAIN2_ENABLED
+
 echo ""
-green "╔═══════════════════════════════════╗"
-green "║ Noxem — Starting Servers          ║"
-green "╚═══════════════════════════════════╝"
+if [ "$BRAIN2_ENABLED" = '1' ]; then
+  green '╔═══════════════════════════════════╗'
+  green '║ Noxem — Starting Servers          ║'
+  green '╚═══════════════════════════════════╝'
+else
+  green '╔═══════════════════════════════════╗'
+  green '║ Noxem — Brain 1 Only (No LLM)    ║'
+  green '╚═══════════════════════════════════╝'
+fi
 echo ""
 
 # 1. Memory server
 echo "[1/2] Starting memory server..."
-dim "  First run downloads EmbeddingGemma (~300MB)"
+dim " First run downloads EmbeddingGemma (~300MB)"
 export MEMORY_PORT
 export ENABLE_EMBEDDING=${ENABLE_EMBEDDING:-true}
 export ENABLE_ADVISOR=${ENABLE_ADVISOR:-true}
 export ENABLE_MAINTENANCE=${ENABLE_MAINTENANCE:-true}
+# Pass Brain 2 mode to memory server so it can disable advisor/research
+export BRAIN2_ENABLED
 # Prefer IPv4 for HuggingFace CDN downloads (WSL IPv6 can cause ConnectTimeoutError)
 export NODE_OPTIONS="${NODE_OPTIONS:-} --dns-result-order=ipv4first"
 node "$MEMORY_SERVER" &
 MEMORY_PID=$!
 wait_for_port $MEMORY_PORT "Memory server" 180
 
-# 2. LLM server
-echo "[2/2] Starting LLM server..."
-dim "  First run downloads model (~2GB, subsequent starts use cache)"
-# Device is auto-detected in gemma4-server.mjs:
-# - Node.js: onnxruntime-node picks best EP (CUDA > DirectML > CPU)
-# - LLM_DEVICE / GEMMA4_DEVICE env var overrides auto-detection
-# - WebGPU is browser-only, not available in Node.js
-export LLM_PORT
-node "$LLM_SERVER" &
-LLM_PID=$!
-wait_for_port $LLM_PORT "LLM" 300
+# 2. LLM server (Brain 2 — optional)
+if [ "$BRAIN2_ENABLED" = '1' ]; then
+  echo "[2/2] Starting LLM server (Brain 2)..."
+  dim " First run downloads model (~2GB, subsequent starts use cache)"
+  # Device is auto-detected in gemma4-server.mjs:
+  # - Node.js: onnxruntime-node picks best EP (CUDA > DirectML > CPU)
+  # - LLM_DEVICE / GEMMA4_DEVICE env var overrides auto-detection
+  # - WebGPU is browser-only, not available in Node.js
+  export LLM_PORT
+  node "$LLM_SERVER" &
+  LLM_PID=$!
+  wait_for_port $LLM_PORT "LLM" 300
 
-echo ""
-green "Both servers ready!"
-echo ""
+  echo ""
+  green 'Both servers ready!'
+  echo ''
+else
+  echo '[2/2] Brain 2 (LLM) — skipped'
+  echo ''
+  green 'Memory server ready! (Brain 1 only)'
+  echo ''
+fi
 
 # ── Trap cleanup ──
 trap cleanup EXIT INT TERM
@@ -152,4 +205,11 @@ else
 fi
 
 echo ""
-green "Hermes session ended."
+if [ "$BRAIN2_ENABLED" = "1" ]; then
+  green "Hermes session ended. (Both brains were active)"
+else
+  green "Hermes session ended. (Brain 1 only — LLM was off)"
+fi
+else
+  green "Hermes session ended. (Brain 1 only — LLM was off)"
+fi

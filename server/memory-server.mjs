@@ -82,9 +82,9 @@ if (MEMORY_API_KEY) {
 
 const PORT = process.env.MEMORY_PORT || 3001;
 const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
-const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false';
+const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false' && process.env.BRAIN2_ENABLED !== '0';
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
-const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false';
+const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false' && process.env.BRAIN2_ENABLED !== '0';
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
 
 // Weibull decay: w = exp(-(age/eta)^k) — steeper initial drop then long tail
@@ -1077,9 +1077,9 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`  Port: ${PORT}`);
   console.log(`  Embedding: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
   console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'}`);
-  console.log(`  Advisor: ${ENABLE_ADVISOR ? 'Qwen3 0.6B' : 'DISABLED'}`);
+  ENABLE_ADVISOR ? 'Qwen3 0.6B (Brain 2)' : 'OFF (Brain 1 only)',
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
-  console.log(` Research: ${ENABLE_RESEARCH ? 'Background pipeline (topic → DDG → fetch → extract)' : 'DISABLED'}`);
+  ENABLE_RESEARCH ? 'Background pipeline (topic -> DDG -> fetch -> extract)' : 'OFF (Brain 1 only)',
   console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
   console.log(`  Decay: Weibull (type-specific eta/k)`);
   console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
