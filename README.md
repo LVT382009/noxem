@@ -37,7 +37,8 @@
 | **Context Recovery** | Preserves critical information across session boundaries and context compaction |
 | **Bi-Temporal Tracking** | `valid_from`/`valid_until` timestamps track when memories are current vs superseded |
 | **Provenance Graph** | Full lineage tracking — trace any memory through its supersession history and source memory IDs |
-| **Auto-Start** | Servers start automatically when Hermes runs — no manual setup needed |
+| **Brain 1 / Brain 2 Mode** | Interactive startup: choose full mode (both brains) or memory-only (Brain 1) — skip Brain 2 for faster startup and less RAM |
+| **Auto-Start** | Just run `hermes-noxem` — servers start automatically, no manual provider setup needed |
 | **Multi-Query Expansion** | Short queries get 2 alternate phrasings, merged via Reciprocal Rank Fusion for better recall |
 | **MMR Diversity** | Maximal Marginal Relevance reranking prevents returning near-identical results |
 
@@ -57,9 +58,8 @@ cd noxem
 # 2. Run the installer
 bash install.sh
 
-# 3. Enable Noxem in Hermes, then run
-hermes memory setup   # Select "noxem"
-hermes chat           # Servers auto-start
+# 3. Launch Hermes with Noxem
+hermes-noxem
 ```
 
 ### macOS
@@ -79,9 +79,8 @@ git clone https://github.com/LVT382009/noxem.git
 cd noxem
 bash install.sh
 
-# 5. Enable and run
-hermes memory setup   # Select "noxem"
-hermes chat
+# 5. Launch
+hermes-noxem
 ```
 
 ### Windows (via WSL)
@@ -97,11 +96,12 @@ wsl -d Ubuntu
 git clone https://github.com/LVT382009/noxem.git
 cd noxem
 bash install.sh
-hermes memory setup
-hermes chat
+hermes-noxem
 ```
 
-> **First run** downloads AI models (~2-3 GB total). Subsequent starts use the local cache. No manual server startup needed — both servers auto-start when Hermes launches.
+hermes-noxem
+
+> **First run** downloads AI models (~2-3 GB total with Brain 2 enabled, ~300 MB without). Subsequent starts use the local cache.
 
 ---
 
@@ -129,6 +129,24 @@ Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js, port 3001)
 ```
 
 Two AI processing layers work together — a **semantic engine** for vector search, dedup, and categorization, and a **context advisor** for task drift detection, context recovery, and background web research. Both feed into a shared SQLite store with FTS5 full-text search and native KNN vector indexing.
+
+### Brain Mode
+
+When you run `hermes-noxem`, you choose how much AI power to use:
+
+| Mode | What's enabled | Use when |
+|------|---------------|----------|
+| **Brain 1 only** | Semantic search, dedup, categorization, FTS5, auto-correction | Low RAM, quick lookups, only need memory recall |
+| **Brain 1 + Brain 2** | Everything above + advisor, research pipeline, context recovery, extraction | Full-featured sessions with research and drift detection |
+
+You can also skip the prompt with CLI flags:
+
+```bash
+hermes-noxem --brain2     # Full mode, no prompt
+hermes-noxem --no-brain2  # Memory-only, no prompt
+```
+
+Non-interactive shells (cron, piped input) default to Brain 1 only.
 
 ---
 
