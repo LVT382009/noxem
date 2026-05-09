@@ -150,10 +150,10 @@ startup().catch(err => {
 // ─── Health ───────────────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
   const stats = getMemoryStats();
-  let gemma4Ok = false;
+  let llmOk = false;
   try {
-    const r = await fetch(`${process.env.GEMMA_URL || 'http://127.0.0.1:8000'}/v1/models`, { signal: AbortSignal.timeout(2000) });
-    gemma4Ok = r.ok;
+    const r = await fetch(`${process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000'}/v1/models`, { signal: AbortSignal.timeout(2000) });
+    llmOk = r.ok;
   } catch {}
   res.json({
     ok: true,
@@ -163,7 +163,7 @@ app.get('/health', async (_req, res) => {
     embedding_error: getEmbeddingError()?.message || null,
     vector_index: isVecReady(),
     advisor: ENABLE_ADVISOR,
-    gemma4: gemma4Ok,
+    llm: llmOk,
     maintenance: ENABLE_MAINTENANCE,
     research: ENABLE_RESEARCH,
     mode: 'hybrid-ai',
@@ -391,10 +391,10 @@ app.get("/memory/search", async (req, res) => {
       try {
         const expQ = q.trim().replace(/"/g, "");
         const prompt = "Generate 2 alternative ways to phrase this search query for a personal memory store. Return ONLY a JSON array of 2 strings. Query: " + expQ;
-        const expandRes = await fetch(process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
+        const expandRes = await fetch(process.env.LLM_URL || process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "gemma4", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
+          body: JSON.stringify({ model: "qwen3", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
           signal: AbortSignal.timeout(1500),
         });
         if (expandRes.ok) {
@@ -836,7 +836,7 @@ app.post('/memory/advisor/compress', async (req, res) => {
       return res.json({ ok: true, mode: 'disabled', advice: 'Advisor disabled. Set ADVISOR_ENABLED=true' });
     }
     const analysis = await analyzeBeforeCompress(conversation_history || [], session_memories || []);
-    res.json({ ok: true, mode: 'gemma4', analysis });
+    res.json({ ok: true, mode: 'qwen3', analysis });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -854,7 +854,7 @@ app.post('/memory/advisor/advice', async (req, res) => {
       activeMemories: active_memories || [],
       currentTaskContext: task_context || '',
     });
-    res.json({ ok: true, mode: 'gemma4', advice });
+    res.json({ ok: true, mode: 'qwen3', advice });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1077,7 +1077,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`  Port: ${PORT}`);
   console.log(`  Embedding: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
   console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'}`);
-  console.log(`  Advisor: ${ENABLE_ADVISOR ? 'Gemma 4' : 'DISABLED'}`);
+  console.log(`  Advisor: ${ENABLE_ADVISOR ? 'Qwen3 0.6B' : 'DISABLED'}`);
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
   console.log(` Research: ${ENABLE_RESEARCH ? 'Background pipeline (topic → DDG → fetch → extract)' : 'DISABLED'}`);
   console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
@@ -1105,7 +1105,7 @@ function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Handle uncaught errors gracefully — debounce non-fatal errors like gemma4-server
+// Handle uncaught errors gracefully — debounce non-fatal errors like llm-server
 const _errorCounts = new Map();
 let _errorLogInterval = null;
 function _startErrorLogger() {

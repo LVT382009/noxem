@@ -7,14 +7,14 @@
 | Brain | Model | Role |
 |-------|-------|------|
 | **Vector Brain** | EmbeddingGemma 300M (ONNX) | Semantic search, dedup, contradiction detection, categorization |
-| **Advisor Brain** | Gemma 4 E2B (ONNX) | Context recovery, task drift detection, DDG web search, session analysis |
+| **Advisor Brain** | Qwen3 0.6B (ONNX) | Context recovery, task drift detection, DDG web search, session analysis |
 
 ## Data Flow
 
 ```
 Hermes Agent ←→ Noxem Provider Plugin ←HTTP→ Memory Server (Node.js, port 3001)
                                                  ├── EmbeddingGemma 300M (vector engine)
-                                                 ├── Gemma 4 E2B (advisor engine)
+                                                 ├── Qwen3 0.6B (advisor engine)
                                                  ├── SQLite + FTS5 + embeddings
                                                  ├── DuckDuckGo search
                                                  └── Maintenance cron (dedup/cleanup)
@@ -42,7 +42,7 @@ Hermes Agent ←→ Noxem Provider Plugin ←HTTP→ Memory Server (Node.js, por
 
 - Node.js 20+ (for the memory server)
 - Python 3.10+ (for the Hermes plugin)
-- Gemma 4 E2B ONNX model running on port 8000 (optional, for advisor)
+- Qwen3 0.6B ONNX model running on port 8000 (optional, for advisor)
 - EmbeddingGemma 300M downloads on first server start
 
 ## Environment Variables
@@ -50,7 +50,7 @@ Hermes Agent ←→ Noxem Provider Plugin ←HTTP→ Memory Server (Node.js, por
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NOXEM_SERVER` | `http://127.0.0.1:3001` | Memory server URL |
-| `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | Gemma 4 API |
+| `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | Qwen3 0.6B API |
 | `MEMORY_DB_DIR` | `./data` | SQLite DB path |
 
 ## CLI Commands

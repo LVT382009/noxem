@@ -12,16 +12,16 @@
  * via memory_search — the advisor doesn't need to do web searches itself.
  */
 
-const GEMMA_URL = process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-const GEMMA_MODEL = process.env.GEMMA_MODEL || 'onnx-community/gemma-4-E2B-it-ONNX';
+const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
+const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'onnx-community/Qwen3-0.6B-ONNX';
 const ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
 
-function callGemma(messages, maxTokens = 1024, temperature = 0.3) {
-  return fetch(GEMMA_URL, {
+function callLLM(messages, maxTokens = 1024, temperature = 0.3) {
+  return fetch(LLM_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: GEMMA_MODEL,
+      model: LLM_MODEL,
       messages,
       max_tokens: maxTokens,
       temperature,
@@ -31,7 +31,7 @@ function callGemma(messages, maxTokens = 1024, temperature = 0.3) {
 }
 
 // Pre-compression advisor: analyze conversation before compaction
-// Gemma 4 reviews the conversation and extracts what must survive
+// Qwen3 reviews the conversation and extracts what must survive
 export async function analyzeBeforeCompress(conversationHistory, sessionMemories) {
   if (!ADVISOR_ENABLED) return fallbackCompressAnalysis(conversationHistory, sessionMemories);
 
@@ -71,7 +71,7 @@ Stay factual and concise. Only flag real issues, not hypothetical ones.`,
   ];
 
   try {
-    const res = await callGemma(messages, 1024, 0.2);
+    const res = await callLLM(messages, 1024, 0.2);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || fallbackCompressAnalysis(conversationHistory, sessionMemories);
   } catch (err) {
@@ -117,7 +117,7 @@ Respond concisely. If everything looks fine, say "All good — no issues detecte
   ];
 
   try {
-    const res = await callGemma(messages, 800, 0.2);
+    const res = await callLLM(messages, 800, 0.2);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || fallbackAdvice();
   } catch (err) {
@@ -149,10 +149,10 @@ Rules:
   ];
 
   try {
-    const res = await callGemma(messages, 1024, 0.1);
+    const res = await callLLM(messages, 1024, 0.1);
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '';
-    if (!content || content.startsWith('[Gemma 4 un')) return [];
+    if (!content || content.startsWith('[LLM un')) return [];
         const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return [];
     const memories = JSON.parse(jsonMatch[0]);
@@ -163,7 +163,7 @@ Rules:
   }
 }
 
-// Fallback: rule-based analysis when Gemma 4 is unavailable
+// Fallback: rule-based analysis when LLM is unavailable
 function fallbackCompressAnalysis(conversationHistory, sessionMemories) {
   const turnText = (conversationHistory || []).map(t => (t.content || '')).join(' ').toLowerCase();
   const lines = [];
@@ -182,7 +182,7 @@ function fallbackCompressAnalysis(conversationHistory, sessionMemories) {
   }
 
   // Detect key tools/tech
-  const techs = ['python', 'node', 'rust', 'react', 'docker', 'sqlite', 'express', 'gemma', 'hermes'];
+  const techs = ['python', 'node', 'rust', 'react', 'docker', 'sqlite', 'express', 'qwen3', 'hermes'];
   for (const t of techs) {
     if (turnText.includes(t)) lines.push(`- Uses: ${t}`);
   }

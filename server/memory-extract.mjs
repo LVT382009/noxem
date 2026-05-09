@@ -1,6 +1,6 @@
 const GEMMA_URL = process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-const GEMMA_MODEL = process.env.GEMMA_MODEL || 'onnx-community/gemma-4-E2B-it-ONNX';
-const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use Gemma
+const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'onnx-community/Qwen3-0.6B-ONNX';
+const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use LLM
 
 const EXTRACTION_PROMPT = `You are a memory extraction AI. Analyze the conversation below and extract factual memories that the AI agent should remember for future conversations.
 
@@ -24,9 +24,9 @@ ASSISTANT: {{assistantResponse}}
 
 Memories:`;
 
-export async function extractMemories({ userMessage, assistantResponse, gemmaUrl, gemmaModel }) {
+export async function extractMemories({ userMessage, assistantResponse, llmUrl, llmModel }) {
   const url = gemmaUrl || GEMMA_URL;
-  const model = gemmaModel || GEMMA_MODEL;
+  const model = llmModel || LLM_MODEL;
 
   const prompt = EXTRACTION_PROMPT
     .replace('{{userMessage}}', (userMessage || '').substring(0, 2000))
@@ -48,7 +48,7 @@ export async function extractMemories({ userMessage, assistantResponse, gemmaUrl
     });
 
     if (!res.ok) {
-      console.error(`Gemma API error: ${res.status} ${res.statusText}`);
+      console.error(`LLM API error: ${res.status} ${res.statusText}`);
       return [];
     }
 
@@ -68,7 +68,7 @@ export async function extractMemories({ userMessage, assistantResponse, gemmaUrl
     }));
   } catch (err) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-      console.error('Extraction timed out (Gemma too slow)');
+      console.error('Extraction timed out (LLM too slow)');
     } else {
       console.error('Extraction error:', err.message);
     }

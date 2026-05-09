@@ -13,7 +13,7 @@ Hermes Agent
 │   │   - Deduplication (cosine >0.92)
 │   │   - Auto-categorization + importance estimation
 │   │
-│   ├── Brain 2: Gemma 4 E2B
+│   ├── Brain 2: Qwen3 0.6B
 │   │   - Context recovery after compaction
 │   │   - Task drift warnings
 │   │   - Multi-query expansion for vague searches
@@ -37,9 +37,9 @@ Hermes Agent
 10. **Clean** — Invalid memories purged; stale (90d, 0 recalls) archived
 11. **Search** — Hybrid (EmbeddingGemma KNN + FTS5 via Reciprocal Rank Fusion) with MMR diversity + multi-query expansion
 12. **Score** — Recency + importance + spaced-repetition weighting (type-specific half-lives)
-13. **Recover** — `on_pre_compress`: Gemma 4 preserves critical context
+13. **Recover** — `on_pre_compress`: Qwen3 0.6B preserves critical context
 13b. **Research** — Background: detect topic → DDG search → fetch pages → extract facts → store as type:learning
-14. **Advise** — Gemma 4 advisor watches for task drift + context recovery
+14. **Advise** — Qwen3 0.6B advisor watches for task drift + context recovery
 15. **Feedback** — Search results used by Hermes boost importance (+0.03 vs +0.01 for mere retrieval)
 16. **Auto-correct** — Rule-based category validation: detect misclassified memories and correct type
 
@@ -104,7 +104,7 @@ When 3+ low-importance memories (importance <0.5) about the same entity cluster 
 
 ### Multi-Query Expansion
 
-For short queries (<6 words), Gemma 4 generates 2 alternate phrasings:
+For short queries (<6 words), Qwen3 0.6B generates 2 alternate phrasings:
 - All variants are searched independently
 - Results merged via Reciprocal Rank Fusion
 - Improves recall for vague or imprecise queries
@@ -154,7 +154,7 @@ For short queries (<6 words), Gemma 4 generates 2 alternate phrasings:
 - `GET /search/web?q=...` — DuckDuckGo search
 
 ### Health
-- `GET /health` — Server health + uptime + memory stats + gemma4 status + feature flags
+- `GET /health` — Server health + uptime + memory stats + LLM status + feature flags
 - `GET /ready` — Startup readiness check
 
 ## Python Plugin Tools
@@ -194,12 +194,12 @@ cd server && bash run-test.sh
 | `server/embedding-engine.mjs` | EmbeddingGemma 300M + entity extraction + context prefix + importance |
 | `server/vector-index.mjs` | sqlite-vec native KNN (optional, falls back to JS cosine) |
 | `server/memory-extract.mjs` | LLM memory extraction |
-| `server/advisor-engine.mjs` | Gemma 4 advisor (drift detection + context recovery) |
+| `server/advisor-engine.mjs` | Qwen3 0.6B advisor (drift detection + context recovery) |
 | `server/ddg-search.mjs` | DuckDuckGo search (used by research pipeline) |
 | `server/research-engine.mjs` | Background research pipeline (topic detection → DDG → fetch → extract → store) |
 | `server/web-fetch.mjs` | Zero-dep web page fetcher + HTML-to-text extraction |
 | `server/memory-maintenance.mjs` | Cron: dedup/contradiction/consolidation/archive |
-| `server/gemma4-server.mjs` | Gemma 4 model server (retry + fallback + graceful shutdown) |
+| `server/gemma4-server.mjs` | Qwen3 0.6B model server (retry + fallback + graceful shutdown) |
 | `server/run-test.sh` | Integration test script (34 tests, WSL compatible) |
 | `server/run-embedding-test.sh` | Embedding E2E test script (full vector pipeline) |
 | `hooks/pre-llm-memory.mjs` | Shell hook: prefetch memories before LLM call |
@@ -250,16 +250,16 @@ CREATE INDEX idx_memories_entity_attr ON memories(entity, attribute);
 |----------|---------|-------------|
 | `MEMORY_PORT` | `3001` | Server port |
 | `ENABLE_EMBEDDING` | `true` | Load EmbeddingGemma 300M |
-| `ENABLE_ADVISOR` | `true` | Enable Gemma 4 advisor |
+| `ENABLE_ADVISOR` | `true` | Enable Qwen3 0.6B advisor |
 | `ENABLE_MAINTENANCE` | `true` | Enable 5-min dedup cron |
-| `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | Gemma 4 API |
+| `LLM_URL`, `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | Qwen3 0.6B API |
 | `EMBEDDING_MODEL` | `onnx-community/embeddinggemma-300m-ONNX` | Embedding model ID |
 | `EMBEDDING_DTYPE` | `q8` | Embedding precision (fp32/q8/q4) |
 | `EMBEDDING_DIM` | `256` | MRL embedding dimension (128/256/512/768) |
 | `DUP_THRESHOLD` | `0.92` | Dedup cosine threshold |
 | `CONTRADICT_THRESHOLD` | `0.80` | Contradiction threshold |
 | `MEMORY_DECAY_HALF_LIFE` | `30` | Default recency decay half-life (days), overridden per type |
-| `GEMMA4_LOAD_RETRIES` | `2` | Model download retry count |
+| `LLM_LOAD_RETRIES`, `GEMMA4_LOAD_RETRIES` | `2` | Model download retry count |
 | `EMBEDDING_LOAD_RETRIES` | `2` | Embedding model retry count |
 | `MEMORY_DB_DIR` | `./data` | SQLite database directory |
 | `MEMORY_MAX_RESULTS` | `5` | Default search result limit |

@@ -241,7 +241,7 @@ echo "$R" | grep -qE '"stored":[01]' && check "greeting sync handled" "true" || 
 echo "=== Rate limit header info in health ==="
 R=$(curl -s http://127.0.0.1:3001/health)
 echo "$R"
-echo "$R" | grep -q '"gemma4"' && check "health gemma4 field" "true" || check "health gemma4" "FAIL"
+echo "$R" | grep -q '"llm"' && check "health llm field" "true" || check "health llm" "FAIL"
 echo "$R" | grep -q '"uptime_seconds"' && check "health uptime field" "true" || check "health uptime" "FAIL"
 R=$(curl -s http://127.0.0.1:3001/memory/2)
 echo "$R"

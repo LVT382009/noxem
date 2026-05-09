@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Gemma 4 E2B — OpenAI-compatible API server using Transformers.js
+// Qwen3 0.6B — OpenAI-compatible API server using Transformers.js
 // Provides /v1/chat/completions endpoint for the Noxem advisor.
 
 // Prefer IPv4 for HuggingFace CDN downloads — WSL IPv6 can cause ConnectTimeoutError
@@ -59,7 +59,7 @@ globalThis.fetch = function patchedFetch(url, opts = {}) {
   if (typeof url === 'string' && _effectiveMirror && url.startsWith('https://huggingface.co/')) {
     fetchUrl = url.replace('https://huggingface.co/', _effectiveMirror);
   } else if (typeof url === 'string' && _effectiveMirror && url.includes('hf.co')) {
-    fetchUrl = url.replace(/https?://[^/]*hf.co/, _effectiveMirror.replace(//$/, ''));
+      fetchUrl = url.replace(/https?:\/\/[^/]*hf\.co/, _effectiveMirror.replace(/\/$/, ''));
   }
   const isHF = typeof fetchUrl === 'string' && (fetchUrl.includes('huggingface') || fetchUrl.includes('hf.co'));
   if (isHF) {
@@ -88,18 +88,18 @@ const PROJECT_ROOT = resolve(__dirname, '..');
 
 const HF_MIRROR = process.env.HF_ENDPOINT || '';
 let _effectiveMirror = HF_MIRROR || '';
-const PORT = process.env.GEMMA4_PORT || 8000;
-const MODEL_ID = process.env.GEMMA4_MODEL || 'onnx-community/gemma-4-E2B-it-ONNX';
-const DTYPE = process.env.GEMMA4_DTYPE || 'q4f16';
-const MAX_NEW_TOKENS = parseInt(process.env.GEMMA4_MAX_TOKENS || '1024');
+const PORT = process.env.LLM_PORT || process.env.GEMMA4_PORT || 8000;
+const MODEL_ID = process.env.LLM_MODEL || process.env.GEMMA4_MODEL || 'onnx-community/Qwen3-0.6B-ONNX';
+const DTYPE = process.env.LLM_DTYPE || process.env.GEMMA4_DTYPE || 'q4f16';
+const MAX_NEW_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || process.env.GEMMA4_MAX_TOKENS || '1024');
 // Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
-const CACHE_DIR = process.env.GEMMA4_CACHE || resolve(PROJECT_ROOT, '.cache/gemma4');
-const MAX_RETRIES = parseInt(process.env.GEMMA4_LOAD_RETRIES || '3');
+const CACHE_DIR = process.env.LLM_CACHE || process.env.GEMMA4_CACHE || resolve(PROJECT_ROOT, '.cache/llm');
+const MAX_RETRIES = parseInt(process.env.LLM_LOAD_RETRIES || process.env.GEMMA4_LOAD_RETRIES || '3');
 
 // In Node.js, onnxruntime-node auto-selects the best EP (CUDA > DirectML > CPU).
 // WebGPU is browser-only — setting device:'webgpu' in Node causes "fetch failed".
 function detectDevice() {
-  if (process.env.GEMMA4_DEVICE) return process.env.GEMMA4_DEVICE;
+  if (process.env.LLM_DEVICE || process.env.GEMMA4_DEVICE) return process.env.LLM_DEVICE || process.env.GEMMA4_DEVICE;
   // Node.js uses onnxruntime-native — don't pass device, let it auto-detect
   return undefined;
 }
@@ -110,8 +110,7 @@ if (DEVICE) {
   console.log('Device: auto (onnxruntime-node selects best EP)');
 }
 
-let model = null;
-let processor = null;
+let generator = null; // text-generation pipeline (tokenizer + model)
 let loadPromise = null;
 let ready = false;
 let loadError = null;
@@ -220,12 +219,12 @@ async function loadModel() {
   runNetworkDiagnostics();
   validateCacheDir(CACHE_DIR);
   loadPromise = (async () => {
-    // Dynamic import — Gemma4ForConditionalGeneration may not exist in older versions
-      let AutoProcessor, Gemma4ForConditionalGeneration, transformers;
+  // Dynamic import — pipeline() is the standard transformers.js API
+  let pipeline, transformers;
     try {
       transformers = await import('@huggingface/transformers');
-      AutoProcessor = transformers.AutoProcessor;
-      Gemma4ForConditionalGeneration = transformers.Gemma4ForConditionalGeneration;
+    pipeline = transformers.pipeline;
+
       if (HF_MIRROR && transformers.env) {
           transformers.env.remoteHost = HF_MIRROR;
           _effectiveMirror = HF_MIRROR;
@@ -238,8 +237,8 @@ async function loadModel() {
       return;
     }
 
-    if (!AutoProcessor || !Gemma4ForConditionalGeneration) {
-      loadError = new Error('Gemma4ForConditionalGeneration not available — update @huggingface/transformers to v4+');
+  if (!pipeline) {
+    loadError = new Error('pipeline not available — update @huggingface/transformers');
       console.error(loadError.message);
       return;
     }
@@ -255,7 +254,7 @@ async function loadModel() {
           const cacheCorrupted = prevError.includes('fetch failed') || prevError.includes('tokenizer_class') || prevError.includes('Cannot read properties') || prevError.includes('Unable to fetch file metadata');
           // Always clear cache on mirror fallback — old host downloads are incomplete
           const mirrorSwitched = !HF_MIRROR && _effectiveMirror && _effectiveMirror !== 'https://huggingface.co/';
-          if (cacheCorrupted || mirrorSwitched || process.env.GEMMA4_CLEAR_CACHE_ON_RETRY === 'true') {
+          if (cacheCorrupted || mirrorSwitched || process.env.LLM_CLEAR_CACHE_ON_RETRY === 'true' || process.env.GEMMA4_CLEAR_CACHE_ON_RETRY === 'true') {
             const fs = await import('fs');
             const path = await import('path');
             const cachePath = path.resolve(CACHE_DIR);
@@ -273,7 +272,6 @@ async function loadModel() {
         console.log('  Switched to hf-mirror.com for this retry');
       }
           }
-        }
 
         console.log(`Loading ${MODEL_ID} (dtype=${DTYPE})...`);
         const start = Date.now();
@@ -286,15 +284,14 @@ async function loadModel() {
         // auto-selects the best execution provider (CUDA/DirectML/CPU)
         if (DEVICE) loadOpts.device = DEVICE;
 
-        // Load sequentially (not Promise.all) to avoid CDN connection timeouts.
-        // Transformers.js fires many concurrent fetch() requests for model files;
-        // loading processor + model in parallel doubles the concurrent connections,
-        // which triggers ConnectTimeoutError on HuggingFace CDN (xethub.hf.co).
-        processor = await AutoProcessor.from_pretrained(MODEL_ID, { cache_dir: CACHE_DIR });
-        model = await Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, loadOpts);
+      // Use pipeline() API — handles tokenizer + model loading internally.
+      // Qwen3-0.6B is a decoder-only text-generation model (Qwen3ForCausalLM).
+
+
+      generator = await pipeline('text-generation', MODEL_ID, loadOpts);
 
         const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-        console.log(`Gemma 4 ready in ${elapsed}s`);
+        console.log(`Qwen3 0.6B ready in ${elapsed}s`);
         ready = true;
         loadError = null;
         return;
@@ -329,7 +326,7 @@ function fallbackResponse(messages) {
     model: MODEL_ID,
     choices: [{
       index: 0,
-      message: { role: 'assistant', content: `[Gemma 4 unavailable] ${loadError?.message || 'model not loaded'}. Query: "${text}"` },
+      message: { role: 'assistant', content: `[LLM unavailable] ${loadError?.message || 'model not loaded'}. Query: "${text}"` },
       finish_reason: 'stop',
     }],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
@@ -352,34 +349,17 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     const messages = req.body?.messages || [];
-    const prompt = processor.apply_chat_template
-      ? processor.apply_chat_template(messages, { enable_thinking: false, add_generation_prompt: true })
-      : formatMessages(messages);
-    const maxTokens = req.body?.max_tokens || MAX_NEW_TOKENS;
+      const maxTokens = req.body?.max_tokens || MAX_NEW_TOKENS;
 
-    const inputs = await processor(prompt, { add_special_tokens: false });
-    const inputLen = inputs.input_ids?.dims?.at(-1) || 0;
+      // pipeline() handles chat template + tokenization + generation internally
+      const output = await generator(messages, {
+        max_new_tokens: maxTokens,
+        do_sample: false,
+      });
 
-    const TextStreamer = (await import('@huggingface/transformers')).TextStreamer;
-    const streamer = TextStreamer
-      ? new TextStreamer(processor.tokenizer, { skip_prompt: true, skip_special_tokens: false })
-      : undefined;
-
-    const generateOpts = {
-      ...inputs,
-      max_new_tokens: maxTokens,
-      do_sample: false,
-    };
-    if (streamer) generateOpts.streamer = streamer;
-
-    const outputs = await model.generate(generateOpts);
-
-    const decoded = processor.batch_decode(
-      outputs.slice(null, [inputLen, null]),
-      { skip_special_tokens: true }
-    );
-
-    const text = (decoded?.[0] || '').trim();
+      // Pipeline returns [{ generated_text: [...messages, {role:'assistant', content:'...'}] }]
+      const lastMsg = output?.[0]?.generated_text?.at(-1);
+      const text = (lastMsg?.content || '').trim();
 
     res.json({
       id: `chatcmpl-${Date.now()}`,
@@ -387,28 +367,27 @@ app.post('/v1/chat/completions', async (req, res) => {
       created: Math.floor(Date.now() / 1000),
       model: MODEL_ID,
       choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: inputLen, completion_tokens: 0, total_tokens: 0 },
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     });
   } catch (err) {
-    console.error('Gemma 4 inference error:', err.message);
+    console.error('LLM inference error:', err.message);
     res.json(fallbackResponse(req.body?.messages || []));
   }
 });
 
 // ── Start ──
 const server = app.listen(PORT, '127.0.0.1', async () => {
-  console.log(`Gemma 4 API at http://127.0.0.1:${PORT}/v1`);
+  console.log(`Qwen3 0.6B API at http://127.0.0.1:${PORT}/v1`);
   loadModel().catch(err => console.error('Model load failed:', err.message));
 });
 
 // Graceful shutdown
 function shutdown(signal) {
-  console.log(`\n${signal} received — shutting down Gemma 4 server...`);
+  console.log(`\n${signal} received — shutting down LLM server...`);
   if (errorLogInterval) clearInterval(errorLogInterval);
   server.close(() => {
-    model = null;
-    processor = null;
-    console.log('Gemma 4 server stopped.');
+    generator = null;
+    console.log('LLM server stopped.');
     process.exit(0);
   });
   setTimeout(() => process.exit(1), 8000);

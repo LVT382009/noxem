@@ -2,11 +2,11 @@
  * Research Engine — Brain 2 background research pipeline.
  *
  * After each sync_turn, this engine runs ASYNCHRONOUSLY:
- * 1. Topic Detection (Gemma 4) — classify: TECHNICAL or CASUAL
- * 2. Query Generation (Gemma 4) — craft optimal search query
+ * 1. Topic Detection (Qwen3 0.6B) — classify: TECHNICAL or CASUAL
+ * 2. Query Generation (Qwen3 0.6B) — craft optimal search query
  * 3. DDG Search — find relevant web results
  * 4. Web Fetch — read top URLs, extract text
- * 5. Fact Extraction (Gemma 4) — extract 3-5 key facts
+ * 5. Fact Extraction (Qwen3 0.6B) — extract 3-5 key facts
  * 6. Memory Storage — store facts as type:learning memories
  *
  * It never blocks the main request flow — sync_turn returns immediately.
@@ -16,8 +16,8 @@
 import { searchWeb } from './ddg-search.mjs';
 import { fetchPages, isFetchableUrl } from './web-fetch.mjs';
 
-const GEMMA_URL = process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-const GEMMA_MODEL = process.env.GEMMA_MODEL || 'onnx-community/gemma-4-E2B-it-ONNX';
+const GEMMA_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
+const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'onnx-community/Qwen3-0.6B-ONNX';
 const RESEARCH_ENABLED = process.env.RESEARCH_ENABLED !== 'false';
 const RESEARCH_MIN_INTERVAL_MS = parseInt(process.env.RESEARCH_MIN_INTERVAL || '30000'); // 30s
 const RESEARCH_MAX_TOPICS_PER_SESSION = 50; // per session lifetime
@@ -142,7 +142,7 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
     }
   }
 
-  // Step 4: Extract facts using Gemma 4
+  // Step 4: Extract facts using Qwen3 0.6B
   const facts = await extractFacts(detection.topic, detection.searchQuery, searchResults, fetchedPages);
   if (!facts.length) {
     console.log(`[Research] No facts extracted for "${detection.topic}"`);
@@ -193,21 +193,21 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
   console.log(`[Research] Stored ${storedIds.length} facts about "${detection.topic}" for session ${sessionId}`);
 }
 
-// ── Topic Detection (Gemma 4) ──────────────────────────────
+// ── Topic Detection (Qwen3 0.6B) ──────────────────────────────
 
-async function callGemma(messages, maxTokens = 256, temperature = 0.1, timeout = 15_000) {
+async function callLLM(messages, maxTokens = 256, temperature = 0.1, timeout = 15_000) {
   try {
     const res = await fetch(GEMMA_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: GEMMA_MODEL, messages, max_tokens: maxTokens, temperature }),
+      body: JSON.stringify({ model: LLM_MODEL, messages, max_tokens: maxTokens, temperature }),
       signal: AbortSignal.timeout(timeout),
     });
-    if (!res.ok) throw new Error(`Gemma4 HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`Qwen3 HTTP ${res.status}`);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || '';
   } catch (err) {
-    console.error('[Research] Gemma4 call failed:', err.message);
+    console.error('[Research] Qwen3 call failed:', err.message);
     return '';
   }
 }
@@ -223,9 +223,9 @@ async function detectTopic(userMessage, assistantResponse) {
   const combined = `${userMessage || ''} ${assistantResponse || ''}`.substring(0, 2000);
   if (skipNonTechnical(combined)) return result;
 
-  // If Gemma 4 is unavailable, use regex-based fallback
+  // If Qwen3 0.6B is unavailable, use regex-based fallback
   // Topic detection needs more time — use 30s timeout
-  const gemmaResponse = await callGemma([
+  const llmResponse = await callLLM([
     {
       role: 'system',
       content: `You are a topic classifier for an AI coding agent's memory system.
@@ -268,15 +268,15 @@ User: "ok thanks"
     },
   ], 150, 0.1, 30_000); // 30s timeout for topic detection
 
-  if (!gemmaResponse) {
+  if (!llmResponse) {
     // Fallback: regex-based detection
     return regexTopicDetection(combined);
   }
 
-  // Parse Gemma 4's response
-  const topicMatch = gemmaResponse.match(/TOPIC:\s*(.+)/i);
-  const queryMatch = gemmaResponse.match(/QUERY:\s*(.+)/i);
-  const entityMatch = gemmaResponse.match(/ENTITY:\s*(.+)/i);
+  // Parse Qwen3 0.6B's response
+  const topicMatch = llmResponse.match(/TOPIC:\s*(.+)/i);
+  const queryMatch = llmResponse.match(/QUERY:\s*(.+)/i);
+  const entityMatch = llmResponse.match(/ENTITY:\s*(.+)/i);
 
   const topic = topicMatch?.[1]?.trim() || '';
   const query = queryMatch?.[1]?.trim() || '';
@@ -294,7 +294,7 @@ User: "ok thanks"
 
 /**
  * Quick regex pre-filter to skip obvious non-technical messages.
- * Avoids Gemma 4 call for trivial cases.
+ * Avoids Qwen3 0.6B call for trivial cases.
  */
 function skipNonTechnical(text) {
   const lower = text.toLowerCase().trim();
@@ -326,7 +326,7 @@ function skipNonTechnical(text) {
     /\bhermes\s*(agent|memory|plugin)?\b/i,
     /\bwhat\b[\s']s?\s+hermes\b/i,
     /\bnoxem\b/i,
-    /\bgemma\s*\d?\b/i,
+    /\bqwen3?\b/i,
     /\bopenai\b/i,
     /\bai\s+(agent|tool|assistant|model)\b/i,
   ];
@@ -342,7 +342,7 @@ function skipNonTechnical(text) {
 }
 
 /**
- * Fallback regex-based topic detection when Gemma 4 is unavailable.
+ * Fallback regex-based topic detection when Qwen3 0.6B is unavailable.
  * Conservative: only triggers for active BUILD/INSTALL/FIX tasks, not passive mentions.
  */
 function regexTopicDetection(text) {
@@ -439,7 +439,7 @@ function regexTopicDetection(text) {
   return result;
 }
 
-// ── Fact Extraction (Gemma 4) ──────────────────────────────
+// ── Fact Extraction (Qwen3 0.6B) ──────────────────────────────
 
 /**
  * Extract key facts from search results and fetched page content.
@@ -477,7 +477,7 @@ Return ONLY a JSON array: [{"text": "...", "importance": 0.5, "sourceUrl": "..."
 Search results:
 ${searchContext}`;
 
-  const response = await callGemma([
+  const response = await callLLM([
     { role: 'system', content: 'You extract factual knowledge from web search results. Return only valid JSON arrays. Be concise and accurate.' },
     { role: 'user', content: prompt },
   ], 512, 0.1);

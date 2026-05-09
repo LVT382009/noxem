@@ -195,7 +195,7 @@ if ! $INSTALLED; then
  fi
 
  touch "$SHELL_RC" 2>/dev/null || true
- printf '\n# Noxem -- launch Hermes with memory + Gemma 4 servers\n%s\n' "$ALIAS_LINE" >> "$SHELL_RC"
+ printf '\n# Noxem -- launch Hermes with memory + LLM servers\n%s\n' "$ALIAS_LINE" >> "$SHELL_RC"
  echo " Added 'hermes-noxem' alias to $SHELL_RC"
 fi
 

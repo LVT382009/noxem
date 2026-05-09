@@ -2,7 +2,7 @@
 
 Two-brain architecture:
 - Brain 1: EmbeddingGemma 300M → embedding search, dedup, contradiction detection
-- Brain 2: Gemma 4 E2B → advisor, context recovery, background web research
+- Brain 2: Qwen3 0.6B → advisor, context recovery, background web research
 
 Communicates with the Hermes Memory Server (Node.js) over HTTP.
 
@@ -56,7 +56,7 @@ class NoxemMemoryProvider:
         self._session_id = session_id
         self._hermes_home = kwargs.get("hermes_home", os.environ.get("HERMES_HOME", "~/.hermes"))
         self._server_url = os.environ.get("NOXEM_SERVER", MEMORY_SERVER_DEFAULT)
-        self._gemma_url = os.environ.get("GEMMA_URL", "http://127.0.0.1:8000/v1/chat/completions")
+        self._llm_url = os.environ.get("LLM_URL", os.environ.get("GEMMA_URL", "http://127.0.0.1:8000/v1/chat/completions"))
         self._sync_thread = None
         self._server_reachable = False
         self._sync_fail_count = 0
@@ -71,7 +71,7 @@ class NoxemMemoryProvider:
             self._check_server_health(log_init=True)
 
     def _try_start_servers_async(self):
-        """Start both servers (memory + Gemma 4) in background thread, then check health."""
+        """Start both servers (memory + LLM) in background thread, then check health."""
         def _start():
             self._try_start_servers()
             self._check_server_health(log_init=True)
@@ -79,7 +79,7 @@ class NoxemMemoryProvider:
         t.start()
 
     def _try_start_servers(self):
-        """Attempt to start both the memory server and Gemma 4 server from the deployed location."""
+        """Attempt to start both the memory server and LLM server from the deployed location."""
         import shutil
         node_bin = shutil.which("node")
         if not node_bin:
@@ -97,12 +97,12 @@ class NoxemMemoryProvider:
         if "HF_ENDPOINT" not in env and os.environ.get("HF_ENDPOINT"):
             env["HF_ENDPOINT"] = os.environ["HF_ENDPOINT"]
 
-        # Start Gemma 4 server first (takes longer to initialize)
-        gemma4_candidates = [
-            home / "noxem-server" / "server" / "gemma4-server.mjs",
+        # Start LLM server first (takes longer to initialize)
+        llm_candidates = [
+            home / "noxem-server" / "server" / "llm-server.mjs",
             home / ".hermes" / "noxem-server" / "server" / "gemma4-server.mjs",
         ]
-        for path in gemma4_candidates:
+        for path in llm_candidates:
             if path.exists():
                 try:
                     proc = subprocess.Popen(
@@ -114,11 +114,11 @@ class NoxemMemoryProvider:
                         start_new_session=True,
                     )
                     self._server_pids.append(proc.pid)
-                    logger.info(f"Noxem auto-started Gemma 4 server from {path} (PID {proc.pid})")
-                    print(f"[Noxem] Auto-starting Gemma 4 server... (PID {proc.pid})")
+                    logger.info(f"Noxem auto-started LLM server from {path} (PID {proc.pid})")
+                    print(f"[Noxem] Auto-starting LLM server... (PID {proc.pid})")
                     break
                 except Exception as e:
-                    logger.debug(f"Failed to auto-start Gemma 4 from {path}: {e}")
+                    logger.debug(f"Failed to auto-start LLM from {path}: {e}")
 
         # Start memory server
         memory_candidates = [
@@ -149,7 +149,7 @@ class NoxemMemoryProvider:
             return False
 
         # Wait up to 90s for memory server to become ready
-        # Gemma 4 takes longer but we don't block on it — the advisor gracefully handles it
+        # LLM server takes longer but we don't block on it — the advisor gracefully handles it
         for i in range(90):
             time.sleep(1)
             # Check /ready endpoint first (faster than full /health)
@@ -244,8 +244,8 @@ class NoxemMemoryProvider:
                 "required": False,
             },
             {
-                "key": "gemma_url",
-                "description": "Gemma 4 API endpoint (for advisor + extraction)",
+                "key": "llm_url",
+                "description": "LLM API endpoint (for advisor + extraction)",
                 "default": "http://127.0.0.1:8000/v1/chat/completions",
                 "required": False,
             },
@@ -402,7 +402,7 @@ class NoxemMemoryProvider:
         return (
             f"[Noxem Memory — {status}]\n"
             "AI-powered memory system. EmbeddingGemma 300M for search + dedup. "
-            "Gemma 4 for advisor + context recovery + background web research.\n"
+            "Qwen3 0.6B for advisor + context recovery + background web research.\n"
             "Memory types: preference, fact, project, goal, pattern, entity, event, issue, setup, learning, profile.\n"
             "Use `memory_search` to look up past info and `memory_store` to save facts."
         )

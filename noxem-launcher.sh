@@ -13,9 +13,9 @@ fi
 MEMORY_PORT=${MEMORY_PORT:-3001}
 GEMMA4_PORT=${GEMMA4_PORT:-8000}
 MEMORY_SERVER="$NOXEM_DIR/server/memory-server.mjs"
-GEMMA4_SERVER="$NOXEM_DIR/server/gemma4-server.mjs"
+LLM_SERVER="$NOXEM_DIR/server/gemma4-server.mjs"
 MEMORY_PID=""
-GEMMA4_PID=""
+LLM_PID=""
 
 # OS detection
 OS="$(uname -s)"
@@ -31,7 +31,7 @@ cleanup() {
   dim "Shutting down Noxem servers..."
   # Send SIGTERM to allow graceful shutdown (flushes model cache writes)
   [ -n "$MEMORY_PID" ] && kill "$MEMORY_PID" 2>/dev/null && dim " Memory server stopping..."
-  [ -n "$GEMMA4_PID" ] && kill "$GEMMA4_PID" 2>/dev/null && dim " Gemma 4 stopping..."
+  [ -n "$GEMMA4_PID" ] && kill "$GEMMA4_PID" 2>/dev/null && dim " LLM stopping..."
   # Wait up to 8s for servers to flush model cache to disk
   # This prevents cache corruption that causes "fetch failed" on next startup
   local waited=0
@@ -48,7 +48,7 @@ cleanup() {
   wait "$MEMORY_PID" 2>/dev/null || true
   wait "$GEMMA4_PID" 2>/dev/null || true
   dim " Memory server stopped"
-  dim " Gemma 4 stopped"
+  dim " LLM stopped"
   green "Noxem cleaned up."
   # Prevent double-run on INT/TERM + EXIT
   trap - EXIT
@@ -115,8 +115,8 @@ node "$MEMORY_SERVER" &
 MEMORY_PID=$!
 wait_for_port $MEMORY_PORT "Memory server" 180
 
-# 2. Gemma 4 server
-echo "[2/2] Starting Gemma 4 server..."
+# 2. LLM server
+echo "[2/2] Starting LLM server..."
 dim "  First run downloads model (~2GB, subsequent starts use cache)"
 # Device is auto-detected in gemma4-server.mjs:
 # - Node.js: onnxruntime-node picks best EP (CUDA > DirectML > CPU)
@@ -125,7 +125,7 @@ dim "  First run downloads model (~2GB, subsequent starts use cache)"
 export GEMMA4_PORT
 node "$GEMMA4_SERVER" &
 GEMMA4_PID=$!
-wait_for_port $GEMMA4_PORT "Gemma 4" 300
+wait_for_port $GEMMA4_PORT "LLM" 300
 
 echo ""
 green "Both servers ready!"
