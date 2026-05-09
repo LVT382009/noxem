@@ -383,7 +383,7 @@ app.get("/memory/search", async (req, res) => {
     if (q.length > 1000) return res.status(400).json({ error: "query too long (max 1000 chars)" });
     const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
     let searchMethod = "fts";
-    const isShortQuery = expand !== "false" && q.trim().split(/\s+/).length < 6;
+    const isShortQuery = expand === "true" && q.trim().split(/\s+/).length < 6;
 
     // Multi-query expansion for vague queries
     let queries = [q.trim()];

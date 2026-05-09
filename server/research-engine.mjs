@@ -266,7 +266,7 @@ User: "ok thanks"
       role: 'user',
       content: `User: ${(userMessage || '').substring(0, 500)}\nAssistant: ${(assistantResponse || '').substring(0, 500)}`,
     },
-  ], 150, 0.1, 30_000); // 30s timeout for topic detection
+  ], 150, 0.1, 15_000); // 15s timeout for topic detection
 
   if (!llmResponse) {
     // Fallback: regex-based detection
