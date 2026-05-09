@@ -1077,7 +1077,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`  Port: ${PORT}`);
   console.log(`  Embedding: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
   console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'}`);
-  ENABLE_ADVISOR ? 'Qwen3 0.6B (Brain 2)' : 'OFF (Brain 1 only)',
+  ENABLE_ADVISOR ? 'Brain 2' : 'OFF',
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
   ENABLE_RESEARCH ? 'Background pipeline (topic -> DDG -> fetch -> extract)' : 'OFF (Brain 1 only)',
   console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
