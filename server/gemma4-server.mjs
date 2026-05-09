@@ -355,6 +355,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       const output = await generator(messages, {
         max_new_tokens: maxTokens,
         do_sample: false,
+            enable_thinking: false,
       });
 
       // Pipeline returns [{ generated_text: [...messages, {role:'assistant', content:'...'}] }]
