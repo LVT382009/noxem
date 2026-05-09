@@ -17,6 +17,13 @@ LLM_SERVER="$NOXEM_DIR/server/gemma4-server.mjs"
 MEMORY_PID=""
 LLM_PID=""
 
+# HuggingFace mirror — WSL/China users may need this to download models
+# If HF_ENDPOINT is not set and we're in WSL, default to hf-mirror.com
+if [ -z "${HF_ENDPOINT:-}" ] && grep -qi microsoft /proc/version 2>/dev/null; then
+  export HF_ENDPOINT="https://hf-mirror.com/"
+  dim " WSL detected: using hf-mirror.com for model downloads"
+fi
+
 # OS detection
 OS="$(uname -s)"
 
