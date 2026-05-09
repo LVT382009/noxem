@@ -21,8 +21,39 @@ HERMES_SERVER_DIR="${HOME}/.hermes/noxem-server"
 # ── OS detection ──
 OS="$(uname -s)"
 IS_MACOS=false
+IS_WSL=false
 if [ "$OS" = "Darwin" ]; then
   IS_MACOS=true
+fi
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  IS_WSL=true
+fi
+
+# ── WSL networking fix ──
+# WSL2's auto-generated /etc/resolv.conf uses the NAT gateway (172.x.x.x)
+# which often can't resolve HuggingFace CDN hosts, causing "fetch failed" on
+# model downloads. Fix: point DNS to Google's public resolvers and pin the
+# file so WSL doesn't overwrite it on restart.
+if $IS_WSL; then
+  if ! grep -q '8\.8\.8\.8' /etc/resolv.conf 2>/dev/null; then
+    echo "Fixing WSL DNS (Google Public DNS)..."
+    sudo rm -f /etc/resolv.conf 2>/dev/null || true
+    sudo bash -c 'echo "nameserver 8.8.8.8" > /etc/resolv.conf' 2>/dev/null && \
+    sudo bash -c 'echo "nameserver 8.8.4.4" >> /etc/resolv.conf' 2>/dev/null || true
+    # Prevent WSL from overwriting on restart
+    if [ -f /etc/wsl.conf ]; then
+      if ! grep -q 'generateResolvConf' /etc/wsl.conf 2>/dev/null; then
+        sudo bash -c 'echo -e "\n[network]\ngenerateResolvConf = false" >> /etc/wsl.conf' 2>/dev/null || true
+      fi
+    else
+      sudo bash -c 'echo -e "[network]\ngenerateResolvConf = false" > /etc/wsl.conf' 2>/dev/null || true
+    fi
+    # Lock the file so WSL doesn't overwrite it
+    sudo chattr +i /etc/resolv.conf 2>/dev/null || true
+    echo " Done — DNS set to 8.8.8.8 / 8.8.4.4"
+  else
+    echo " WSL DNS already configured"
+  fi
 fi
 
 # Clear bash hash cache so hermes-noxem points to the right path
