@@ -54,7 +54,7 @@ globalThis.fetch = function patchedFetch(url, opts = {}) {
   if (typeof url === 'string' && env.remoteHost && env.remoteHost !== 'https://huggingface.co/' && url.startsWith('https://huggingface.co/')) {
     fetchUrl = url.replace('https://huggingface.co/', env.remoteHost);
   } else if (typeof url === 'string' && env.remoteHost && env.remoteHost !== 'https://huggingface.co/' && url.includes('hf.co')) {
-    fetchUrl = url.replace(/https?://[^/]*hf.co/, env.remoteHost.replace(//$/, ''));
+      fetchUrl = url.replace(/https?:\/\/[^/]*hf\.co/, env.remoteHost.replace(/\/$/, ''));
   }
   const isHF = typeof fetchUrl === 'string' && (fetchUrl.includes('huggingface') || fetchUrl.includes('hf.co'));
   if (isHF) {
