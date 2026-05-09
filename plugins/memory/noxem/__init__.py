@@ -630,7 +630,7 @@ class NoxemMemoryProvider:
         url = f"{self._server_url}{path}"
         req = Request(url, headers={"Accept": "application/json"})
         try:
-            with urlopen(req, timeout=5) as resp:
+            with urlopen(req, timeout=10) as resp:
                 return json.loads(resp.read().decode())
         except URLError as e:
             logger.debug(f"Noxem API GET {path} failed: {e}")

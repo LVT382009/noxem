@@ -124,21 +124,22 @@ let startupComplete = false;
 const serverStartTime = Date.now();
 
 async function startup() {
-  if (ENABLE_EMBEDDING) {
-    await initEmbeddingEngine();
-    // Warm up: compute a dummy embedding to avoid cold-start latency
-    if (isEmbeddingReady()) {
-      try {
-        await embed('warmup');
-        console.log('Embedding engine warmed up');
-      } catch (err) {
-        console.error('Embedding warm-up failed:', err.message);
-      }
-    }
-  }
+  // Start maintenance immediately — doesn't need embedding
   if (ENABLE_MAINTENANCE) startMaintenanceCron();
   startupComplete = true;
-  console.log('Memory server fully initialized');
+  console.log('Memory server ready (FTS search available)');
+
+  // Load embedding engine in background — server already functional with FTS-only
+  if (ENABLE_EMBEDDING) {
+    initEmbeddingEngine().then(() => {
+      if (isEmbeddingReady()) {
+        embed('warmup').then(() => console.log('Embedding engine warmed up'))
+          .catch(err => console.error('Embedding warm-up failed:', err.message));
+      }
+    }).catch(err => {
+      console.error('Embedding engine startup error:', err.message);
+    });
+  }
 }
 
 startup().catch(err => {
@@ -394,7 +395,7 @@ app.get("/memory/search", async (req, res) => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model: "gemma4", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
-          signal: AbortSignal.timeout(3000),
+          signal: AbortSignal.timeout(1500),
         });
         if (expandRes.ok) {
           const expandData = await expandRes.json();
@@ -1074,7 +1075,7 @@ app.get('/memory/research/hints', (req, res) => {
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
   console.log(`  Port: ${PORT}`);
-  console.log(`  Embedding: ${ENABLE_EMBEDDING ? 'EmbeddingGemma 300M (q8, 256d)' : 'DISABLED'}`);
+  console.log(`  Embedding: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
   console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'}`);
   console.log(`  Advisor: ${ENABLE_ADVISOR ? 'Gemma 4' : 'DISABLED'}`);
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);

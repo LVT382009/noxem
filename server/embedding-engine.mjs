@@ -2,7 +2,6 @@
 if (!process.env.NODE_OPTIONS?.includes('ipv4first')) {
   process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --dns-result-order=ipv4first`.trim();
 }
-
 // Patch globalThis.fetch to add per-request timeout + retry for HuggingFace CDN downloads
 // and limit concurrent connections to prevent CDN saturation
 const FETCH_TIMEOUT_MS = parseInt(process.env.HF_FETCH_TIMEOUT || '180000'); // 3 min default
@@ -63,7 +62,7 @@ globalThis.fetch = function patchedFetch(url, opts = {}) {
   return _origFetch(url, opts);
 };
 
-import { AutoModel, AutoTokenizer } from '@huggingface/transformers';
+import { AutoModel, AutoTokenizer, env } from '@huggingface/transformers';
 import { fileURLToPath } from 'url';
 import { dirname, resolve, join, basename } from 'path';
 import fs from 'fs';
@@ -78,6 +77,11 @@ const DTYPE = process.env.EMBEDDING_DTYPE || 'q8'; // q8: 68.13 vs fp32: 68.36 o
 const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '256'); // MRL 256d: only 1.5% loss vs 768d, 3x less storage
 // Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
 const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || resolve(PROJECT_ROOT, '.cache/embedding');
+const HF_MIRROR = process.env.HF_ENDPOINT || '';
+if (HF_MIRROR) {
+  env.remoteHost = HF_MIRROR;
+  console.log(`Embedding download: using mirror ${HF_MIRROR}`);
+}
 const MAX_RETRIES = parseInt(process.env.EMBEDDING_LOAD_RETRIES || '2');
 const LOAD_TIMEOUT_MS = parseInt(process.env.EMBEDDING_LOAD_TIMEOUT || '300000'); // 5 min default
 const SIMILARITY_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
@@ -214,6 +218,11 @@ export async function initEmbeddingEngine() {
             }
           } else {
             console.log('  Retrying with existing cache...');
+          }
+          // Mirror fallback: on 2nd+ retry, switch to hf-mirror.com if not already set
+          if (!HF_MIRROR && env.remoteHost === 'https://huggingface.co/') {
+            env.remoteHost = 'https://hf-mirror.com/';
+            console.log('  Switched to hf-mirror.com for this retry');
           }
         }
 

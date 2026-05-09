@@ -250,6 +250,16 @@ async function loadModel() {
           } else {
             console.log('  Retrying with existing cache...');
           }
+          // Mirror fallback: on 2nd+ retry, switch to hf-mirror.com if not already set
+          if (!HF_MIRROR) {
+            try {
+              const t = await import('@huggingface/transformers');
+              if (t.env.remoteHost === 'https://huggingface.co/') {
+                t.env.remoteHost = 'https://hf-mirror.com/';
+                console.log('  Switched to hf-mirror.com for this retry');
+              }
+            } catch {}
+          }
         }
 
         console.log(`Loading ${MODEL_ID} (dtype=${DTYPE})...`);

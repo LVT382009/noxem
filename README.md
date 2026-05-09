@@ -191,6 +191,26 @@ hermes noxem config        # Show current configuration
 | `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
 | `HF_FETCH_TIMEOUT` | `180000` | Model download timeout (ms) |
 | `HF_FETCH_RETRIES` | `3` | Retry count for failed model downloads |
+| `HF_ENDPOINT` | _(empty)_ | HuggingFace mirror URL (e.g. `https://hf-mirror.com/`); auto-fallback on retry |
+
+---
+
+## Performance
+
+Benchmarked on WSL2 (Ubuntu), Node.js 22, FTS-only mode (embedding disabled).
+Run your own: `cd server && bash benchmark.sh`
+
+| Operation | Avg Latency | Notes |
+|-----------|-------------|-------|
+| Store (single) | ~23 ms | Auto-categorization + entity extraction + FTS5 index |
+| Store (batch 50) | ~0.6 ms each | Bulk insert with single transaction |
+| Search (FTS) | ~26 ms | Full-text search with Weibull recency scoring |
+| Search (hybrid) | ~25 ms | FTS fallback when embedding not ready |
+| Sync turn | ~20 ms | Store user + assistant messages |
+| Maintenance cycle | ~18 ms | Dedup + contradiction + consolidation + archive |
+| Context release | ~20 ms | Curated context injection for LLM |
+
+> With embedding enabled, hybrid search adds ~5-10 ms for vector KNN lookup. The server starts in under 1 s with FTS-only; embedding model loads in the background without blocking.
 
 ---
 
