@@ -121,7 +121,7 @@ NOXEM_CONFIG="${HOME}/.hermes/noxem.json"
 cat > "$NOXEM_CONFIG" << NOXEMEOF
 {
   "memory_server": "http://127.0.0.1:${MEMORY_PORT:-3001}",
-  "gemma_url": "http://127.0.0.1:${GEMMA4_PORT:-8000}/v1/chat/completions",
+  "llm_url": "http://127.0.0.1:${LLM_PORT:-${GEMMA4_PORT:-8000}}/v1/chat/completions",
   "embedding_enabled": "true"
 }
 NOXEMEOF

@@ -11,7 +11,7 @@ fi
 
 # Config
 MEMORY_PORT=${MEMORY_PORT:-3001}
-GEMMA4_PORT=${GEMMA4_PORT:-8000}
+LLM_PORT=${LLM_PORT:-${GEMMA4_PORT:-8000}}
 MEMORY_SERVER="$NOXEM_DIR/server/memory-server.mjs"
 LLM_SERVER="$NOXEM_DIR/server/gemma4-server.mjs"
 MEMORY_PID=""
@@ -31,12 +31,12 @@ cleanup() {
   dim "Shutting down Noxem servers..."
   # Send SIGTERM to allow graceful shutdown (flushes model cache writes)
   [ -n "$MEMORY_PID" ] && kill "$MEMORY_PID" 2>/dev/null && dim " Memory server stopping..."
-  [ -n "$GEMMA4_PID" ] && kill "$GEMMA4_PID" 2>/dev/null && dim " LLM stopping..."
+  [ -n "$LLM_PID" ] && kill "$LLM_PID" 2>/dev/null && dim " LLM stopping..."
   # Wait up to 8s for servers to flush model cache to disk
   # This prevents cache corruption that causes "fetch failed" on next startup
   local waited=0
   while [ $waited -lt 8 ]; do
-    if ! kill -0 "$MEMORY_PID" 2>/dev/null && ! kill -0 "$GEMMA4_PID" 2>/dev/null; then
+    if ! kill -0 "$MEMORY_PID" 2>/dev/null && ! kill -0 "$LLM_PID" 2>/dev/null; then
       break
     fi
     sleep 1
@@ -44,9 +44,9 @@ cleanup() {
   done
   # Force kill if still running
   kill -9 "$MEMORY_PID" 2>/dev/null || true
-  kill -9 "$GEMMA4_PID" 2>/dev/null || true
+  kill -9 "$LLM_PID" 2>/dev/null || true
   wait "$MEMORY_PID" 2>/dev/null || true
-  wait "$GEMMA4_PID" 2>/dev/null || true
+  wait "$LLM_PID" 2>/dev/null || true
   dim " Memory server stopped"
   dim " LLM stopped"
   green "Noxem cleaned up."
@@ -120,12 +120,12 @@ echo "[2/2] Starting LLM server..."
 dim "  First run downloads model (~2GB, subsequent starts use cache)"
 # Device is auto-detected in gemma4-server.mjs:
 # - Node.js: onnxruntime-node picks best EP (CUDA > DirectML > CPU)
-# - GEMMA4_DEVICE env var overrides auto-detection
+# - LLM_DEVICE / GEMMA4_DEVICE env var overrides auto-detection
 # - WebGPU is browser-only, not available in Node.js
-export GEMMA4_PORT
-node "$GEMMA4_SERVER" &
-GEMMA4_PID=$!
-wait_for_port $GEMMA4_PORT "LLM" 300
+export LLM_PORT
+node "$LLM_SERVER" &
+LLM_PID=$!
+wait_for_port $LLM_PORT "LLM" 300
 
 echo ""
 green "Both servers ready!"
