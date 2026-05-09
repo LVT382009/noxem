@@ -1,97 +1,101 @@
 <div align="center">
 
 # 🧠 Noxem
-**Persistent memory provider for Hermes Agent** — remembers what matters, forgets what doesn't.
 
-![License](https://img.shields.io/badge/License-MIT-green)
-![Node](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js)
-![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python)
-![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-0078D4)
+**Persistent memory that makes AI agents actually remember**
+
+*Remembers what matters. Forgets what doesn't.*
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
+[![Node.js 22+](https://img.shields.io/badge/Node.js-22+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org/)
+[![Platform](https://img.shields.io/badge/Platform-Win%20%7C%20Linux%20%7C%20macOS-0078D4?style=flat-square)]()
 
 ---
 
-[Features](#features) • [Quick Start](#quick-start) • [Architecture](#architecture) • [Commands](#commands) • [Configuration](#configuration) • [Contributing](#contributing)
+[✨ Features](#-features) · [🚀 Quick Start](#-quick-start) · [🏗️ Architecture](#️-architecture) · [🔧 Config](#-configuration) · [📊 Benchmarks](#-benchmarks) · [🤝 Contributing](#-contributing)
 
 </div>
 
 ---
 
-## Features
+## ✨ Features
 
-| Feature | Description |
-|---------|-------------|
-| **Semantic Search** | Hybrid vector + keyword search — finds relevant context even with different wording |
-| **Auto-Categorization** | Incoming memories are auto-tagged: preference, project, profile, goal, pattern, entity, event, issue, setup, learning, fact |
-| **Smart Dedup** | Detects duplicate memories (cosine >0.92) and merges them automatically |
-| **Conflict Resolution** | Entity-attribute matching detects contradicting memories — older ones are superseded |
-| **Significance-Gated Consolidation** | Clusters 3+ low-importance memories about the same topic into a single high-importance summary |
-| **Contextual Enrichment** | Prepends context prefixes before embedding for ~49% better retrieval (Anthropic technique) |
-| **Weibull Decay** | Type-specific recency scoring — profile memories never decay, requests expire in 3 days |
-| **Spaced Repetition** | Memories recalled more often stay relevant longer — reinforced through use |
-| **Search Feedback Loop** | Report which memories influenced your response for stronger importance boost |
-| **Background Research** | Auto-detects technical topics in conversation → web search → extract facts → store as learning memories |
-| **Research Hints** | Compact topic summaries injected into context so Hermes knows research exists without dumping all facts |
-| **Category Auto-Correction** | Rule-based validation catches misclassified memories and corrects them during maintenance |
-| **Adaptive Search Weighting** | Classifies query intent (identifier/exact/conceptual) and weights vector vs keyword search accordingly |
-| **Context Recovery** | Preserves critical information across session boundaries and context compaction |
-| **Bi-Temporal Tracking** | `valid_from`/`valid_until` timestamps track when memories are current vs superseded |
-| **Provenance Graph** | Full lineage tracking — trace any memory through its supersession history and source memory IDs |
-| **Brain 1 / Brain 2 Mode** | Interactive startup: choose full mode (both brains) or memory-only (Brain 1) — skip Brain 2 for faster startup and less RAM |
-| **Auto-Start** | Just run `hermes-noxem` — servers start automatically, no manual provider setup needed |
-| **Multi-Query Expansion** | Short queries get 2 alternate phrasings, merged via Reciprocal Rank Fusion for better recall |
-| **MMR Diversity** | Maximal Marginal Relevance reranking prevents returning near-identical results |
+<table>
+<tr>
+<td width="50%">
+
+### :brain: Brain 1 — Semantic Engine
+
+| | |
+|---|---|
+| 🔍 **Hybrid Search** | Vector KNN + FTS5 keyword, merged via Reciprocal Rank Fusion |
+| 🏷️ **Auto-Categorization** | Tags: preference, project, profile, goal, entity, event, fact… |
+| 🧹 **Smart Dedup** | Cosine >0.92 → merge automatically |
+| ⚔️ **Conflict Resolution** | Entity-attribute matching → older superseded |
+| 📝 **Contextual Enrichment** | Context prefix before embedding — ~49% better retrieval |
+| 📉 **Weibull Decay** | Profiles never decay, requests expire in 3 days |
+| 🔁 **Spaced Repetition** | Recalled memories stay relevant longer |
+| 🎯 **Adaptive Search** | Classifies query intent, weights vector vs keyword |
+| 🌐 **MMR Diversity** | No near-identical results in search |
+| 🔗 **Provenance Graph** | Full lineage tracking through supersession history |
+
+</td>
+<td width="50%">
+
+### :rocket: Brain 2 — Reasoning Engine
+
+| | |
+|---|---|
+| 🛡️ **Drift Detection** | Warns when conversation goes off-goal |
+| 💾 **Context Recovery** | Preserves critical info across compaction |
+| 📤 **Session Extraction** | Stores key memories when session ends |
+| 🔬 **Background Research** | Detects topics → web search → extract facts → store |
+| 🧩 **Multi-Query Expansion** | Generates alternate phrasings for vague searches |
+| 🗃️ **Consolidation** | Clusters low-importance → single high-importance summary |
+| ✅ **Category Auto-Correction** | Catches and fixes misclassified memories |
+| 📊 **Search Feedback Loop** | Boost importance for memories that influenced responses |
+| ⏱️ **Bi-Temporal Tracking** | `valid_from` / `valid_until` timestamps |
+| 📋 **Research Hints** | Compact summaries injected — no fact dump |
+
+</td>
+</tr>
+</table---
+
+> [!TIP]
+> Run `hermes-noxem` to start. Choose **Brain 1 only** (fast, low RAM) or **Brain 1 + Brain 2** (full power). No `hermes memory setup` needed.
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 **Requirements:** Node.js 22+, Python 3.10+, Hermes Agent v2026+
 
 ### Linux / WSL
 
 ```bash
-# 1. Clone the repo
 git clone https://github.com/LVT382009/noxem.git
 cd noxem
-
-# 2. Run the installer
 bash install.sh
-
-# 3. Launch Hermes with Noxem
 hermes-noxem
 ```
 
 ### macOS
 
 ```bash
-# 1. Install Xcode Command Line Tools
 xcode-select --install
-
-# 2. Install Homebrew (if not installed)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# 3. Install Node.js 22+
 brew install node
-
-# 4. Clone and install
 git clone https://github.com/LVT382009/noxem.git
 cd noxem
 bash install.sh
-
-# 5. Launch
 hermes-noxem
 ```
 
 ### Windows (via WSL)
 
-Open Command Prompt or PowerShell, then:
-
 ```cmd
-:: Option A: use the Windows batch installer
-install.bat
-
-:: Option B: do it manually inside WSL
 wsl -d Ubuntu
 git clone https://github.com/LVT382009/noxem.git
 cd noxem
@@ -99,103 +103,112 @@ bash install.sh
 hermes-noxem
 ```
 
-hermes-noxem
-
-> **First run** downloads AI models (~2-3 GB total with Brain 2 enabled, ~300 MB without). Subsequent starts use the local cache.
-
----
-
-## Architecture
-
-```
-Hermes Agent
-    │
-    ▼
-Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js, port 3001)
-    │                                │
-    │                          ┌─────┴─────┐
-    │                          │           │
-    │                     Semantic     Context
-    │                     Engine      Advisor
-    │                          │           │
-    │                          └─────┬─────┘
-    │                                │
-    │                           SQLite DB
-    │                        (FTS5 + Vectors)
-    │
-    └── Tools: memory_search, memory_store,
-        memory_supersede, memory_lineage,
-        memory_contradiction_check, memory_feedback
-```
-
-Two AI processing layers work together — a **semantic engine** for vector search, dedup, and categorization, and a **context advisor** for task drift detection, context recovery, and background web research. Both feed into a shared SQLite store with FTS5 full-text search and native KNN vector indexing.
+> [!NOTE]
+> First run downloads AI models (~300 MB for Brain 1, ~2-3 GB total with Brain 2). Subsequent starts use the local cache.
 
 ### Brain Mode
 
-When you run `hermes-noxem`, you choose how much AI power to use:
+When you run `hermes-noxem`, choose your mode:
 
-| Mode | What's enabled | Use when |
-|------|---------------|----------|
-| **Brain 1 only** | Semantic search, dedup, categorization, FTS5, auto-correction | Low RAM, quick lookups, only need memory recall |
-| **Brain 1 + Brain 2** | Everything above + advisor, research pipeline, context recovery, extraction | Full-featured sessions with research and drift detection |
+| Mode | Enabled | Best for |
+|:-----|:--------|:---------|
+| **Brain 1 only** | Semantic search, dedup, categorization, FTS5 | Low RAM, quick lookups |
+| **Brain 1 + Brain 2** | Everything + advisor, research, context recovery | Full sessions with research |
 
-You can also skip the prompt with CLI flags:
+Skip the prompt with flags:
 
 ```bash
-hermes-noxem --brain2     # Full mode, no prompt
-hermes-noxem --no-brain2  # Memory-only, no prompt
+hermes-noxem --brain2      # Full mode, no prompt
+hermes-noxem --no-brain2   # Memory-only, no prompt
 ```
 
-Non-interactive shells (cron, piped input) default to Brain 1 only.
+---
+
+## 🏗️ Architecture
+
+```
+  Hermes Agent
+       │
+       ▼
+  Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js :3001)
+       │                              │
+       │                    ┌─────────┴─────────┐
+       │                    │                   │
+       │              Semantic Engine    Context Advisor
+       │              ─────────────    ────────────────
+       │              Vector KNN       Drift detection
+       │              Dedup/categorize Context recovery
+       │              Importance score Background research
+       │                    │                   │
+       │                    └─────────┬─────────┘
+       │                              │
+       │                     SQLite DB
+       │                  (FTS5 + Vectors)
+       │
+       └── Tools: memory_search · memory_store ·
+                  memory_supersede · memory_lineage ·
+                  memory_contradiction_check · memory_feedback
+```
 
 ---
 
-## Memory Lifecycle
+## 🔄 Memory Lifecycle
 
-1. **Store** — Conversation turns saved with auto-categorization, entity extraction, and importance scoring
-2. **Enrich** — Context prefix prepended to embedding input for better retrieval
-3. **Categorize** — Auto-tagged: preference, project, profile, request, learning, setup, goal, issue, pattern, entity, event, fact
-4. **Dedup** — Cosine >0.92 → merge, mark older as invalid
-5. **Contradict** — Entity-attribute matching → older marked superseded
-6. **Consolidate** — 3+ low-importance clustered memories → single high-importance summary
-7. **Clean** — Invalid memories purged; stale (90d, 0 recalls) archived
-8. **Search** — Hybrid (vector + FTS5 via Reciprocal Rank Fusion) with MMR diversity
-9. **Score** — Recency + importance + spaced-repetition weighting (type-specific Weibull decay)
-10. **Research** — Background: detect technical topic → web search → fetch pages → extract facts → store
-11. **Recover** — Context advisor preserves critical info across compaction
-12. **Feedback** — Search results that influenced the response get +0.03 importance boost
+```
+  Store ──► Enrich ──► Categorize ──► Extract Entity ──► Score Importance
+    │          │           │                │                  │
+    ▼          ▼           ▼                ▼                  ▼
+  SQLite    Context     Auto-tag      Entity+attr       0.1 – 1.0
+  + FTS5    prefix      (12 types)    pairs              (type-based)
+    │
+    ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  Background Maintenance (every 5 min)                   │
+  │                                                         │
+  │  Dedup ──► Contradict ──► Consolidate ──► Clean/Auto-correct │
+  └─────────────────────────────────────────────────────────┘
+    │
+    ▼
+  Search ──► Hybrid (KNN + FTS5) ──► RRF merge ──► MMR rerank ──► Score
+    │
+    ▼
+  Feedback: recalled memories get importance boost (+0.03)
+```
 
 ---
 
-## Commands
+## ⌨️ Commands
 
 ```bash
-# Hermes CLI (after plugin is installed)
-hermes noxem status       # Server health + memory stats
+hermes-noxem                 # Launch with interactive brain selection
+hermes-noxem --brain2        # Launch full mode (no prompt)
+hermes-noxem --no-brain2     # Launch memory-only (no prompt)
+
+hermes noxem status          # Server health + memory stats
 hermes noxem search <query>  # Search stored memories
-hermes noxem run           # Run maintenance manually
-hermes noxem config        # Show current configuration
+hermes noxem run             # Run maintenance manually
+hermes noxem config          # Show current configuration
 ```
 
 ---
 
-## Available Tools (Hermes)
+## 🛠️ Available Tools
 
 | Tool | Description |
-|------|-------------|
-| `memory_search` | Search with method selection: hybrid, embedding, or fts |
+|:-----|:------------|
+| `memory_search` | Search with method: hybrid, embedding, or fts |
 | `memory_store` | Store a fact with auto-categorization |
-| `memory_supersede` | Mark an old memory as superseded by a newer one |
+| `memory_supersede` | Mark old memory as superseded by newer one |
 | `memory_lineage` | Trace provenance chain through supersession history |
-| `memory_contradiction_check` | Check for contradicting memories with same entity+attribute |
-| `memory_feedback` | Report which memory IDs influenced your response (improves ranking) |
+| `memory_contradiction_check` | Find contradicting memories (same entity+attribute) |
+| `memory_feedback` | Report which memory IDs influenced your response |
 
 ---
 
-## Configuration
+## 🔧 Configuration
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+|:---------|:--------|:------------|
 | `MEMORY_PORT` | `3001` | Server port |
 | `MEMORY_DB_DIR` | `./data` | Database directory |
 | `DUP_THRESHOLD` | `0.92` | Deduplication sensitivity |
@@ -209,53 +222,50 @@ hermes noxem config        # Show current configuration
 | `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
 | `HF_FETCH_TIMEOUT` | `180000` | Model download timeout (ms) |
 | `HF_FETCH_RETRIES` | `3` | Retry count for failed model downloads |
-| `HF_ENDPOINT` | _(empty)_ | HuggingFace mirror URL (e.g. `https://hf-mirror.com/`); auto-fallback on retry |
+| `HF_ENDPOINT` | _(empty)_ | HuggingFace mirror URL (auto-fallback on retry) |
+
+<details>
+<summary>📋 Full env variable list</summary>
+
+| Variable | Default | Description |
+|:---------|:--------|:------------|
+| `ENABLE_EMBEDDING` | `true` | Load embedding model |
+| `ENABLE_ADVISOR` | `true` | Enable Brain 2 advisor |
+| `EMBEDDING_MODEL` | `onnx-community/embeddinggemma-300m-ONNX` | Embedding model ID |
+| `EMBEDDING_DTYPE` | `q8` | Embedding precision (fp32/q8/q4) |
+| `EMBEDDING_DIM` | `256` | MRL embedding dimension |
+| `EMBEDDING_LOAD_RETRIES` | `2` | Embedding model retry count |
+| `EMBEDDING_LOAD_TIMEOUT` | `300000` | Embedding model load timeout (ms) |
+| `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear cache on retry |
+| `LLM_LOAD_RETRIES` | `2` | Model download retry count |
+| `MEMORY_MAX_RESULTS` | `5` | Default search result limit |
+| `MEMORY_API_KEY` | _(empty)_ | Bearer token for API auth |
+| `CORS_ORIGIN` | `http://localhost:*` | CORS allowed origins |
+| `LOG_LEVEL` | `info` | Log verbosity (`silent` to suppress) |
+
+</details>
 
 ---
 
-## Performance
+## 📊 Benchmarks
 
-Benchmarked on WSL2 (Ubuntu), Node.js 22, FTS-only mode (embedding disabled).
-Run your own: `cd server && bash benchmark.sh`
+Tested on WSL2 Ubuntu, Node.js 22. Run your own: `cd server && bash benchmark.sh`
 
-| Operation | Avg Latency | Notes |
-|-----------|-------------|-------|
-| Store (single) | ~23 ms | Auto-categorization + entity extraction + FTS5 index |
-| Store (batch 50) | ~0.6 ms each | Bulk insert with single transaction |
-| Search (FTS) | ~26 ms | Full-text search with Weibull recency scoring |
-| Search (hybrid) | ~25 ms | FTS fallback when embedding not ready |
+| Operation | Latency | Notes |
+|:----------|:--------|:------|
+| Store (single) | ~23 ms | Auto-categorization + entity extraction + FTS5 |
+| Store (batch 50) | ~0.6 ms each | Bulk insert, single transaction |
+| Search (hybrid) | ~25 ms | Vector KNN + FTS5 via RRF |
+| Search (FTS) | ~26 ms | Full-text with Weibull scoring |
 | Sync turn | ~20 ms | Store user + assistant messages |
 | Maintenance cycle | ~18 ms | Dedup + contradiction + consolidation + archive |
-| Context release | ~20 ms | Curated context injection for LLM |
 
-> With embedding enabled, hybrid search adds ~5-10 ms for vector KNN lookup. The server starts in under 1 s with FTS-only; embedding model loads in the background without blocking.
-
----
-
-## Data Flow
-
-```
-User says something
-    │
-    ▼
-Noxem checks memory ──► Relevant past context injected
-    │
-    ▼
-Turn is processed
-    │
-    ▼
-Key info extracted ──► Stored with vector index + categorization
-    │
-    ▼
-Background research ──► Technical topic? → web search → facts stored
-    │
-    ▼
-Background cleanup ──► Duplicates merged, conflicts resolved, categories corrected
-```
+> [!NOTE]
+> With embedding enabled, hybrid search adds ~5-10 ms for vector KNN lookup. Embedding model loads in the background without blocking server startup.
 
 ---
 
-## Contributing
+## 🤝 Contributing
 
 1. Fork the repo
 2. Create a feature branch (`git checkout -b feature/my-feature`)
@@ -265,6 +275,10 @@ Background cleanup ──► Duplicates merged, conflicts resolved, categories c
 
 ---
 
+<div align="center">
+
 ## License
 
-MIT © LVT382009
+MIT © [LVT382009](https://github.com/LVT382009)
+
+</div>
