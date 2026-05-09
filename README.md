@@ -44,7 +44,7 @@
 </td>
 <td width="50%">
 
-### :rocket: Brain 2 — Reasoning Engine
+### :rocket: Brain 2 — Reasoning Engine (Only for user have high RAM)
 
 | | |
 |---|---|
