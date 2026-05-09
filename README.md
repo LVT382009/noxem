@@ -2,7 +2,7 @@
 
 # 🧠 Noxem
 
-**Persistent memory that makes AI agents actually remember**
+**Persistent memory that makes agents actually remember**
 
 *Remembers what matters. Forgets what doesn't.*
 
@@ -34,7 +34,7 @@
 | 🏷️ **Auto-Categorization** | Tags: preference, project, profile, goal, entity, event, fact… |
 | 🧹 **Smart Dedup** | Cosine >0.92 → merge automatically |
 | ⚔️ **Conflict Resolution** | Entity-attribute matching → older superseded |
-| 📝 **Contextual Enrichment** | Context prefix before embedding — ~49% better retrieval |
+| 📝 **Contextual Enrichment** | Context prefix before indexing — ~49% better retrieval |
 | 📉 **Weibull Decay** | Profiles never decay, requests expire in 3 days |
 | 🔁 **Spaced Repetition** | Recalled memories stay relevant longer |
 | 🎯 **Adaptive Search** | Classifies query intent, weights vector vs keyword |
@@ -104,7 +104,7 @@ hermes-noxem
 ```
 
 > [!NOTE]
-> First run downloads AI models (~300 MB for Brain 1, ~2-3 GB total with Brain 2). Subsequent starts use the local cache.
+> First run downloads brain components (~300 MB for Brain 1, ~2-3 GB total with Brain 2). Subsequent starts use the local cache.
 
 ### Brain Mode
 
@@ -196,7 +196,7 @@ hermes noxem config          # Show current configuration
 
 | Tool | Description |
 |:-----|:------------|
-| `memory_search` | Search with method: hybrid, embedding, or fts |
+| `memory_search` | Search with method: hybrid, vector, or keyword |
 | `memory_store` | Store a fact with auto-categorization |
 | `memory_supersede` | Mark old memory as superseded by newer one |
 | `memory_lineage` | Trace provenance chain through supersession history |
@@ -220,24 +220,24 @@ hermes noxem config          # Show current configuration
 | `MEMORY_MAX_TOKENS` | `2000` | Token budget for context injection |
 | `RATE_LIMIT_MAX` | `120` | Max requests per minute per IP |
 | `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
-| `HF_FETCH_TIMEOUT` | `180000` | Model download timeout (ms) |
-| `HF_FETCH_RETRIES` | `3` | Retry count for failed model downloads |
-| `HF_ENDPOINT` | _(empty)_ | HuggingFace mirror URL (auto-fallback on retry) |
+| `HF_FETCH_TIMEOUT` | `180000` | Component download timeout (ms) |
+| `HF_FETCH_RETRIES` | `3` | Retry count for failed component downloads |
+| `HF_ENDPOINT` | _(empty)_ | Mirror URL for component downloads (auto-fallback on retry) |
 
 <details>
 <summary>📋 Full env variable list</summary>
 
 | Variable | Default | Description |
 |:---------|:--------|:------------|
-| `ENABLE_EMBEDDING` | `true` | Load embedding model |
+| `ENABLE_EMBEDDING` | `true` | Enable Brain 1 semantic engine |
 | `ENABLE_ADVISOR` | `true` | Enable Brain 2 advisor |
-| `EMBEDDING_MODEL` | `onnx-community/embeddinggemma-300m-ONNX` | Embedding model ID |
-| `EMBEDDING_DTYPE` | `q8` | Embedding precision (fp32/q8/q4) |
-| `EMBEDDING_DIM` | `256` | MRL embedding dimension |
-| `EMBEDDING_LOAD_RETRIES` | `2` | Embedding model retry count |
-| `EMBEDDING_LOAD_TIMEOUT` | `300000` | Embedding model load timeout (ms) |
-| `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear cache on retry |
-| `LLM_LOAD_RETRIES` | `2` | Model download retry count |
+| `EMBEDDING_MODEL` | `default` | Brain 1 engine identifier |
+| `EMBEDDING_DTYPE` | `q8` | Engine precision (fp32/q8/q4) |
+| `EMBEDDING_DIM` | `256` | Brain 1 vector dimension |
+| `EMBEDDING_LOAD_RETRIES` | `2` | Brain 1 engine retry count |
+| `EMBEDDING_LOAD_TIMEOUT` | `300000` | Brain 1 engine load timeout (ms) |
+| `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear engine cache on retry |
+| `LLM_LOAD_RETRIES` | `2` | Component download retry count |
 | `MEMORY_MAX_RESULTS` | `5` | Default search result limit |
 | `MEMORY_API_KEY` | _(empty)_ | Bearer token for API auth |
 | `CORS_ORIGIN` | `http://localhost:*` | CORS allowed origins |
@@ -261,7 +261,7 @@ Tested on WSL2 Ubuntu, Node.js 22. Run your own: `cd server && bash benchmark.sh
 | Maintenance cycle | ~18 ms | Dedup + contradiction + consolidation + archive |
 
 > [!NOTE]
-> With embedding enabled, hybrid search adds ~5-10 ms for vector KNN lookup. Embedding model loads in the background without blocking server startup.
+> With Brain 1 enabled, hybrid search adds ~5-10 ms for vector KNN lookup. Brain 1 loads in the background without blocking server startup.
 
 ---
 
