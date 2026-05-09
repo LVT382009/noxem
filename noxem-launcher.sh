@@ -17,20 +17,20 @@ LLM_SERVER="$NOXEM_DIR/server/gemma4-server.mjs"
 MEMORY_PID=""
 LLM_PID=""
 
+# OS detection
+OS="$(uname -s)"
+
+# Color helpers (must be defined before use)
+green() { printf '\033[32m%s\033[0m\n' "$*"; }
+red() { printf '\033[31m%s\033[0m\n' "$*"; }
+dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+
 # HuggingFace mirror — WSL/China users may need this to download models
 # If HF_ENDPOINT is not set and we're in WSL, default to hf-mirror.com
 if [ -z "${HF_ENDPOINT:-}" ] && grep -qi microsoft /proc/version 2>/dev/null; then
   export HF_ENDPOINT="https://hf-mirror.com/"
   dim " WSL detected: using hf-mirror.com for model downloads"
 fi
-
-# OS detection
-OS="$(uname -s)"
-
-# Color helpers
-green() { printf '\033[32m%s\033[0m\n' "$*"; }
-red() { printf '\033[31m%s\033[0m\n' "$*"; }
-dim() { printf '\033[2m%s\033[0m\n' "$*"; }
 
 cleanup() {
   local code=$?
