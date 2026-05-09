@@ -87,7 +87,7 @@ const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || resolve(PROJECT_ROOT, '.c
 const HF_MIRROR = process.env.HF_ENDPOINT || '';
 if (HF_MIRROR) {
   env.remoteHost = HF_MIRROR;
-  console.log(`Embedding download: using mirror ${HF_MIRROR}`);
+  console.log(`Component download: using mirror ${HF_MIRROR}`);
 }
 const MAX_RETRIES = parseInt(process.env.EMBEDDING_LOAD_RETRIES || '2');
 const LOAD_TIMEOUT_MS = parseInt(process.env.EMBEDDING_LOAD_TIMEOUT || '300000'); // 5 min default
@@ -210,7 +210,7 @@ export async function initEmbeddingEngine() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         if (attempt > 0) {
-          console.log(`Embedding model load retry ${attempt}/${MAX_RETRIES}...`);
+          console.log(`Brain-1 load retry ${attempt}/${MAX_RETRIES}...`);
           // Auto-detect corrupted cache: if previous error was "fetch failed" or "tokenizer_class",
           // the cache is corrupt — clear it regardless of EMBEDDING_CLEAR_CACHE_ON_RETRY setting
           const prevError = loadError?.message || '';
@@ -223,7 +223,7 @@ export async function initEmbeddingEngine() {
             const cachePath = path.resolve(EMBED_CACHE_DIR);
             if (fs.existsSync(cachePath)) {
               fs.rmSync(cachePath, { recursive: true, force: true });
-              console.log('  Cleared embedding model cache (corrupted — ' + (cacheCorrupted ? 'auto-detected' : 'EMBEDDING_CLEAR_CACHE_ON_RETRY=true') + ')');
+              console.log('  Cleared Brain-1 cache (corrupted — ' + (cacheCorrupted ? 'auto-detected' : 'EMBEDDING_CLEAR_CACHE_ON_RETRY=true') + ')');
             }
           } else {
             console.log('  Retrying with existing cache...');
@@ -235,7 +235,7 @@ export async function initEmbeddingEngine() {
           }
         }
 
-        console.log(`Loading EmbeddingGemma 300M (${DTYPE}, dim=${EMBED_DIM})...`);
+        console.log(`Loading Brain-1 AI...`);
         const start = Date.now();
         // Load sequentially (not Promise.all) to avoid CDN connection timeouts.
         // Transformers.js fires many concurrent fetch() requests for model files;
@@ -257,11 +257,11 @@ export async function initEmbeddingEngine() {
         [tokenizer, model] = await loadWithTimeout;
         modelReady = true;
         loadError = null;
-        console.log(`Embedding model ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+        console.log(`Brain-1 ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
         return;
       } catch (err) {
         loadError = err;
-        console.error(`Embedding model load attempt ${attempt + 1} failed: ${err.message}`);
+        console.error(`Brain-1 load attempt ${attempt + 1} failed: ${err.message}`);
       if (err.message.includes('fetch') || err.message.includes('network') || err.message.includes('ECONNREFUSED')) {
         console.error('  This may be a network issue. Check internet connection and try EMBEDDING_CLEAR_CACHE_ON_RETRY=true');
       } else if (err.message.includes('timed out')) {
@@ -269,7 +269,7 @@ export async function initEmbeddingEngine() {
       }
       }
     }
-    console.error('All embedding model load attempts failed. Vector search will be unavailable.');
+    console.error('Brain-1: all load attempts failed. Vector search will be unavailable.');
   })();
 
   return loadPromise;

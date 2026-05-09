@@ -1,8 +1,8 @@
 """Noxem — AI-powered memory provider for Hermes Agent.
 
 Two-brain architecture:
-- Brain 1: EmbeddingGemma 300M → embedding search, dedup, contradiction detection
-- Brain 2: Qwen3 0.6B → advisor, context recovery, background web research
+- Brain 1: Semantic engine → embedding search, dedup, contradiction detection
+- Brain 2: Reasoning engine → advisor, context recovery, background web research
 
 Communicates with the Hermes Memory Server (Node.js) over HTTP.
 
@@ -251,7 +251,7 @@ class NoxemMemoryProvider:
             },
             {
                 "key": "embedding_enabled",
-                "description": "Enable EmbeddingGemma 300M for vector search",
+                "description": "Enable Brain-1 for vector search",
                 "default": "true",
                 "choices": ["true", "false"],
                 "required": False,
@@ -401,8 +401,8 @@ class NoxemMemoryProvider:
         status = "CONNECTED" if self._server_reachable else "OFFLINE — memories will NOT be saved until server starts"
         return (
             f"[Noxem Memory — {status}]\n"
-            "AI-powered memory system. EmbeddingGemma 300M for search + dedup. "
-            "Qwen3 0.6B for advisor + context recovery + background web research.\n"
+            "Brain-1 for semantic search + dedup. "
+            "Brain-2 for advisor + context recovery + background web research.\n"
             "Memory types: preference, fact, project, goal, pattern, entity, event, issue, setup, learning, profile.\n"
             "Use `memory_search` to look up past info and `memory_store` to save facts."
         )

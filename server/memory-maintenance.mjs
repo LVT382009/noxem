@@ -15,7 +15,7 @@ export async function runMaintenance() {
 
   try {
     if (!isEmbeddingReady()) {
-      console.log('Maintenance skipped: embedding engine not ready');
+      console.log('Maintenance skipped: Brain-1 not ready');
       return { skipped: true, reason: 'embedding not ready' };
     }
 

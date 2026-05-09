@@ -38,7 +38,7 @@ dim() { printf '\033[2m%s\033[0m\n' "$*"; }
 # If HF_ENDPOINT is not set and we're in WSL, default to hf-mirror.com
 if [ -z "${HF_ENDPOINT:-}" ] && grep -qi microsoft /proc/version 2>/dev/null; then
   export HF_ENDPOINT="https://hf-mirror.com/"
-  dim " WSL detected: using hf-mirror.com for model downloads"
+  dim " WSL detected: using hf-mirror.com for downloads"
 fi
 
 cleanup() {
@@ -167,11 +167,13 @@ echo ""
 
 # 1. Memory server
 echo "[1/2] Starting memory server..."
-dim " First run downloads EmbeddingGemma (~300MB)"
+dim " Install Brain-1 AI (~300MB, first run)"
 export MEMORY_PORT
 export ENABLE_EMBEDDING=${ENABLE_EMBEDDING:-true}
 export ENABLE_ADVISOR=${ENABLE_ADVISOR:-true}
 export ENABLE_MAINTENANCE=${ENABLE_MAINTENANCE:-true}
+# Suppress [INFO] request logs in TUI — only show WARN/ERROR
+export LOG_LEVEL=${LOG_LEVEL:-quiet}
 # Pass Brain 2 mode to memory server so it can disable advisor/research
 export BRAIN2_ENABLED
 # Prefer IPv4 for HuggingFace CDN downloads (WSL IPv6 can cause ConnectTimeoutError)

@@ -55,7 +55,7 @@ app.use((req, res, next) => {
   res.on('finish', () => {
     const ms = Date.now() - start;
     const level = res.statusCode >= 500 ? 'ERROR' : res.statusCode >= 400 ? 'WARN' : 'INFO';
-    if (process.env.LOG_LEVEL !== 'silent') {
+    if (process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL)) {
       console.log(`[${level}] ${req.method} ${req.path} ${res.statusCode} ${ms}ms`);
     }
   });
@@ -133,11 +133,11 @@ async function startup() {
   if (ENABLE_EMBEDDING) {
     initEmbeddingEngine().then(() => {
       if (isEmbeddingReady()) {
-        embed('warmup').then(() => console.log('Embedding engine warmed up'))
-          .catch(err => console.error('Embedding warm-up failed:', err.message));
+        embed('warmup').then(() => console.log('Brain-1 warmed up'))
+          .catch(err => console.error('Brain-1 warm-up failed:', err.message));
       }
     }).catch(err => {
-      console.error('Embedding engine startup error:', err.message);
+      console.error('Brain-1 startup error:', err.message);
     });
   }
 }
@@ -166,7 +166,7 @@ app.get('/health', async (_req, res) => {
     llm: llmOk,
     maintenance: ENABLE_MAINTENANCE,
     research: ENABLE_RESEARCH,
-    mode: 'hybrid-ai',
+    mode: 'hybrid',
     memory: {
       active: stats.active,
       total_by_status: stats.breakdown,
@@ -909,7 +909,7 @@ app.get('/search/web', async (req, res) => {
 app.post('/memory/reembed', async (req, res) => {
   try {
     if (!isEmbeddingReady()) {
-      return res.status(503).json({ error: 'Embedding engine not ready' });
+      return res.status(503).json({ error: 'Brain-1 not ready' });
     }
     const limit = req.body?.limit || 100;
     const missing = getMemoriesWithoutEmbedding(limit);
@@ -1075,7 +1075,7 @@ app.get('/memory/research/hints', (req, res) => {
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
   console.log(`  Port: ${PORT}`);
-  console.log(`  Embedding: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
+  console.log(`  Brain-1: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
   console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'}`);
   ENABLE_ADVISOR ? 'Brain 2' : 'OFF',
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);

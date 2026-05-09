@@ -228,7 +228,7 @@ async function loadModel() {
       if (HF_MIRROR && transformers.env) {
           transformers.env.remoteHost = HF_MIRROR;
           _effectiveMirror = HF_MIRROR;
-          console.log(`Model download: using mirror ${HF_MIRROR}`);
+          console.log(`Component download: using mirror ${HF_MIRROR}`);
       }
     } catch (err) {
       loadError = err;
@@ -246,7 +246,7 @@ async function loadModel() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         if (attempt > 0) {
-          console.log(`Model load retry ${attempt}/${MAX_RETRIES}...`);
+          console.log(`Brain-2 load retry ${attempt}/${MAX_RETRIES}...`);
           // Only clear cache on second+ attempt if explicitly requested
           // Auto-detect corrupted cache: if previous error was "fetch failed" or "tokenizer_class",
           // the cache is corrupt — clear it regardless of GEMMA4_CLEAR_CACHE_ON_RETRY setting
@@ -273,7 +273,7 @@ async function loadModel() {
       }
           }
 
-        console.log(`Loading ${MODEL_ID} (dtype=${DTYPE})...`);
+        console.log(`Loading Brain-2 AI...`);
         const start = Date.now();
 
         const loadOpts = {
@@ -291,7 +291,7 @@ async function loadModel() {
       generator = await pipeline('text-generation', MODEL_ID, loadOpts);
 
         const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-        console.log(`Qwen3 0.6B ready in ${elapsed}s`);
+        console.log(`Brain-2 ready in ${elapsed}s`);
         ready = true;
         loadError = null;
         return;
@@ -301,7 +301,7 @@ async function loadModel() {
       }
     }
 
-    console.error('All model load attempts failed. Advisor will use fallback mode.');
+    console.error('Brain-2: all load attempts failed. Advisor will use fallback mode.');
   })();
   return loadPromise;
 }
@@ -378,17 +378,17 @@ app.post('/v1/chat/completions', async (req, res) => {
 
 // ── Start ──
 const server = app.listen(PORT, '127.0.0.1', async () => {
-  console.log(`Qwen3 0.6B API at http://127.0.0.1:${PORT}/v1`);
+  console.log(`Brain-2 API at http://127.0.0.1:${PORT}/v1`);
   loadModel().catch(err => console.error('Model load failed:', err.message));
 });
 
 // Graceful shutdown
 function shutdown(signal) {
-  console.log(`\n${signal} received — shutting down LLM server...`);
+  console.log(`\n${signal} received — shutting down Brain-2...`);
   if (errorLogInterval) clearInterval(errorLogInterval);
   server.close(() => {
     generator = null;
-    console.log('LLM server stopped.');
+    console.log('Brain-2 stopped.');
     process.exit(0);
   });
   setTimeout(() => process.exit(1), 8000);

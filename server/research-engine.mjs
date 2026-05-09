@@ -207,7 +207,7 @@ async function callLLM(messages, maxTokens = 256, temperature = 0.1, timeout = 1
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || '';
   } catch (err) {
-    console.error('[Research] Qwen3 call failed:', err.message);
+    console.error('[Research] Brain-2 call failed:', err.message);
     return '';
   }
 }
