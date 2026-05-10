@@ -9,6 +9,10 @@ import {
   deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
   getMemoriesByEntityAttr, db,
+  storeEdge, getEdgesFromMemory, getEdgesToMemory, getEdgesByRel, invalidateEdgeById, getEdge, traverseMemoryGraph,
+  upsertCoreBlock, getCoreBlock, getAllCoreBlocks, deleteCoreBlock,
+  logCitation, getRecentCitationCount, getSessionCitations,
+  compressMemory, getRawText, getCompressibleMemories,
 } from './memory-store.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
@@ -147,6 +151,198 @@ startup().catch(err => {
   startupComplete = true; // Allow server to function without embeddings
 });
 
+
+// ─── Background Embedding Queue ────────────────────────────────────
+// Queues memories for async embedding — store/sync return instantly
+const _embedQueue = [];
+let _embedProcessing = false;
+
+async function processEmbedQueue() {
+  if (_embedProcessing) return;
+  _embedProcessing = true;
+  while (_embedQueue.length > 0) {
+    const batch = _embedQueue.splice(0, 10); // Process in batches of 10
+    if (!isEmbeddingReady()) {
+      // Re-queue and retry after delay
+      _embedQueue.unshift(...batch);
+      _embedProcessing = false;
+      setTimeout(processEmbedQueue, 5000);
+      return;
+    }
+    try {
+      const texts = batch.map(item => {
+        const prefix = item.contextPrefix ? item.contextPrefix + ' ' : '';
+        return prefix + item.text;
+      });
+      const embeddings = await embedBatch(texts);
+      for (let i = 0; i < batch.length; i++) {
+        try {
+          const vec = new Float32Array(embeddings[i]);
+          updateMemoryEmbedding(batch[i].id, vec);
+          addVecsToIndex([batch[i].id], [embeddings[i]]);
+        } catch {}
+      }
+    } catch (err) {
+      if (process.env.LOG_LEVEL === 'debug') console.error('[EmbedQueue] Batch error:', err.message);
+    }
+  }
+  _embedProcessing = false;
+}
+
+function enqueueEmbedding(id, text, contextPrefix) {
+  _embedQueue.push({ id, text, contextPrefix });
+  if (!_embedProcessing) processEmbedQueue();
+}
+
+
+// ─── Semantic Query Cache ─────────────────────────────────────────
+// Caches search results keyed by query embedding; cosine >0.95 = hit
+// Invalidated on store/sync/purge; TTL: 5min default
+const _queryCache = new Map(); // hash -> { queryVec, results, timestamp }
+const QUERY_CACHE_MAX = 100;
+const QUERY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+let _cacheHits = 0;
+let _cacheMisses = 0;
+
+function hashVec(vec) {
+  // Fast hash: sample 8 evenly-spaced elements from the vector
+  if (!vec || vec.length < 8) return 0;
+  const step = Math.floor(vec.length / 8);
+  let h = 0;
+  for (let i = 0; i < 8; i++) h = (h * 31 + Math.round(vec[i * step] * 1000)) | 0;
+  return h;
+}
+
+function findCachedResult(queryVec) {
+  if (!queryVec || !isEmbeddingReady()) return null;
+  const now = Date.now();
+  const qHash = hashVec(queryVec);
+  for (const [key, entry] of _queryCache) {
+    if (now - entry.timestamp > QUERY_CACHE_TTL_MS) { _queryCache.delete(key); continue; }
+    // Quick hash check first, then full cosine
+    if (hashVec(entry.queryVec) !== qHash) continue;
+    const sim = cosineSimilarity(queryVec, entry.queryVec);
+    if (sim > 0.95) {
+      _cacheHits++;
+      return { results: entry.results, similarity: sim };
+    }
+  }
+  _cacheMisses++;
+  return null;
+}
+
+function addToQueryCache(queryVec, results) {
+  if (!queryVec || results.length === 0) return;
+  // Evict oldest if at capacity
+  if (_queryCache.size >= QUERY_CACHE_MAX) {
+    const oldest = _queryCache.keys().next().value;
+    _queryCache.delete(oldest);
+  }
+  _queryCache.set(Date.now(), { queryVec: Array.from(queryVec), results, timestamp: Date.now() });
+}
+
+function invalidateQueryCache() {
+  _queryCache.clear();
+}
+
+
+// ── Graph Edge Extraction ──────────────────────────────────────────
+// Rule-based extraction (works without Brain 2) + LLM-assisted when available
+
+const EDGE_PATTERNS = [
+  // "I use/prefer X" → (user, uses/prefers, X memory)
+  { re: /(?:i |user )?(?:use|using|prefer|like|love|hate|dislike)\s+(\S.+?)(?:\s+(?:for|when|because|over|instead|than|to|and|$))/i, relation: 'uses' },
+  // "I work on X" → (user, works_on, X memory)
+  { re: /(?:i |user )?(?:work(?:ing)? on|build(?:ing)?|creat(?:ing)?|develop(?:ing)?)\s+(\S.+?)(?:\s+(?:with|using|for|called|named|and|$))/i, relation: 'works_on' },
+  // "X belongs to Y" → (X memory, belongs_to, Y memory)
+  { re: /(.+?)\s+(?:belongs to|part of|component of|member of)\s+(.+)/i, relation: 'belongs_to' },
+  // "X causes Y" → (X memory, causes, Y memory)
+  { re: /(.+?)\s+(?:causes?|leads? to|results? in|triggers?)\s+(.+)/i, relation: 'causes' },
+  // "X related to Y" → (X memory, related_to, Y memory)
+  { re: /(.+?)\s+(?:is related to|connect(?:ed|s) to|linked to|associated with)\s+(.+)/i, relation: 'related_to' },
+];
+
+function extractAndStoreEdges(fromMemoryId, text, sessionId) {
+  try {
+    const fromMem = getMemory(fromMemoryId);
+    if (!fromMem || !fromMem.entity) return; // Need entity to find related memories
+
+    // Rule-based: extract relations from the text
+    for (const pattern of EDGE_PATTERNS) {
+      const match = text.match(pattern.re);
+      if (match) {
+        const objectText = (match[1] || match[2] || '').trim().replace(/[.!?,;]+$/, '');
+        if (!objectText || objectText.length < 2) continue;
+
+        // Find existing memory matching the object
+        const candidates = searchMemories({ query: objectText, limit: 3 });
+        if (candidates.length > 0) {
+          const toId = candidates[0].id;
+          if (toId !== fromMemoryId) {
+            storeEdge({
+              from_id: fromMemoryId,
+              to_id: toId,
+              relation: pattern.relation,
+              source_session_id: sessionId || '',
+            });
+          }
+        }
+      }
+    }
+
+    // Entity-based edges: connect memories with same entity
+    if (fromMem.entity) {
+      const relatedMems = getMemoriesByEntityAttr(fromMem.entity, fromMem.attribute || '');
+      for (const rm of relatedMems) {
+        if (rm.id !== fromMemoryId) {
+          storeEdge({
+            from_id: fromMemoryId,
+            to_id: rm.id,
+            relation: 'same_entity',
+            strength: 0.5,
+            source_session_id: sessionId || '',
+          });
+        }
+      }
+    }
+  } catch (err) {
+    if (process.env.LOG_LEVEL === 'debug') console.error('[EdgeExtract] Error:', err.message);
+  }
+}
+
+
+// ── Rule-based text compression ───────────────────────────────────
+// Level 0 = raw, Level 1 = key phrases, Level 2 = one-line, Level 3 = keyword
+function ruleBasedCompress(text, targetLevel) {
+  if (targetLevel <= 0) return text;
+  const sentences = text.split(/[.!?]+/).map(s => s.trim()).filter(Boolean);
+  if (sentences.length === 0) return text;
+
+  if (targetLevel === 1) {
+    // Level 1: Keep first 2 sentences, drop filler words
+    const kept = sentences.slice(0, 2).map(s => {
+      return s.replace(/\b(basically|actually|honestly|literally|just|really|very|quite)\b/gi, '').replace(/\s+/g, ' ').trim();
+    }).filter(Boolean);
+    return kept.join('. ') + '.';
+  }
+
+  if (targetLevel === 2) {
+    // Level 2: One-line summary — first sentence, trimmed
+    const first = sentences[0].replace(/\b(basically|actually|honestly|literally|just|really|very|quite)\b/gi, '').replace(/\s+/g, ' ').trim();
+    return first.length > 100 ? first.substring(0, 97) + '...' : first + '.';
+  }
+
+  if (targetLevel >= 3) {
+    // Level 3: Keywords only — extract nouns/verbs
+    const words = text.split(/\s+/)
+      .filter(w => w.length > 3 && !/^(the|this|that|with|from|have|been|will|would|could|should|about|which|their|there|other|some|than|into|also|just|more|most|only|very|when|what|your|they|were|being|does|done|made|many|much|such|then|them|these|those|each|over|also|after|before|between|both|under|again|further|once|here|there|where|why|how|all|any|both|each|few|more|most|other|some|such|than|too|very)$/i.test(w))
+      .slice(0, 8);
+    return words.join(' ');
+  }
+
+  return text;
+}
+
 // ─── Health ───────────────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
   const stats = getMemoryStats();
@@ -163,6 +359,8 @@ app.get('/health', async (_req, res) => {
     embedding_error: getEmbeddingError()?.message || null,
     vector_index: isVecReady(),
     advisor: ENABLE_ADVISOR,
+      core_memory_blocks: getAllCoreBlocks().length,
+      query_cache: { size: _queryCache.size, hits: _cacheHits, misses: _cacheMisses, hit_rate: _cacheHits + _cacheMisses > 0 ? Math.round(_cacheHits / (_cacheHits + _cacheMisses) * 100) : 0 },
     llm: llmOk,
     maintenance: ENABLE_MAINTENANCE,
     research: ENABLE_RESEARCH,
@@ -289,9 +487,9 @@ function reciprocalRankFusion(lists, k = 60, weights = null) {
 
 // ─── Memory CRUD ─────────────────────────────────────────────────
 
-const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request'];
+const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary'];
 
-app.post('/memory/store', async (req, res) => {
+app.post('/memory/store', (req, res) => {
   try {
     const { text, session_id, type, metadata } = req.body;
     if (!text || typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text required (non-empty string)' });
@@ -302,22 +500,13 @@ app.post('/memory/store', async (req, res) => {
     const trimmed = text.trim();
     const { entity, attribute } = extractEntityAttribute(trimmed);
     const contextPrefix = generateContextPrefix(trimmed, catType, session_id);
-    let embedding = null;
 
-    if (isEmbeddingReady()) {
-      try {
-        // Contextual enrichment: prepend context prefix for better retrieval
-        const embedText = contextPrefix ? `${contextPrefix} ${trimmed}` : trimmed;
-        const vec = await embed(embedText);
-        embedding = new Float32Array(vec);
-      } catch { /* proceed without embedding */ }
-    }
-
+    // Store immediately without waiting for embedding (non-blocking)
     const id = storeMemory({
       session_id: session_id || '',
       type: catType,
       text: trimmed,
-      embedding,
+      embedding: null, // embedded in background
       metadata: { ...(metadata || {}), source: metadata?.source || "api", extraction_method: metadata?.extraction_method || "store_api", origin_session_id: session_id || "", stored_at: new Date().toISOString() },
       importance: estimateImportance(trimmed, catType),
       context_prefix: contextPrefix,
@@ -325,13 +514,19 @@ app.post('/memory/store', async (req, res) => {
       attribute,
     });
 
-    res.json({ ok: true, id });
+    // Queue background embedding
+    if (isEmbeddingReady()) {
+      enqueueEmbedding(id, trimmed, contextPrefix);
+    }
+
+    invalidateQueryCache();
+    res.json({ ok: true, id, embedding: 'queued' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/memory/store-batch', async (req, res) => {
+app.post('/memory/store-batch', (req, res) => {
   try {
     const { memories } = req.body;
     if (!memories?.length) return res.status(400).json({ error: 'memories array required' });
@@ -344,19 +539,12 @@ app.post('/memory/store-batch', async (req, res) => {
       return { ...m, catType, trimmed, entity, attribute, contextPrefix };
     });
 
-    let embeddings = null;
-    if (isEmbeddingReady()) {
-      try {
-        const embedTexts = enrichedMemories.map(m => m.contextPrefix ? m.contextPrefix + " " + m.trimmed : m.trimmed);
-        embeddings = await embedBatch(embedTexts);
-      } catch { /* proceed */ }
-    }
-
-    const items = enrichedMemories.map((m, i) => ({
+    // Store immediately without waiting for embedding
+    const items = enrichedMemories.map(m => ({
       session_id: m.session_id || '',
       type: m.catType,
       text: m.trimmed,
-      embedding: embeddings ? new Float32Array(embeddings[i]) : null,
+      embedding: null, // embedded in background
       metadata: { ...(m.metadata || {}), source: m.metadata?.source || "api", extraction_method: m.metadata?.extraction_method || "store_batch_api" },
       importance: estimateImportance(m.trimmed, m.catType),
       context_prefix: m.contextPrefix,
@@ -365,11 +553,15 @@ app.post('/memory/store-batch', async (req, res) => {
     }));
 
     const ids = storeMemories(items);
-    // Bulk insert into vector index for immediate KNN availability
-    if (embeddings && isVecReady()) {
-      try { addVecsToIndex(ids, embeddings); } catch {}
+
+    // Queue background embedding for all stored memories
+    if (isEmbeddingReady()) {
+      for (let i = 0; i < ids.length; i++) {
+        enqueueEmbedding(ids[i], items[i].text, items[i].context_prefix);
+      }
     }
-    res.json({ ok: true, ids });
+
+    res.json({ ok: true, ids, embedding: 'queued' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -377,6 +569,7 @@ app.post('/memory/store-batch', async (req, res) => {
 
 app.get("/memory/search", async (req, res) => {
   let searchResults = [];
+  let queryVecForCache = null;
   try {
     const { q, session_id, limit, method, expand } = req.query;
     if (!q?.trim()) return res.status(400).json({ error: "query required" });
@@ -414,6 +607,14 @@ app.get("/memory/search", async (req, res) => {
       try {
         const queryVecs = await Promise.all(queries.map(qq => embed(qq, "query")));
         const qVec = queryVecs[0];
+      queryVecForCache = qVec;
+
+      // Semantic cache lookup
+      const cached = findCachedResult(qVec);
+      if (cached) {
+        searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
+        searchMethod = "cache+" + (cached.similarity).toFixed(3);
+      }
         let embeddingResults = null;
 
         if (queryVecs.length > 1) {
@@ -465,6 +666,11 @@ app.get("/memory/search", async (req, res) => {
     // Apply session filter to all search methods
     if (session_id) searchResults = searchResults.filter(r => r.session_id === session_id);
 
+    // Store in semantic cache if we got results from embedding search
+    if (queryVecForCache && searchResults.length > 0 && !searchMethod.startsWith("cache")) {
+      addToQueryCache(queryVecForCache, searchResults);
+    }
+
     // Track recall counts for returned results
     try {
       const ids = searchResults.map(r => r.id).filter(Boolean);
@@ -479,13 +685,17 @@ app.get("/memory/search", async (req, res) => {
 // This gives a stronger importance boost (+0.03) vs mere retrieval (+0.01)
 app.post('/memory/search/feedback', (req, res) => {
   try {
-    const { memory_ids } = req.body;
+    const { memory_ids, session_id, context } = req.body;
     if (!Array.isArray(memory_ids) || !memory_ids.length) {
       return res.status(400).json({ error: 'memory_ids array required' });
     }
     const ids = memory_ids.map(id => parseInt(id)).filter(id => id > 0).slice(0, 50);
     if (!ids.length) return res.status(400).json({ error: 'no valid memory IDs' });
     const boosted = boostUsedMemories(ids);
+    // Log citations for reflection tracking
+    for (const id of ids) {
+      logCitation(id, session_id || '', context || '');
+    }
     res.json({ ok: true, boosted });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -535,13 +745,15 @@ app.get('/memory/release', async (req, res) => {
       chars += line.length;
     }
 
-    res.json({
-      ok: true,
-      memories: lines.length,
-      total_candidates: scored.length,
-      token_budget: tokenBudget,
-      text: lines.join('\n'),
-    });
+    const coreBlocks = getAllCoreBlocks();
+res.json({
+ok: true,
+memories: lines.length,
+total_candidates: scored.length,
+token_budget: tokenBudget,
+text: lines.join('\n'),
+core_blocks: coreBlocks,
+});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -609,6 +821,198 @@ app.post('/memory/import', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+app.post('/memory/graph/edge', (req, res) => {
+  try {
+    const { from_id, to_id, relation, valid_from, valid_until, strength, source_session_id, metadata } = req.body;
+    if (!from_id || !to_id || !relation) {
+      return res.status(400).json({ error: 'from_id, to_id, and relation are required' });
+    }
+    const fromMem = getMemory(from_id);
+    const toMem = getMemory(to_id);
+    if (!fromMem) return res.status(404).json({ error: `memory ${from_id} not found` });
+    if (!toMem) return res.status(404).json({ error: `memory ${to_id} not found` });
+    const id = storeEdge({ from_id, to_id, relation, valid_from, valid_until, strength: strength ?? 1.0, source_session_id: source_session_id || '', metadata: metadata || {} });
+    res.json({ ok: true, id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Get edges from a memory (outgoing relationships)
+app.get('/memory/graph/neighbors/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const outgoing = getEdgesFromMemory(id);
+    const incoming = getEdgesToMemory(id);
+    res.json({ ok: true, id, outgoing, incoming });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Multi-hop graph traversal from a starting memory
+app.get('/memory/graph/traverse', (req, res) => {
+  try {
+    const fromId = parseInt(req.query.from_id);
+    const maxDepth = Math.min(parseInt(req.query.max_depth) || 3, 5);
+    const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    if (!fromId) return res.status(400).json({ error: 'from_id query parameter required' });
+    const steps = traverseMemoryGraph(fromId, maxDepth, limit);
+    // Enrich with memory text
+    const enriched = steps.map(s => {
+      const mem = getMemory(s.to_id);
+      return {
+        from_id: s.from_id,
+        to_id: s.to_id,
+        to_text: mem ? mem.text : null,
+        to_type: mem ? mem.type : null,
+        relation: s.relation,
+        strength: Math.round(s.strength * 1000) / 1000,
+        depth: s.depth,
+      };
+    });
+    res.json({ ok: true, from_id: fromId, max_depth: maxDepth, steps: enriched });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Get edges by relation type
+app.get('/memory/graph/edges', (req, res) => {
+try {
+const { relation, limit } = req.query;
+const limitNum = parseInt(limit) || 50;
+let edges;
+if (relation) {
+edges = getEdgesByRel(relation, limitNum);
+} else {
+// No relation filter: return recent edges
+const rows = db.prepare('SELECT id FROM memory_edges ORDER BY created_at DESC LIMIT ?').all(limitNum);
+edges = rows.map(r => getEdge(r.id)).filter(Boolean);
+}
+res.json({ ok: true, edges });
+} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Invalidate an edge (set valid_until = now)
+app.post('/memory/graph/edge/:id/invalidate', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const edge = getEdge(id);
+    if (!edge) return res.status(404).json({ error: 'edge not found' });
+    const changes = invalidateEdgeById(id);
+    res.json({ ok: true, invalidated: changes });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Core Memory ──────────────────────────────────────────────────
+
+// List all core memory blocks
+app.get('/memory/core', (_req, res) => {
+  try {
+    const blocks = getAllCoreBlocks();
+    res.json({ ok: true, blocks });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Upsert a core memory block
+app.put('/memory/core/:key', (req, res) => {
+  try {
+    const { key } = req.params;
+    const { value, description, char_limit } = req.body;
+    if (!key) return res.status(400).json({ error: 'key required' });
+    if (value === undefined) return res.status(400).json({ error: 'value required' });
+    const block = upsertCoreBlock({ key, value, description: description || '', char_limit: char_limit || 500 });
+    res.json({ ok: true, block });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Get a specific core memory block
+app.get('/memory/core/:key', (req, res) => {
+  try {
+    const block = getCoreBlock(req.params.key);
+    if (!block) return res.status(404).json({ error: 'core memory block not found' });
+    res.json({ ok: true, block });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Delete a core memory block
+app.delete('/memory/core/:key', (req, res) => {
+  try {
+    const changes = deleteCoreBlock(req.params.key);
+    res.json({ ok: true, deleted: changes });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ─── Citation Tracking ────────────────────────────────────────────
+
+// Get citation stats for a memory
+app.get('/memory/:id/citations', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const count = getRecentCitationCount(id);
+    res.json({ ok: true, memory_id: id, citations_last_30d: count });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Get top-cited memories in a session
+app.get('/memory/citations/session/:sessionId', (req, res) => {
+  try {
+    const { limit } = req.query;
+    const citations = getSessionCitations(req.params.sessionId, parseInt(limit) || 20);
+    res.json({ ok: true, citations });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ─── Memory Compression ───────────────────────────────────────────
+
+// Get raw text for a compressed memory (drill-down)
+app.get('/memory/:id/raw', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const mem = getMemory(id);
+    if (!mem) return res.status(404).json({ error: 'not found' });
+    if (mem.compression_level === 0) {
+      return res.json({ ok: true, text: mem.text, compression_level: 0, raw: mem.text });
+    }
+    const raw = getRawText(id);
+    res.json({ ok: true, text: mem.text, compression_level: mem.compression_level, raw: raw || mem.text });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Manual compression trigger
+app.post('/memory/compress', (req, res) => {
+try {
+const { memory_id, target_level, max_level, older_than_days, limit } = req.body;
+// Single-memory compression mode
+if (memory_id) {
+const id = parseInt(memory_id);
+const mem = getMemory(id);
+if (!mem) return res.status(404).json({ error: 'memory not found' });
+const target = Math.min(parseInt(target_level) || (mem.compression_level + 1), 3);
+if (target <= mem.compression_level) return res.json({ ok: true, compressed_text: mem.text, level: mem.compression_level, changed: false });
+// Store raw text before first compression
+if (mem.compression_level === 0) {
+try { db.prepare('INSERT OR IGNORE INTO memory_raw (memory_id, raw_text) VALUES (?, ?)').run(id, mem.text); } catch {}
+}
+const compressed = ruleBasedCompress(mem.text, target);
+compressMemory(id, compressed, target);
+return res.json({ ok: true, compressed_text: compressed, original_length: mem.text.length, compressed_length: compressed.length, level: target, changed: compressed !== mem.text });
+}
+// Batch compression mode
+const maxLevel = Math.min(parseInt(max_level) || 1, 3);
+const olderDays = parseInt(older_than_days) || 0;
+const limitNum = Math.min(parseInt(limit) || 50, 200);
+const candidates = getCompressibleMemories(maxLevel, olderDays, limitNum);
+let compressed = 0;
+for (const m of candidates) {
+const newText = ruleBasedCompress(m.text, m.compression_level + 1);
+if (newText !== m.text) {
+compressMemory(m.id, newText, m.compression_level + 1);
+compressed++;
+}
+}
+res.json({ ok: true, candidates: candidates.length, compressed });
+} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 
 app.get('/memory/:id', (req, res) => {
   try {
@@ -1043,6 +1447,7 @@ app.post('/memory/purge', (_req, res) => {
     );
     const result = purgeStmt.run(AUTO_PURGE_DAYS);
     const after = getMemoryStats();
+    invalidateQueryCache();
     res.json({ ok: true, purged: result.changes, before: before.active, after: after.active });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1071,6 +1476,10 @@ app.get('/memory/research/hints', (req, res) => {
   res.json({ ok: true, topics: enriched });
 });
 
+
+// ─── Knowledge Graph ──────────────────────────────────────────────
+
+// Add a relationship edge between two memories
 // ─── Start ────────────────────────────────────────────────────────
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
