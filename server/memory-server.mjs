@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+
 import { isVecReady } from './vector-index.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
@@ -81,7 +83,7 @@ if (MEMORY_API_KEY) {
     }
     next();
   });
-  console.log('API key authentication: ENABLED');
+  LOG_DEBUG && console.log('API key authentication: ENABLED');
 }
 
 const PORT = process.env.MEMORY_PORT || 3001;
@@ -131,17 +133,17 @@ async function startup() {
   // Start maintenance immediately — doesn't need embedding
   if (ENABLE_MAINTENANCE) startMaintenanceCron();
   startupComplete = true;
-  console.log('Memory server ready (FTS search available)');
+  LOG_DEBUG && console.log('Memory server ready (FTS search available)');
 
   // Load embedding engine in background — server already functional with FTS-only
   if (ENABLE_EMBEDDING) {
     initEmbeddingEngine().then(() => {
       if (isEmbeddingReady()) {
-        embed('warmup').then(() => console.log('Brain-1 warmed up'))
-          .catch(err => console.error('Brain-1 warm-up failed:', err.message));
+        embed('warmup').then(() => { if (LOG_DEBUG) console.log('Brain-1 warmed up'); })
+          .catch(err => LOG_DEBUG && console.error('Brain-1 warm-up failed:', err.message));
       }
     }).catch(err => {
-      console.error('Brain-1 startup error:', err.message);
+      LOG_DEBUG && console.error('Brain-1 startup error:', err.message);
     });
   }
 }
@@ -183,7 +185,7 @@ async function processEmbedQueue() {
         } catch {}
       }
     } catch (err) {
-      if (process.env.LOG_LEVEL === 'debug') console.error('[EmbedQueue] Batch error:', err.message);
+      LOG_DEBUG && console.error('[EmbedQueue] Batch error:', err.message);
     }
   }
   _embedProcessing = false;
@@ -306,7 +308,7 @@ function extractAndStoreEdges(fromMemoryId, text, sessionId) {
       }
     }
   } catch (err) {
-    if (process.env.LOG_LEVEL === 'debug') console.error('[EdgeExtract] Error:', err.message);
+    LOG_DEBUG && console.error('[EdgeExtract] Error:', err.message);
   }
 }
 

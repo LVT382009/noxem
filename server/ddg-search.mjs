@@ -1,4 +1,5 @@
 import * as https from 'node:https';
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 import * as http from 'node:http';
 import { parse as parseUrl } from 'node:url';
 import { search as ddgScrapeSearch, SafeSearchType } from 'duck-duck-scrape';
@@ -64,7 +65,7 @@ export async function searchDuckDuckGo(query, maxResults = 5) {
       }));
     }
   } catch (err) {
-    console.error('[DDG] duck-duck-scrape failed, trying HTML fallback:', err.message);
+    LOG_DEBUG && console.error('[DDG] duck-duck-scrape failed, trying HTML fallback:', err.message);
   }
 
   // Fallback: HTML scraping of lite.duckduckgo.com
@@ -141,7 +142,7 @@ export async function searchDuckDuckGo(query, maxResults = 5) {
       snippet: r.snippet?.substring(0, 300) || '',
     }));
   } catch (err) {
-    console.error('[DDG] HTML fallback search error:', err.message);
+    LOG_DEBUG && console.error('[DDG] HTML fallback search error:', err.message);
     return [];
   }
 }

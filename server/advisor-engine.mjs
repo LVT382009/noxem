@@ -1,4 +1,5 @@
 /**
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
  * Advisor Engine — Brain 2 advisor for drift detection + context recovery.
  *
  * DDG web search has been moved to research-engine.mjs.
@@ -75,7 +76,7 @@ Stay factual and concise. Only flag real issues, not hypothetical ones.`,
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || fallbackCompressAnalysis(conversationHistory, sessionMemories);
   } catch (err) {
-    console.error('Compress analysis error:', err.message);
+    LOG_DEBUG && console.error('Compress analysis error:', err.message);
     return fallbackCompressAnalysis(conversationHistory, sessionMemories);
   }
 }
@@ -121,7 +122,7 @@ Respond concisely. If everything looks fine, say "All good — no issues detecte
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || fallbackAdvice();
   } catch (err) {
-    console.error('Advisor error:', err.message);
+    LOG_DEBUG && console.error('Advisor error:', err.message);
     return fallbackAdvice();
   }
 }
@@ -158,7 +159,7 @@ Rules:
     const memories = JSON.parse(jsonMatch[0]);
     return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];
   } catch (err) {
-    console.error('Session end analysis error:', err.message);
+    LOG_DEBUG && console.error('Session end analysis error:', err.message);
     return [];
   }
 }

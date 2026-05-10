@@ -42,7 +42,7 @@ async function fetchWithRetry(url, opts, retries = HF_FETCH_RETRIES) {
         || err.name === 'AbortError';
       if (!isRetryable || attempt >= retries) throw err;
       const delay = HF_FETCH_BACKOFF_MS * Math.pow(2, attempt);
-      console.log(`[HF Fetch] Retry ${attempt + 1}/${retries} for ${String(url).substring(0, 80)}... (wait ${delay}ms)`);
+      LOG_DEBUG && console.log(`[HF Fetch] Retry ${attempt + 1}/${retries} for ${String(url).substring(0, 80)}... (wait ${delay}ms)`);
       await new Promise(r => setTimeout(r, delay));
     }
   }
@@ -87,9 +87,11 @@ const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || resolve(PROJECT_ROOT, '.c
 const HF_MIRROR = process.env.HF_ENDPOINT || '';
 if (HF_MIRROR) {
   env.remoteHost = HF_MIRROR;
-  console.log(`Component download: using mirror ${HF_MIRROR}`);
+  LOG_DEBUG && console.log(`Component download: using mirror ${HF_MIRROR}`);
 }
 const MAX_RETRIES = parseInt(process.env.EMBEDDING_LOAD_RETRIES || '2');
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+
 const LOAD_TIMEOUT_MS = parseInt(process.env.EMBEDDING_LOAD_TIMEOUT || '300000'); // 5 min default
 const SIMILARITY_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
 const CONTRADICTION_THRESHOLD = parseFloat(process.env.CONTRADICT_THRESHOLD || '0.80');
@@ -140,8 +142,8 @@ function validateCacheDir(cacheDir) {
   }
   findTmpFiles(resolved);
   if (tmpFiles.length > 0) {
-    console.log(`Cache validator: found ${tmpFiles.length} temp file(s) from interrupted download(s) — clearing cache`);
-    for (const f of tmpFiles) console.log(`  ${basename(f)}`);
+    LOG_DEBUG && console.log(`Cache validator: found ${tmpFiles.length} temp file(s) from interrupted download(s) — clearing cache`);
+    for (const f of tmpFiles) LOG_DEBUG && console.log(`  ${basename(f)}`);
     fs.rmSync(resolved, { recursive: true, force: true });
     return;
   }
@@ -156,13 +158,13 @@ function validateCacheDir(cacheDir) {
           if (fs.existsSync(tcPath)) {
             const stat = fs.statSync(tcPath);
             if (stat.size === 0) {
-              console.log('Cache validator: empty tokenizer_config.json — clearing cache');
+              LOG_DEBUG && console.log('Cache validator: empty tokenizer_config.json — clearing cache');
               fs.rmSync(resolved, { recursive: true, force: true });
               return true;
             }
             try { JSON.parse(fs.readFileSync(tcPath, 'utf8')); }
             catch {
-              console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
+              LOG_DEBUG && console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
               fs.rmSync(resolved, { recursive: true, force: true });
               return true;
             }
@@ -175,13 +177,13 @@ function validateCacheDir(cacheDir) {
                 const tcFile = join(snapDir, hash, 'tokenizer_config.json');
                 if (fs.existsSync(tcFile)) {
                   if (fs.statSync(tcFile).size === 0) {
-                    console.log('Cache validator: empty tokenizer_config.json — clearing cache');
+                    LOG_DEBUG && console.log('Cache validator: empty tokenizer_config.json — clearing cache');
                     fs.rmSync(resolved, { recursive: true, force: true });
                     return true;
                   }
                   try { JSON.parse(fs.readFileSync(tcFile, 'utf8')); }
                   catch {
-                    console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
+                    LOG_DEBUG && console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
                     fs.rmSync(resolved, { recursive: true, force: true });
                     return true;
                   }
@@ -197,7 +199,7 @@ function validateCacheDir(cacheDir) {
     }
     checkDir(resolved);
   } catch (e) {
-    console.error('Cache validator error:', e.message);
+    LOG_DEBUG && console.error('Cache validator error:', e.message);
   }
 }
 
@@ -210,7 +212,7 @@ export async function initEmbeddingEngine() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         if (attempt > 0) {
-          console.log(`Brain-1 load retry ${attempt}/${MAX_RETRIES}...`);
+          LOG_DEBUG && console.log(`Brain-1 load retry ${attempt}/${MAX_RETRIES}...`);
           // Auto-detect corrupted cache: if previous error was "fetch failed" or "tokenizer_class",
           // the cache is corrupt — clear it regardless of EMBEDDING_CLEAR_CACHE_ON_RETRY setting
           const prevError = loadError?.message || '';
@@ -223,19 +225,19 @@ export async function initEmbeddingEngine() {
             const cachePath = path.resolve(EMBED_CACHE_DIR);
             if (fs.existsSync(cachePath)) {
               fs.rmSync(cachePath, { recursive: true, force: true });
-              console.log('  Cleared Brain-1 cache (corrupted — ' + (cacheCorrupted ? 'auto-detected' : 'EMBEDDING_CLEAR_CACHE_ON_RETRY=true') + ')');
+              LOG_DEBUG && console.log('  Cleared Brain-1 cache (corrupted — ' + (cacheCorrupted ? 'auto-detected' : 'EMBEDDING_CLEAR_CACHE_ON_RETRY=true') + ')');
             }
           } else {
-            console.log('  Retrying with existing cache...');
+            LOG_DEBUG && console.log('  Retrying with existing cache...');
           }
           // Mirror fallback: on 2nd+ retry, switch to hf-mirror.com if not already set
           if (!HF_MIRROR && env.remoteHost === 'https://huggingface.co/') {
             env.remoteHost = 'https://hf-mirror.com/';
-            console.log('  Switched to hf-mirror.com for this retry');
+            LOG_DEBUG && console.log('  Switched to hf-mirror.com for this retry');
           }
         }
 
-        console.log(`Loading Brain-1 AI...`);
+        LOG_DEBUG && console.log(`Loading Brain-1 AI...`);
         const start = Date.now();
         // Load sequentially (not Promise.all) to avoid CDN connection timeouts.
         // Transformers.js fires many concurrent fetch() requests for model files;
@@ -257,19 +259,19 @@ export async function initEmbeddingEngine() {
         [tokenizer, model] = await loadWithTimeout;
         modelReady = true;
         loadError = null;
-        console.log(`Brain-1 ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+        LOG_DEBUG && console.log(`Brain-1 ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
         return;
       } catch (err) {
         loadError = err;
-        console.error(`Brain-1 load attempt ${attempt + 1} failed: ${err.message}`);
+        LOG_DEBUG && console.error(`Brain-1 load attempt ${attempt + 1} failed: ${err.message}`);
       if (err.message.includes('fetch') || err.message.includes('network') || err.message.includes('ECONNREFUSED')) {
-        console.error('  This may be a network issue. Check internet connection and try EMBEDDING_CLEAR_CACHE_ON_RETRY=true');
+        LOG_DEBUG && console.error('  This may be a network issue. Check internet connection and try EMBEDDING_CLEAR_CACHE_ON_RETRY=true');
       } else if (err.message.includes('timed out')) {
-        console.error('  Model download took too long. Increase EMBEDDING_LOAD_TIMEOUT or check network speed.');
+        LOG_DEBUG && console.error('  Model download took too long. Increase EMBEDDING_LOAD_TIMEOUT or check network speed.');
       }
       }
     }
-    console.error('Brain-1: all load attempts failed. Vector search will be unavailable.');
+    LOG_DEBUG && console.error('Brain-1: all load attempts failed. Vector search will be unavailable.');
   })();
 
   return loadPromise;

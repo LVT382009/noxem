@@ -14,6 +14,7 @@
  */
 
 import { searchWeb } from './ddg-search.mjs';
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 import { fetchPages, isFetchableUrl } from './web-fetch.mjs';
 
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
@@ -83,7 +84,7 @@ export function triggerResearch({ sessionId, userMessage, assistantResponse, sto
   // Run entirely async — never block the caller
   _runResearch({ sessionId, userMessage, assistantResponse, storeMemoryFn, embedFn, isEmbeddingReadyFn })
     .catch(err => {
-      console.error(`[Research] Pipeline error for session ${sessionId}:`, err.message);
+      LOG_DEBUG && console.error(`[Research] Pipeline error for session ${sessionId}:`, err.message);
     })
     .finally(() => {
       sessionRunning.delete(sessionId);
@@ -111,19 +112,19 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
     return; // Casual chat, no research needed
   }
 
-  console.log(`[Research] Topic detected: "${detection.topic}" → query: "${detection.searchQuery}" (session: ${sessionId})`);
+  LOG_DEBUG && console.log(`[Research] Topic detected: "${detection.topic}" → query: "${detection.searchQuery}" (session: ${sessionId})`);
 
   // Step 2: DDG Search
   let searchResults = [];
   try {
     searchResults = await searchWeb(detection.searchQuery, RESEARCH_MAX_DDQ_RESULTS);
   } catch (err) {
-    console.error('[Research] DDG search failed:', err.message);
+    LOG_DEBUG && console.error('[Research] DDG search failed:', err.message);
     return;
   }
 
   if (!searchResults.length) {
-    console.log(`[Research] No DDG results for "${detection.searchQuery}"`);
+    LOG_DEBUG && console.log(`[Research] No DDG results for "${detection.searchQuery}"`);
     return;
   }
 
@@ -138,14 +139,14 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
     try {
       fetchedPages = await fetchPages(fetchUrls);
     } catch (err) {
-      console.error('[Research] Web fetch failed:', err.message);
+      LOG_DEBUG && console.error('[Research] Web fetch failed:', err.message);
     }
   }
 
   // Step 4: Extract facts using Qwen3 0.6B
   const facts = await extractFacts(detection.topic, detection.searchQuery, searchResults, fetchedPages);
   if (!facts.length) {
-    console.log(`[Research] No facts extracted for "${detection.topic}"`);
+    LOG_DEBUG && console.log(`[Research] No facts extracted for "${detection.topic}"`);
     return;
   }
 
@@ -190,7 +191,7 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
   if (topics.length > 10) topics.splice(0, topics.length - 10);
   recentResearchTopics.set(sessionId, topics);
 
-  console.log(`[Research] Stored ${storedIds.length} facts about "${detection.topic}" for session ${sessionId}`);
+  LOG_DEBUG && console.log(`[Research] Stored ${storedIds.length} facts about "${detection.topic}" for session ${sessionId}`);
 }
 
 // ── Topic Detection (Qwen3 0.6B) ──────────────────────────────
@@ -207,7 +208,7 @@ async function callLLM(messages, maxTokens = 256, temperature = 0.1, timeout = 1
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || '';
   } catch (err) {
-    console.error('[Research] Brain-2 call failed:', err.message);
+    LOG_DEBUG && console.error('[Research] Brain-2 call failed:', err.message);
     return '';
   }
 }

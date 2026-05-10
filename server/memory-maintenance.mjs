@@ -1,5 +1,7 @@
 import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, estimateImportance, extractEntityAttribute, normalize, cosineSimilarity } from './embedding-engine.mjs';
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+
 
 let maintenanceInterval = null;
 let initialTimeout = null;
@@ -8,25 +10,25 @@ const RUN_INTERVAL_MS = parseInt(process.env.MAINTENANCE_INTERVAL || '300000'); 
 
 export async function runMaintenance() {
   if (maintenanceRunning) {
-    console.log('[Maintenance] Already running - skipping');
+    LOG_DEBUG && console.log('[Maintenance] Already running - skipping');
     return { skipped: true, reason: 'already running' };
   }
   maintenanceRunning = true;
 
   try {
     if (!isEmbeddingReady()) {
-      console.log('Maintenance skipped: Brain-1 not ready');
+      LOG_DEBUG && console.log('Maintenance skipped: Brain-1 not ready');
       return { skipped: true, reason: 'embedding not ready' };
     }
 
-    console.log('[Maintenance] Starting memory maintenance...');
+    LOG_DEBUG && console.log('[Maintenance] Starting memory maintenance...');
     const start = Date.now();
     const results = { duplicates: 0, contradictions: 0, invalid: 0, categorized: 0 };
 
     const memories = getActiveWithEmbedding();
 
     if (memories.length < 2) {
-      console.log(`[Maintenance] Only ${memories.length} memories - skipping dedup/contradiction`);
+      LOG_DEBUG && console.log(`[Maintenance] Only ${memories.length} memories - skipping dedup/contradiction`);
       results.message = 'too few memories';
       return results;
     }
@@ -66,9 +68,9 @@ export async function runMaintenance() {
         updateMemoryStatus(older.id, 'invalid');
         results.duplicates++;
       }
-      if (dupes.length > 0) console.log(`[Maintenance] Marked ${dupes.length} duplicates as invalid`);
+      if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] Marked ${dupes.length} duplicates as invalid`);
     } catch (err) {
-      console.error('[Maintenance] Dedup error:', err.message);
+      LOG_DEBUG && console.error('[Maintenance] Dedup error:', err.message);
     }
 
     // 2. Contradiction detection (entity-attribute matching - directional)
@@ -93,12 +95,12 @@ export async function runMaintenance() {
           if (contradiction) {
             updateMemoryStatus(older.id, 'superseded', newer.id);
             results.contradictions++;
-            console.log(`[Maintenance] Contradiction (${contradiction}): "${older.text}" -> superseded by "${newer.text}" (${key})`);
+            LOG_DEBUG && console.log(`[Maintenance] Contradiction (${contradiction}): "${older.text}" -> superseded by "${newer.text}" (${key})`);
           }
         }
       }
     } catch (err) {
-      console.error('[Maintenance] Contradiction error:', err.message);
+      LOG_DEBUG && console.error('[Maintenance] Contradiction error:', err.message);
     }
 
     // 3. Categorize uncategorized memories
@@ -113,45 +115,45 @@ export async function runMaintenance() {
         }
       }
     } catch (err) {
-      console.error('[Maintenance] Categorization error:', err.message);
+      LOG_DEBUG && console.error('[Maintenance] Categorization error:', err.message);
   }
 
   // 3b. Category auto-correction: validate typed memories against content
   try {
     const corrected = autoCorrectCategories(memories, 25);
     results.category_corrected = corrected;
-    if (corrected > 0) console.log(`[Maintenance] Auto-corrected ${corrected} memory categories`);
+    if (corrected > 0) LOG_DEBUG && console.log(`[Maintenance] Auto-corrected ${corrected} memory categories`);
   } catch (err) {
-    console.error('[Maintenance] Category auto-correction error:', err.message);
+    LOG_DEBUG && console.error('[Maintenance] Category auto-correction error:', err.message);
   }
     // 4. Clean invalid
     try {
       const cleaned = deleteInvalid();
       results.invalid = cleaned;
     } catch (err) {
-      console.error('[Maintenance] Cleanup error:', err.message);
+      LOG_DEBUG && console.error('[Maintenance] Cleanup error:', err.message);
     }
 
     // 5. Archive stale memories (90+ days old, never recalled)
     try {
       const archived = archiveStaleMemories();
       results.archived = archived;
-      if (archived > 0) console.log(`[Maintenance] Archived ${archived} stale memories (90+ days, 0 recalls)`);
+      if (archived > 0) LOG_DEBUG && console.log(`[Maintenance] Archived ${archived} stale memories (90+ days, 0 recalls)`);
     } catch (err) {
-      console.error('[Maintenance] Archive error:', err.message);
+      LOG_DEBUG && console.error('[Maintenance] Archive error:', err.message);
     }
 
     // 6. Significance-gated consolidation: cluster related low-importance memories
     try {
       const consolidated = await consolidateMemories(memories);
       results.consolidated = consolidated;
-      if (consolidated > 0) console.log(`[Maintenance] Consolidated ${consolidated} memory clusters`);
+      if (consolidated > 0) LOG_DEBUG && console.log(`[Maintenance] Consolidated ${consolidated} memory clusters`);
     } catch (err) {
-      console.error('[Maintenance] Consolidation error:', err.message);
+      LOG_DEBUG && console.error('[Maintenance] Consolidation error:', err.message);
     }
 
     const elapsed = Date.now() - start;
-    console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
+    LOG_DEBUG && console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
     return results;
   } finally {
     maintenanceRunning = false;
@@ -189,7 +191,7 @@ function autoCorrectCategories(memories, maxCorrections = 25) {
     for (const rule of rules) {
       if (rule.pattern.test(m.text) && rule.wrongTypes.includes(m.type)) {
         updateMemoryType(m.id, rule.correctType);
-        console.log(`[Maintenance] Category corrected: #${m.id} "${m.type}" -> "${rule.correctType}" (text: "${m.text.substring(0, 60)}...")`);
+        LOG_DEBUG && console.log(`[Maintenance] Category corrected: #${m.id} "${m.type}" -> "${rule.correctType}" (text: "${m.text.substring(0, 60)}...")`);
         corrected++;
         break; // Only apply first matching rule per memory
       }
@@ -356,9 +358,9 @@ async function consolidateMemories(memories) {
         }
 
         consolidatedCount++;
-        console.log(`[Maintenance] Consolidated ${cluster.length} memories about "${entity}" -> #${newId} (importance: ${newImportance})`);
+        LOG_DEBUG && console.log(`[Maintenance] Consolidated ${cluster.length} memories about "${entity}" -> #${newId} (importance: ${newImportance})`);
       } catch (err) {
-        console.error('[Maintenance] Cluster consolidation error:', err.message);
+        LOG_DEBUG && console.error('[Maintenance] Cluster consolidation error:', err.message);
       }
     }
   }
@@ -372,14 +374,14 @@ export function startMaintenanceCron(intervalMs = RUN_INTERVAL_MS) {
 
   // Run first maintenance after 30s (give server time to load)
   initialTimeout = setTimeout(() => {
-    runMaintenance().catch(err => console.error('[Maintenance] Initial run error:', err.message));
+    runMaintenance().catch(err => LOG_DEBUG && console.error('[Maintenance] Initial run error:', err.message));
   }, 30000);
 
   maintenanceInterval = setInterval(() => {
-    runMaintenance().catch(err => console.error('[Maintenance] Cron run error:', err.message));
+    runMaintenance().catch(err => LOG_DEBUG && console.error('[Maintenance] Cron run error:', err.message));
   }, intervalMs);
 
-  console.log(`[Maintenance] Cron started: every ${Math.round(intervalMs / 1000)}s`);
+  LOG_DEBUG && console.log(`[Maintenance] Cron started: every ${Math.round(intervalMs / 1000)}s`);
 }
 
 export function stopMaintenanceCron() {

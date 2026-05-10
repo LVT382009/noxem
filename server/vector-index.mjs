@@ -6,6 +6,7 @@ let vecAvailable = false;
 let vecTableReady = false;
 
 const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '256');
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 export async function initVectorIndex(db) {
   try {
@@ -14,11 +15,11 @@ export async function initVectorIndex(db) {
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memory_vecs USING vec0(embedding float[${EMBED_DIM}] distance_metric=cosine)`);
     vecAvailable = true;
     vecTableReady = true;
-    if (process.env.LOG_LEVEL === 'debug') console.log(`[VectorIndex] sqlite-vec loaded — native KNN search enabled (${EMBED_DIM}d, cosine)`);
+    if (LOG_DEBUG) console.log(`[VectorIndex] sqlite-vec loaded — native KNN search enabled (${EMBED_DIM}d, cosine)`);
   } catch (err) {
     vecAvailable = false;
-    if (process.env.LOG_LEVEL === 'debug') console.log(`[VectorIndex] sqlite-vec unavailable — JS cosine fallback active (install sqlite-vec for native KNN)`);
-    if (process.env.LOG_LEVEL === 'debug') console.error(`[VectorIndex] Load error: ${err.message}`);
+    if (LOG_DEBUG) console.log(`[VectorIndex] sqlite-vec unavailable — JS cosine fallback active (install sqlite-vec for native KNN)`);
+    if (LOG_DEBUG) console.error(`[VectorIndex] Load error: ${err.message}`);
   }
 }
 
