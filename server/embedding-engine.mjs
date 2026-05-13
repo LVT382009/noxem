@@ -1,3 +1,4 @@
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 // Prefer IPv4 for HuggingFace CDN downloads — WSL IPv6 can cause ConnectTimeoutError
 if (!process.env.NODE_OPTIONS?.includes('ipv4first')) {
   process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --dns-result-order=ipv4first`.trim();
@@ -90,7 +91,6 @@ if (HF_MIRROR) {
   LOG_DEBUG && console.log(`Component download: using mirror ${HF_MIRROR}`);
 }
 const MAX_RETRIES = parseInt(process.env.EMBEDDING_LOAD_RETRIES || '2');
-const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 const LOAD_TIMEOUT_MS = parseInt(process.env.EMBEDDING_LOAD_TIMEOUT || '300000'); // 5 min default
 const SIMILARITY_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
