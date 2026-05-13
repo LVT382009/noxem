@@ -9,6 +9,29 @@ if ! command -v node &>/dev/null && [ -d "$HOME/.local/bin" ]; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
+# ── Check: noxem must be set as memory provider ──
+HERMES_CONFIG="${HOME}/.hermes/config.yaml"
+if [ -f "$HERMES_CONFIG" ]; then
+    # Parse memory.provider from YAML (handles "memory.provider: noxem" or nested "memory:\n  provider: noxem")
+    PROVIDER=$(grep -E '^\s*provider:' "$HERMES_CONFIG" | head -1 | sed 's/.*provider:\s*//' | tr -d ' "'"')
+    if [ "$PROVIDER" != "noxem" ]; then
+        echo ""
+        echo "Error: Noxem is not set as your memory provider."
+        echo ""
+        echo "Please run:  hermes memory setup"
+        echo "And select 'noxem' as your memory provider."
+        echo ""
+        exit 1
+    fi
+else
+    echo ""
+    echo "Error: Hermes config not found at $HERMES_CONFIG"
+    echo ""
+    echo "Please run:  hermes memory setup"
+    echo "And select 'noxem' as your memory provider."
+    echo ""
+    exit 1
+fi
 # Config
 MEMORY_PORT=${MEMORY_PORT:-3001}
 LLM_PORT=${LLM_PORT:-${GEMMA4_PORT:-8000}}

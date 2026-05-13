@@ -143,12 +143,11 @@ cp "$APP_DIR/hooks/"*.mjs "$HERMES_HOOKS_DIR/" 2>/dev/null || true
 chmod +x "$HERMES_HOOKS_DIR/"*.mjs 2>/dev/null || true
 echo "  Done"
 
-# ── 5. Configure memory provider ──
-echo "[5/7] Configuring noxem as memory provider..."
-HERMES_CONFIG="${HOME}/.hermes/config.yaml"
+# ── 5. Configure noxem server settings ──
+echo "[5/7] Writing Noxem server config..."
 NOXEM_CONFIG="${HOME}/.hermes/noxem.json"
 
-# Write noxem server config
+# Write noxem server config (port URLs only — NOT the hermes memory provider setting)
 cat > "$NOXEM_CONFIG" << NOXEMEOF
 {
   "memory_server": "http://127.0.0.1:${MEMORY_PORT:-3001}",
@@ -156,22 +155,11 @@ cat > "$NOXEM_CONFIG" << NOXEMEOF
   "embedding_enabled": "true"
 }
 NOXEMEOF
-echo "  Wrote $NOXEM_CONFIG"
+echo " Wrote $NOXEM_CONFIG"
 
-# Use hermes config set to safely update config.yaml
-# (pyyaml.dump destroys the config structure due to multi-line strings)
-# Hermes reads memory.provider from top-level, NOT context.memory.provider
-if command -v hermes &>/dev/null; then
-  hermes config set memory.provider noxem 2>/dev/null && \
-    echo "  Set memory.provider = noxem (via hermes config set)" || \
-    echo "  Run manually: hermes config set memory.provider noxem"
-
-  # Also enable noxem in the plugins allow-list
-  hermes config set plugins.enabled '[noxem]' 2>/dev/null || true
-else
-  echo "  Run manually: hermes config set memory.provider noxem"
-  echo "  Run manually: hermes config set plugins.enabled '[noxem]'"
-fi
+# NOTE: We do NOT auto-set memory.provider in config.yaml.
+# The user must run "hermes memory setup" and choose "noxem" themselves.
+# hermes-noxem launcher will check and refuse to run if not configured.
 
 # ── 6. Server deployment ──
 echo "[6/7] Deploying server to persistent location..."
@@ -235,10 +223,14 @@ echo "========================================"
 echo " Installation Complete!"
 echo "========================================"
 echo ""
-echo "USE:"
-echo " 1. Enable provider: hermes memory setup -> Select 'noxem'"
-echo " 2. Run Hermes: hermes chat"
+echo "NEXT STEPS:"
+echo " 1. Set memory provider: hermes memory setup"
+echo "    -> Select 'noxem' when prompted"
 echo ""
-echo "Noxem auto-starts both memory + Brain 2 servers when Hermes runs."
+echo " 2. Start with Noxem: hermes-noxem"
+echo "    Or start normally: hermes chat"
+echo ""
+echo "NOTE: hermes-noxem will check that noxem is your"
+echo "active memory provider before starting servers."
 echo "First run downloads models (~2-3GB total)."
 echo "========================================"

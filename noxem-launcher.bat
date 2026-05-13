@@ -4,6 +4,32 @@ REM Windows batch file counterpart to noxem-launcher.sh
 
 setlocal enabledelayedexpansion
 
+REM -- Check: noxem must be set as memory provider --
+set HERMES_CONFIG=%USERPROFILE%\.hermes\config.yaml
+if not exist "%HERMES_CONFIG%" (
+    echo.
+    echo Error: Hermes config not found at %HERMES_CONFIG%
+    echo.
+    echo Please run:  hermes memory setup
+    echo And select 'noxem' as your memory provider.
+    echo.
+    exit /b 1
+)
+findstr /C:"provider: noxem" "%HERMES_CONFIG%" >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    findstr /C:"memory.provider: noxem" "%HERMES_CONFIG%" >nul 2>&1
+    if %ERRORLEVEL% neq 0 (
+        echo.
+        echo Error: Noxem is not set as your memory provider.
+        echo.
+        echo Please run:  hermes memory setup
+        echo And select 'noxem' as your memory provider.
+        echo.
+        exit /b 1
+    )
+)
+REM Provider check passed
+
 REM Config
 if not defined MEMORY_PORT set MEMORY_PORT=3001
 if not defined GEMMA4_PORT set GEMMA4_PORT=8000
