@@ -13,7 +13,7 @@ fi
 HERMES_CONFIG="${HOME}/.hermes/config.yaml"
 if [ -f "$HERMES_CONFIG" ]; then
     # Parse memory.provider from YAML (handles "memory.provider: noxem" or nested "memory:\n  provider: noxem")
-    PROVIDER=$(grep -E '^\s*provider:' "$HERMES_CONFIG" | head -1 | sed 's/.*provider:\s*//' | tr -d ' "'"')
+    PROVIDER=$(grep -E '^\s*provider:' "$HERMES_CONFIG" | head -1 | sed 's/.*provider:\s*//' | sed "s/[\"']//g")
     if [ "$PROVIDER" != "noxem" ]; then
         echo ""
         echo "Error: Noxem is not set as your memory provider."
