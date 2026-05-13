@@ -2,6 +2,8 @@
 // Qwen3 0.6B — OpenAI-compatible API server using Transformers.js
 // Provides /v1/chat/completions endpoint for the Noxem advisor.
 
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+
 // Prefer IPv4 for HuggingFace CDN downloads — WSL IPv6 can cause ConnectTimeoutError
 // Must be set before any fetch() calls (i.e., before transformers.js imports)
 if (!process.env.NODE_OPTIONS?.includes('ipv4first')) {
@@ -246,7 +248,7 @@ async function loadModel() {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         if (attempt > 0) {
-          console.log(`Brain-2 load retry ${attempt}/${MAX_RETRIES}...`);
+          LOG_DEBUG && console.log(`Brain-2 load retry ${attempt}/${MAX_RETRIES}...`);
           // Only clear cache on second+ attempt if explicitly requested
           // Auto-detect corrupted cache: if previous error was "fetch failed" or "tokenizer_class",
           // the cache is corrupt — clear it regardless of GEMMA4_CLEAR_CACHE_ON_RETRY setting
@@ -273,7 +275,7 @@ async function loadModel() {
       }
           }
 
-        console.log(`Loading Brain-2 AI...`);
+        LOG_DEBUG && console.log(`Loading Brain-2 AI...`);
         const start = Date.now();
 
         const loadOpts = {
@@ -291,7 +293,7 @@ async function loadModel() {
       generator = await pipeline('text-generation', MODEL_ID, loadOpts);
 
         const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-        console.log(`Brain-2 ready in ${elapsed}s`);
+        LOG_DEBUG && console.log(`Brain-2 ready in ${elapsed}s`);
         ready = true;
         loadError = null;
         return;
@@ -378,7 +380,7 @@ app.post('/v1/chat/completions', async (req, res) => {
 
 // ── Start ──
 const server = app.listen(PORT, '127.0.0.1', async () => {
-  console.log(`Brain-2 API at http://127.0.0.1:${PORT}/v1`);
+  LOG_DEBUG && console.log(`Brain-2 API at http://127.0.0.1:${PORT}/v1`);
   loadModel().catch(err => console.error('Model load failed:', err.message));
 });
 
@@ -388,7 +390,7 @@ function shutdown(signal) {
   if (errorLogInterval) clearInterval(errorLogInterval);
   server.close(() => {
     generator = null;
-    console.log('Brain-2 stopped.');
+    LOG_DEBUG && console.log('Brain-2 stopped.');
     process.exit(0);
   });
   setTimeout(() => process.exit(1), 8000);

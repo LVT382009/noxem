@@ -21,10 +21,16 @@ import subprocess
 import time
 import threading
 import urllib.parse
+import sys
+import warnings
+import atexit
 from collections import deque
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError
+
+# Suppress huggingface_hub deprecation warning from vendored packages (e.g., faster_whisper)
+warnings.filterwarnings('ignore', message='.*local_dir_use_symlinks.*', category=UserWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +64,13 @@ class NoxemMemoryProvider:
         self._server_url = os.environ.get("NOXEM_SERVER", MEMORY_SERVER_DEFAULT)
         self._llm_url = os.environ.get("LLM_URL", os.environ.get("GEMMA_URL", "http://127.0.0.1:8000/v1/chat/completions"))
         self._sync_thread = None
+        self._server_start_thread = None
         self._server_reachable = False
         self._sync_fail_count = 0
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
         self._server_pids = []
+        atexit.register(self.shutdown)
 
         # Try auto-starting both servers in background if memory server not reachable
         if not self._check_server_health():
@@ -73,10 +81,14 @@ class NoxemMemoryProvider:
     def _try_start_servers_async(self):
         """Start both servers (memory + LLM) in background thread, then check health."""
         def _start():
-            self._try_start_servers()
-            self._check_server_health(log_init=True)
+            try:
+                self._try_start_servers()
+                self._check_server_health(log_init=True)
+            except Exception:
+                pass  # Prevent daemon thread exception during interpreter shutdown
         t = threading.Thread(target=_start, daemon=True)
         t.start()
+        self._server_start_thread = t
 
     def _try_start_servers(self):
         """Attempt to start both the memory server and LLM server from the deployed location."""
@@ -115,7 +127,7 @@ class NoxemMemoryProvider:
                     )
                     self._server_pids.append(proc.pid)
                     logger.info(f"Noxem auto-started LLM server from {path} (PID {proc.pid})")
-                    print(f"[Noxem] Auto-starting LLM server... (PID {proc.pid})")
+                    sys.stderr.write(f"[Noxem] Auto-starting LLM server... (PID {proc.pid})\n")
                     break
                 except Exception as e:
                     logger.debug(f"Failed to auto-start LLM from {path}: {e}")
@@ -139,7 +151,7 @@ class NoxemMemoryProvider:
                     )
                     self._server_pids.append(proc.pid)
                     logger.info(f"Noxem auto-started memory server from {path} (PID {proc.pid})")
-                    print(f"[Noxem] Auto-starting memory server... (PID {proc.pid})")
+                    sys.stderr.write(f"[Noxem] Auto-starting memory server... (PID {proc.pid})\n")
                     started = True
                     break
                 except Exception as e:
@@ -221,9 +233,15 @@ class NoxemMemoryProvider:
             logger.info(f"Noxem flushed {flushed} buffered turns to memory server")
 
     def shutdown(self) -> None:
-        """Process exit cleanup. Kill auto-started server processes."""
+        """Process exit cleanup. Join daemon threads then kill auto-started server processes."""
+        if self._server_start_thread and self._server_start_thread.is_alive():
+            self._server_start_thread.join(timeout=5.0)
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=3.0)
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
         for pid in self._server_pids:
             try:
                 os.kill(pid, 15)  # SIGTERM
@@ -557,6 +575,12 @@ class NoxemMemoryProvider:
         session_id = kwargs.get("session_id", self._session_id or "")
 
         def _sync():
+            try:
+                self._sync_impl(session_id, user_content, assistant_content)
+            except Exception:
+                pass  # Prevent daemon thread exception during interpreter shutdown
+
+        def _sync_impl(session_id, user_content, assistant_content):
             data = {
                 "user_message": (user_content or "")[:2000],
                 "assistant_response": (assistant_content or "")[:4000],
