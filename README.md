@@ -14,28 +14,9 @@
 
 ---
 
-[✨ Features](#-features) · [🆕 What's New](#-whats-new) · [🚀 Quick Start](#-quick-start) · [🏗️ Architecture](#️-architecture) · [🔧 Config](#-configuration) · [📊 Benchmarks](#-benchmarks) · [🤝 Contributing](#-contributing)
+[✨ Features](#-features) · [🚀 Quick Start](#-quick-start) · [🏗️ Architecture](#️-architecture) · [🔧 Config](#-configuration) · [📊 Benchmarks](#-benchmarks) · [🤝 Contributing](#-contributing)
 
 </div>
-
----
-
-## 🆕 What's New (v2.1)
-
-Phase 1 ships major upgrades to both brains:
-
-| Feature | Brain | Description |
-|:--------|:------|:------------|
-| **Knowledge Graph** | Brain 1 | `memory_edges` table + `WITH RECURSIVE` CTE traversal for multi-hop relationship queries |
-| **Core Memory** | Brain 2 | Always-in-context key-value blocks (Letta-style). Zero-latency, agent-editable |
-| **Async Write Path** | Brain 1 | Store/sync return immediately — embedding computed in background queue |
-| **Semantic Query Cache** | Brain 1 | LRU cache keyed by query embedding hash (cosine >0.95 = hit, 5min TTL) |
-| **Citation Tracking** | Brain 2 | Auto-logs which memories influenced LLM responses, feeds back into decay |
-| **Progressive Compression** | Brain 2 | 4 levels (raw → key phrases → one-line → keywords) + `memory_raw` drill-down |
-| **Enhanced Prefetch** | Brain 1 | Entity expansion, graph neighbor traversal, core memory injection in pre-LLM hook |
-| **Graph Edge Extraction** | Brain 2 | Rule-based `EDGE_PATTERNS` on sync_turn (5 relation types) |
-| **Reflection & Summary** | Brain 2 | New memory types with dedicated Weibull decay profiles |
-| **SQLite Optimizations** | Brain 1 | Covering indexes, 64 MiB page cache, WAL tuning |
 
 ---
 
@@ -59,9 +40,6 @@ Phase 1 ships major upgrades to both brains:
 | 🎯 **Adaptive Search** | Classifies query intent, weights vector vs keyword |
 | 🌐 **MMR Diversity** | No near-identical results in search |
 | 🔗 **Provenance Graph** | Full lineage tracking through supersession history |
-| 🕸️ **Knowledge Graph** | Temporal edges + recursive CTE traversal |
-| ⚡ **Async Writes** | Store returns instantly, embedding queued in background |
-| 💨 **Query Cache** | Semantic LRU cache — near-instant repeat searches |
 
 </td>
 <td width="50%">
@@ -80,11 +58,6 @@ Phase 1 ships major upgrades to both brains:
 | 📊 **Search Feedback Loop** | Boost importance for memories that influenced responses |
 | ⏱️ **Bi-Temporal Tracking** | `valid_from` / `valid_until` timestamps |
 | 📋 **Research Hints** | Compact summaries injected — no fact dump |
-| 🧬 **Core Memory** | Always-in-context blocks, agent-editable, zero-latency |
-| 📎 **Citation Tracking** | Tracks memory influence on responses, adjusts decay |
-| 🗜️ **Progressive Compression** | 4 levels — search compressed, drill-down to raw |
-| 🔗 **Graph Extraction** | Rule-based relationship extraction on sync_turn |
-| 💭 **Reflection & Summary** | New decay-aware memory types for meta-cognition |
 
 </td>
 </tr>
@@ -129,14 +102,14 @@ When you run `hermes-noxem`, choose your mode:
 
 | Mode | Enabled | Best for |
 |:-----|:--------|:---------|
-| **Brain 1 only** | Semantic search, dedup, categorization, FTS5, knowledge graph, query cache | Low RAM, quick lookups |
-| **Brain 1 + Brain 2** | Everything + advisor, research, context recovery, core memory, citations, compression | Full sessions with research |
+| **Brain 1 only** | Semantic search, dedup, categorization, FTS5 | Low RAM, quick lookups |
+| **Brain 1 + Brain 2** | Everything + advisor, research, context recovery | Full sessions with research |
 
 Skip the prompt with flags:
 
 ```bash
-hermes-noxem --brain2    # Full mode, no prompt
-hermes-noxem --no-brain2 # Memory-only, no prompt
+hermes-noxem --brain2      # Full mode, no prompt
+hermes-noxem --no-brain2   # Memory-only, no prompt
 ```
 
 ---
@@ -144,28 +117,27 @@ hermes-noxem --no-brain2 # Memory-only, no prompt
 ## 🏗️ Architecture
 
 ```
-Hermes Agent
-│
-▼
-Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js :3001)
-                                  │
-                     ┌────────────┴────────────┐
-                     │                         │
-                Semantic Engine          Context Advisor
-                ─────────────            ────────────────
-                Vector KNN              Drift detection
-                Knowledge Graph         Context recovery
-                Dedup/categorize        Core Memory blocks
-                Query cache             Citation tracking
-                Async write queue       Progressive compression
-                Importance score        Background research
-                Prefetch hook           Graph edge extraction
-                     │                         │
-                     └────────────┬────────────┘
-                                  │
-                             SQLite DB
-                         (FTS5 + Vectors +
-                          Graph + Core + Raw)
+  Hermes Agent
+       │
+       ▼
+  Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js :3001)
+       │                              │
+       │                    ┌─────────┴─────────┐
+       │                    │                   │
+       │              Semantic Engine    Context Advisor
+       │              ─────────────    ────────────────
+       │              Vector KNN       Drift detection
+       │              Dedup/categorize Context recovery
+       │              Importance score Background research
+       │                    │                   │
+       │                    └─────────┬─────────┘
+       │                              │
+       │                     SQLite DB
+       │                  (FTS5 + Vectors)
+       │
+       └── Tools: memory_search · memory_store ·
+                  memory_supersede · memory_lineage ·
+                  memory_contradiction_check · memory_feedback
 ```
 
 ---
@@ -173,29 +145,24 @@ Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js :3001)
 ## 🔄 Memory Lifecycle
 
 ```
-Store ──► Enrich ──► Categorize ──► Extract Entity ──► Score Importance
-  │          │          │               │                  │
-  ▼          ▼          ▼               ▼                  ▼
-SQLite   Context   Auto-tag       Entity+attr        0.1 – 1.0
-+ FTS5   prefix    (14 types)      pairs             (type-based)
-  │
-  ├──► Async Embed Queue (background) ──► Vector Index
-  │
-  ├──► Graph Edge Extraction (rule-based) ──► memory_edges
-  │
-  ▼
-┌─────────────────────────────────────────────────────────┐
-│                 Background Maintenance (every 5 min)    │
-│                                                         │
-│  Dedup ──► Contradict ──► Consolidate ──► Compress ──► Clean/Auto-correct │
-└─────────────────────────────────────────────────────────┘
-  │
-  ▼
-Search ──► Cache hit? ──► Hybrid (KNN + FTS5) ──► RRF ──► MMR ──► Score
-              │              │                                         │
-              ▼              ▼                                         ▼
-         Near-instant    Graph expand                            Feedback:
-         response        Core blocks inject                  +0.03 importance
+  Store ──► Enrich ──► Categorize ──► Extract Entity ──► Score Importance
+    │          │           │                │                  │
+    ▼          ▼           ▼                ▼                  ▼
+  SQLite    Context     Auto-tag      Entity+attr       0.1 – 1.0
+  + FTS5    prefix      (12 types)    pairs              (type-based)
+    │
+    ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  Background Maintenance (every 5 min)                   │
+  │                                                         │
+  │  Dedup ──► Contradict ──► Consolidate ──► Clean/Auto-correct │
+  └─────────────────────────────────────────────────────────┘
+    │
+    ▼
+  Search ──► Hybrid (KNN + FTS5) ──► RRF merge ──► MMR rerank ──► Score
+    │
+    ▼
+  Feedback: recalled memories get importance boost (+0.03)
 ```
 
 ---
@@ -203,14 +170,14 @@ Search ──► Cache hit? ──► Hybrid (KNN + FTS5) ──► RRF ──�
 ## ⌨️ Commands
 
 ```bash
-hermes-noxem              # Launch with interactive brain selection
-hermes-noxem --brain2     # Launch full mode (no prompt)
-hermes-noxem --no-brain2  # Launch memory-only (no prompt)
+hermes-noxem                 # Launch with interactive brain selection
+hermes-noxem --brain2        # Launch full mode (no prompt)
+hermes-noxem --no-brain2     # Launch memory-only (no prompt)
 
-hermes noxem status       # Server health + memory stats
+hermes noxem status          # Server health + memory stats
 hermes noxem search <query>  # Search stored memories
-hermes noxem run          # Run maintenance manually
-hermes noxem config       # Show current configuration
+hermes noxem run             # Run maintenance manually
+hermes noxem config          # Show current configuration
 ```
 
 ---
@@ -245,7 +212,7 @@ hermes noxem config       # Show current configuration
 | `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
 | `HF_FETCH_TIMEOUT` | `180000` | Component download timeout (ms) |
 | `HF_FETCH_RETRIES` | `3` | Retry count for failed component downloads |
-| `HF_ENDPOINT` | *(empty)* | Mirror URL for component downloads |
+| `HF_ENDPOINT` | _(empty)_ | Mirror URL for component downloads (auto-fallback on retry) |
 
 <details>
 <summary>📋 Full env variable list</summary>
@@ -262,9 +229,9 @@ hermes noxem config       # Show current configuration
 | `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear engine cache on retry |
 | `LLM_LOAD_RETRIES` | `2` | Component download retry count |
 | `MEMORY_MAX_RESULTS` | `5` | Default search result limit |
-| `MEMORY_API_KEY` | *(empty)* | Bearer token for API auth |
+| `MEMORY_API_KEY` | _(empty)_ | Bearer token for API auth |
 | `CORS_ORIGIN` | `http://localhost:*` | CORS allowed origins |
-| `LOG_LEVEL` | `info` | Log verbosity (`quiet` = suppress request logs) |
+| `LOG_LEVEL` | `info` | Log verbosity (`silent` to suppress) |
 
 </details>
 
@@ -276,18 +243,15 @@ Tested on WSL2 Ubuntu, Node.js 22. Run your own: `cd server && bash benchmark.sh
 
 | Operation | Latency | Notes |
 |:----------|:--------|:------|
-| Store (single) | ~23 ms | Async — returns instantly, embedding queued |
+| Store (single) | ~23 ms | Auto-categorization + entity extraction + FTS5 |
 | Store (batch 50) | ~0.6 ms each | Bulk insert, single transaction |
-| Search (hybrid) | ~25 ms | Vector KNN + FTS5 via RRF (cache hit: <1 ms) |
+| Search (hybrid) | ~25 ms | Vector KNN + FTS5 via RRF |
 | Search (FTS) | ~26 ms | Full-text with Weibull scoring |
-| Sync turn | ~20 ms | Store user + assistant + edge extraction |
-| Graph traverse | ~5 ms | WITH RECURSIVE CTE, max depth 3 |
-| Core memory get | ~1 ms | SQLite lookup, zero-latency |
-| Compression (single) | ~2 ms | Rule-based, 3 compression levels |
+| Sync turn | ~20 ms | Store user + assistant messages |
 | Maintenance cycle | ~18 ms | Dedup + contradiction + consolidation + archive |
 
 > [!NOTE]
-> With Brain 1 enabled, hybrid search adds ~5-10 ms for vector KNN lookup. Brain 1 loads in the background without blocking server startup. Query cache makes repeat searches near-instant.
+> With Brain 1 enabled, hybrid search adds ~5-10 ms for vector KNN lookup. Brain 1 loads in the background without blocking server startup.
 
 ---
 
