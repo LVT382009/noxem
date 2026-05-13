@@ -118,7 +118,7 @@ check_port() {
     return 0
   else
     # Last resort: try a quick Node.js TCP connect
-        node -e "var c=require('net').createConnection($port,'127.0.0.1');c.on('connect',function(){process.exit(0)});c.on('error',function(){process.exit(1)});c.setTimeout(2000,function(){process.exit(1)})" 2>/dev/null
+        node -e 'var p=process.argv[1];var c=require("net").createConnection(p,"127.0.0.1");c.on("connect",function(){process.exit(0)});c.on("error",function(){process.exit(1)});c.setTimeout(2e3,function(){process.exit(1)})' "$port" 2>/dev/null
   fi
 }
 
