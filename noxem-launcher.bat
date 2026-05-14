@@ -15,10 +15,8 @@ if not exist "%HERMES_CONFIG%" (
     echo.
     exit /b 1
 )
-findstr /C:"provider: noxem" "%HERMES_CONFIG%" >nul 2>&1
+findstr /R /C:"provider:.*noxem" "%HERMES_CONFIG%" >nul 2>&1
 if %ERRORLEVEL% neq 0 (
-    findstr /C:"memory.provider: noxem" "%HERMES_CONFIG%" >nul 2>&1
-    if %ERRORLEVEL% neq 0 (
         echo.
         echo Error: Noxem is not set as your memory provider.
         echo.
@@ -27,7 +25,6 @@ if %ERRORLEVEL% neq 0 (
         echo.
         exit /b 1
     )
-)
 REM Provider check passed
 
 REM Config
