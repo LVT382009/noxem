@@ -76,7 +76,6 @@
 git clone https://github.com/LVT382009/noxem.git
 cd noxem
 bash install.sh
-hermes-noxem
 ```
 
 ### macOS
@@ -88,26 +87,30 @@ brew install node
 git clone https://github.com/LVT382009/noxem.git
 cd noxem
 bash install.sh
-hermes-noxem
 ```
 
 > [!NOTE]
 > First run downloads Brain 1 (~300 MB).
 
-### Brain Mode
+## ‍ How to Use
 
-When you run `hermes-noxem`, choose your mode:
+```bash
+hermes-noxem                              # Launch with interactive brain selection
+hermes-noxem --brain2                     # Launch full mode (no prompt)
+hermes-noxem --no-brain2                  # Launch memory-only (no prompt)
+hermes-noxem --resume <session_id>        # Continue a session with Noxem
+```
 
 | Mode | Enabled | Best for |
 |:-----|:--------|:---------|
 | **Brain 1 only** | Semantic search, dedup, categorization, FTS5 | Low RAM, quick lookups |
 | **Brain 1 + Brain 2** | Everything + advisor, research, context recovery | Full sessions with research |
 
-Skip the prompt with flags:
-
 ```bash
-hermes-noxem --brain2     # Full mode, no prompt
-hermes-noxem --no-brain2  # Memory-only, no prompt
+hermes noxem status                       # Server health + memory stats
+hermes noxem search <query>               # Search stored memories
+hermes noxem run                          # Run maintenance manually
+hermes noxem config                       # Show current configuration
 ```
 
 ### Using Brain 2 as an OpenAI API
@@ -142,7 +145,7 @@ Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js :3001)
 │                               │
 │                    ┌──────────┴──────────┐
 │                    │                     │
-│              Semantic Engine        QwenProxy Adapter (:8000)
+│              Semantic Engine        Brain 2 Adapter (:8000)
 │              ─────────────         ─────────────────────────
 │              Vector KNN             SSE ↔ JSON bridge
 │              Dedup/categorize       Model name normalization
@@ -150,7 +153,7 @@ Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js :3001)
 │                    │                     │
 │                    └──────────┬──────────┘
 │                               │
-│                          QwenProxy (:3000)
+│                          Brain 2 Server (:3000)
 │                          ─────────────────
 │                          Playwright → chat.qwen.ai
 │                          Anti-bot header extraction
@@ -238,10 +241,10 @@ hermes noxem config          # Show current configuration
 | `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
 | `HF_FETCH_TIMEOUT` | `180000` | Component download timeout (ms) |
 | `HF_FETCH_RETRIES` | `3` | Retry count for failed component downloads |
-| `QWENPROXY_PORT` | `3000` | QwenProxy server port |
-| `QWENPROXY_URL` | `http://127.0.0.1:3000` | QwenProxy upstream URL |
+| `QWENPROXY_PORT` | `3000` | Brain 2 server port |
+| `QWENPROXY_URL` | `http://127.0.0.1:3000` | Brain 2 upstream URL |
 | `LLM_MODEL` | `qwen3.6-plus-no-thinking` | Model for Brain 2 calls |
-| `LLM_TIMEOUT` | `120000` | QwenProxy request timeout (ms) |
+| `LLM_TIMEOUT` | `120000` | Brain 2 request timeout (ms) |
 
 <details>
 <summary>📋 Full env variable list</summary>
@@ -256,7 +259,7 @@ hermes noxem config          # Show current configuration
 | `EMBEDDING_LOAD_RETRIES` | `2` | Brain 1 engine retry count |
 | `EMBEDDING_LOAD_TIMEOUT` | `300000` | Brain 1 engine load timeout (ms) |
 | `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear engine cache on retry |
-| `LLM_URL` / `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | LLM API endpoint (adapter proxies to QwenProxy) |
+| `LLM_URL` / `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | LLM API endpoint (adapter proxies to Brain 2) |
 | `LLM_PORT` / `GEMMA4_PORT` | `8000` | Adapter listening port |
 | `MEMORY_MAX_RESULTS` | `5` | Default search result limit |
 | `MEMORY_API_KEY` | _(empty)_ | Bearer token for API auth |
