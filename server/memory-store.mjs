@@ -143,51 +143,63 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(e
   `) } catch {}
 
 // Session-based conversation storage: sessions + session_messages tables
+let sessionsTableReady = false;
 try { db.exec(`
-  CREATE TABLE IF NOT EXISTS sessions (
-    session_id TEXT PRIMARY KEY,
-    project_path TEXT NOT NULL DEFAULT '',
-    session_title TEXT NOT NULL DEFAULT '',
-    session_summary TEXT NOT NULL DEFAULT '{}',
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','idle','completed','archived')),
-    model_name TEXT NOT NULL DEFAULT '',
-    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
-    last_active_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
-    completed_at INTEGER,
-    total_tokens INTEGER NOT NULL DEFAULT 0,
-    metadata TEXT NOT NULL DEFAULT '{}'
-  );
-  CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status, last_active_at);
-  CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(last_active_at DESC);
-`) } catch {}
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id TEXT PRIMARY KEY,
+  project_path TEXT NOT NULL DEFAULT '',
+  session_title TEXT NOT NULL DEFAULT '',
+  session_summary TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','idle','completed','archived')),
+  model_name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  last_active_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  completed_at INTEGER,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  metadata TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status, last_active_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(last_active_at DESC);
+`);
+  sessionsTableReady = true;
+} catch (e) { console.warn('[Schema] sessions table creation failed:', e.message); }
 
+let sessionMessagesReady = false;
 try { db.exec(`
-  CREATE TABLE IF NOT EXISTS session_messages (
-    message_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
-    content_type TEXT NOT NULL DEFAULT 'text',
-    content_text TEXT,
-    tool_calls TEXT,
-    tool_call_id TEXT,
-    tool_name TEXT,
-    timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
-    sequence_num INTEGER NOT NULL DEFAULT 0,
-    token_count INTEGER
-  );
-  CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session_id, sequence_num);
-  CREATE INDEX IF NOT EXISTS idx_session_messages_timestamp ON session_messages(timestamp DESC);
-  CREATE INDEX IF NOT EXISTS idx_session_messages_tool ON session_messages(tool_name) WHERE tool_name IS NOT NULL;
-`) } catch {}
+CREATE TABLE IF NOT EXISTS session_messages (
+  message_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
+  content_type TEXT NOT NULL DEFAULT 'text',
+  content_text TEXT,
+  tool_calls TEXT,
+  tool_call_id TEXT,
+  tool_name TEXT,
+  timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+  sequence_num INTEGER NOT NULL DEFAULT 0,
+  token_count INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session_id, sequence_num);
+CREATE INDEX IF NOT EXISTS idx_session_messages_timestamp ON session_messages(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_session_messages_tool ON session_messages(tool_name) WHERE tool_name IS NOT NULL;
+`);
+  sessionMessagesReady = true;
+} catch (e) { console.warn('[Schema] session_messages table creation failed:', e.message); }
 
 // FTS5 index on session_messages.content_text for cross-session search
-try { db.exec(`
+let ftsReady = false;
+if (sessionMessagesReady) {
+  try { db.exec(`
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
-  USING fts5(content_text, tokenize='porter unicode61 remove_diacritics 1 tokenchars "_-.@"', content='session_messages', content_rowid='rowid');
-`) } catch {}
+    USING fts5(content_text, tokenize='porter unicode61 remove_diacritics 1 tokenchars "_-.@"', content='session_messages', content_rowid='rowid');
+  `);
+    ftsReady = true;
+  } catch (e) { console.warn('[Schema] messages_fts creation failed - cross-session search disabled:', e.message); }
+}
 
 // FTS sync triggers for session_messages
-try { db.exec(`
+if (ftsReady) {
+  try { db.exec(`
   CREATE TRIGGER IF NOT EXISTS session_messages_ai AFTER INSERT ON session_messages BEGIN
     INSERT INTO messages_fts(rowid, content_text) VALUES (new.rowid, new.content_text);
   END;
@@ -198,7 +210,13 @@ try { db.exec(`
     INSERT INTO messages_fts(messages_fts, rowid, content_text) VALUES ('delete', old.rowid, old.content_text);
     INSERT INTO messages_fts(rowid, content_text) VALUES (new.rowid, new.content_text);
   END;
-`) } catch {}
+  `) } catch (e) { console.warn('[Schema] FTS triggers creation failed:', e.message); }
+}
+
+const SESSION_STORAGE_READY = sessionsTableReady && sessionMessagesReady;
+if (!SESSION_STORAGE_READY) {
+  console.warn('[Schema] Session storage tables NOT available - session conversations will NOT be saved');
+}
 
 // Initialize sqlite-vec for native KNN (optional — falls back to JS cosine)
 initVectorIndex(db).catch(() => {});
@@ -574,67 +592,89 @@ export function getSessionCitations(sessionId, limit = 20) {
 
 
 // Session prepared statements
-const upsertSession = db.prepare(`
-  INSERT INTO sessions (session_id, project_path, model_name, last_active_at)
-  VALUES (@session_id, @project_path, @model_name, @last_active_at)
-  ON CONFLICT(session_id) DO UPDATE SET
-    last_active_at = @last_active_at,
-    project_path = CASE WHEN @project_path != '' THEN @project_path ELSE sessions.project_path END,
-    model_name = CASE WHEN @model_name != '' THEN @model_name ELSE sessions.model_name END
-`);
-const getSessionById = db.prepare('SELECT * FROM sessions WHERE session_id = ?');
-const updateSessionStatus = db.prepare('UPDATE sessions SET status = @status, completed_at = @completed_at WHERE session_id = @session_id');
-const updateSessionSummary = db.prepare('UPDATE sessions SET session_summary = @session_summary WHERE session_id = @session_id');
-const updateSessionHeartbeat = db.prepare('UPDATE sessions SET last_active_at = @last_active_at WHERE session_id = @session_id AND status = \'active\'');
-const listSessionsByStatus = db.prepare('SELECT * FROM sessions WHERE status = ? ORDER BY last_active_at DESC LIMIT ?');
-const listAllSessions = db.prepare('SELECT * FROM sessions ORDER BY last_active_at DESC LIMIT ? OFFSET ?');
+// Session prepared statements (guarded by SESSION_STORAGE_READY)
+if (SESSION_STORAGE_READY) {
+  const upsertSession = db.prepare(`
+    INSERT INTO sessions (session_id, project_path, model_name, last_active_at)
+    VALUES (@session_id, @project_path, @model_name, @last_active_at)
+    ON CONFLICT(session_id) DO UPDATE SET
+      last_active_at = @last_active_at,
+      project_path = CASE WHEN @project_path != '' THEN @project_path ELSE sessions.project_path END,
+      model_name = CASE WHEN @model_name != '' THEN @model_name ELSE sessions.model_name END
+  `);
+  const getSessionById = db.prepare('SELECT * FROM sessions WHERE session_id = ?');
+  const updateSessionStatus = db.prepare('UPDATE sessions SET status = @status, completed_at = @completed_at WHERE session_id = @session_id');
+  const updateSessionSummary = db.prepare('UPDATE sessions SET session_summary = @session_summary WHERE session_id = @session_id');
+  const updateSessionHeartbeat = db.prepare('UPDATE sessions SET last_active_at = @last_active_at WHERE session_id = @session_id AND status = \'active\'');
+  const listSessionsByStatus = db.prepare('SELECT * FROM sessions WHERE status = ? ORDER BY last_active_at DESC LIMIT ?');
+  const listAllSessions = db.prepare('SELECT * FROM sessions ORDER BY last_active_at DESC LIMIT ? OFFSET ?');
 
-// Session message prepared statements
-const insertSessionMessage = db.prepare(`
-  INSERT INTO session_messages (message_id, session_id, role, content_type, content_text, tool_calls, tool_call_id, tool_name, timestamp, sequence_num, token_count)
-  VALUES (@message_id, @session_id, @role, @content_type, @content_text, @tool_calls, @tool_call_id, @tool_name, @timestamp, @sequence_num, @token_count)
-`);
-const getMessagesBySession = db.prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY sequence_num ASC LIMIT ? OFFSET ?');
-const getMessagesBySessionDesc = db.prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY sequence_num DESC LIMIT ?');
-const countMessagesBySession = db.prepare('SELECT COUNT(*) as count, MAX(timestamp) as last_msg_at, MIN(timestamp) as first_msg_at FROM session_messages WHERE session_id = ?');
-const deleteMessagesBySession = db.prepare('DELETE FROM session_messages WHERE session_id = ?');
-const getNextSequenceNum = db.prepare('SELECT COALESCE(MAX(sequence_num), 0) + 1 as next_seq FROM session_messages WHERE session_id = ?');
+  // Session message prepared statements
+  const insertSessionMessage = db.prepare(`
+    INSERT INTO session_messages (message_id, session_id, role, content_type, content_text, tool_calls, tool_call_id, tool_name, timestamp, sequence_num, token_count)
+    VALUES (@message_id, @session_id, @role, @content_type, @content_text, @tool_calls, @tool_call_id, @tool_name, @timestamp, @sequence_num, @token_count)
+  `);
+  const getMessagesBySession = db.prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY sequence_num ASC LIMIT ? OFFSET ?');
+  const getMessagesBySessionDesc = db.prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY sequence_num DESC LIMIT ?');
+  const countMessagesBySession = db.prepare('SELECT COUNT(*) as count, MAX(timestamp) as last_msg_at, MIN(timestamp) as first_msg_at FROM session_messages WHERE session_id = ?');
+  const deleteMessagesBySession = db.prepare('DELETE FROM session_messages WHERE session_id = ?');
+  const getNextSequenceNum = db.prepare('SELECT COALESCE(MAX(sequence_num), 0) + 1 as next_seq FROM session_messages WHERE session_id = ?');
 
-// Cross-session FTS search prepared statements
-const searchMessagesFts = db.prepare(`
-  SELECT m.message_id, m.session_id, m.role, m.content_type, m.content_text, m.tool_calls, m.tool_name, m.timestamp, m.sequence_num,
-    s.session_title, s.status as session_status,
-    f.rank as fts_rank
-  FROM messages_fts f
-  JOIN session_messages m ON m.rowid = f.rowid
-  JOIN sessions s ON m.session_id = s.session_id
-  WHERE messages_fts MATCH @query
-    AND (m.session_id != @exclude_session_id OR @exclude_session_id = '')
-    AND s.status != 'archived'
-  ORDER BY f.rank
-  LIMIT @limit
-`);
-const searchMessagesFtsAll = db.prepare(`
-  SELECT m.message_id, m.session_id, m.role, m.content_type, m.content_text, m.tool_calls, m.tool_name, m.timestamp, m.sequence_num,
-    s.session_title, s.status as session_status,
-    f.rank as fts_rank
-  FROM messages_fts f
-  JOIN session_messages m ON m.rowid = f.rowid
-  JOIN sessions s ON m.session_id = s.session_id
-  WHERE messages_fts MATCH @query
-    AND s.status != 'archived'
-  ORDER BY f.rank
-  LIMIT @limit
-`);
+  // Cross-session FTS search prepared statements
+  const searchMessagesFts = db.prepare(`
+    SELECT m.message_id, m.session_id, m.role, m.content_type, m.content_text, m.tool_calls, m.tool_name, m.timestamp, m.sequence_num,
+      s.session_title, s.status as session_status,
+      f.rank as fts_rank
+    FROM messages_fts f
+    JOIN session_messages m ON m.rowid = f.rowid
+    JOIN sessions s ON m.session_id = s.session_id
+    WHERE messages_fts MATCH @query
+      AND (m.session_id != @exclude_session_id OR @exclude_session_id = '')
+      AND s.status != 'archived'
+    ORDER BY f.rank
+    LIMIT @limit
+  `);
+  const searchMessagesFtsAll = db.prepare(`
+    SELECT m.message_id, m.session_id, m.role, m.content_type, m.content_text, m.tool_calls, m.tool_name, m.timestamp, m.sequence_num,
+      s.session_title, s.status as session_status,
+      f.rank as fts_rank
+    FROM messages_fts f
+    JOIN session_messages m ON m.rowid = f.rowid
+    JOIN sessions s ON m.session_id = s.session_id
+    WHERE messages_fts MATCH @query
+      AND s.status != 'archived'
+    ORDER BY f.rank
+    LIMIT @limit
+  `);
 
-// Stale session detection
-const getStaleSessions = db.prepare(`
-  SELECT session_id, last_active_at FROM sessions
-  WHERE status = 'active' AND last_active_at < (? - @threshold_ms)
-`);
-const archiveOldSessions = db.prepare(`
-  DELETE FROM sessions WHERE status = 'archived' AND completed_at < (? - @retention_ms)
-`);
+  // Stale session detection
+  const getStaleSessions = db.prepare(`
+    SELECT session_id, last_active_at FROM sessions
+    WHERE status = 'active' AND last_active_at < (? - @threshold_ms)
+  `);
+  const archiveOldSessions = db.prepare(`
+    DELETE FROM sessions WHERE status = 'archived' AND completed_at < (? - @retention_ms)
+  `);
+
+} else {
+  const upsertSession = { run: () => {} };
+  const getSessionById = { get: () => null };
+  const updateSessionStatus = { run: () => {} };
+  const updateSessionSummary = { run: () => {} };
+  const updateSessionHeartbeat = { run: () => {} };
+  const listSessionsByStatus = { all: () => [] };
+  const listAllSessions = { all: () => [] };
+  const insertSessionMessage = { run: () => {} };
+  const getMessagesBySession = { all: () => [] };
+  const getMessagesBySessionDesc = { all: () => [] };
+  const countMessagesBySession = { get: () => ({ count: 0, last_msg_at: null, first_msg_at: null }) };
+  const deleteMessagesBySession = { run: () => {} };
+  const getNextSequenceNum = { get: () => ({ next_seq: 1 }) };
+  const searchMessagesFts = { all: () => [] };
+  const searchMessagesFtsAll = { all: () => [] };
+  const getStaleSessions = { all: () => [] };
+  const archiveOldSessions = { run: () => ({ changes: 0 }) };
+}
 
 // ─── Session operation exports ──────────────────────────────────
 
