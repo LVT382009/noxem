@@ -56,6 +56,27 @@ done
 # OS detection
 OS="$(uname -s)"
 
+# Ubuntu version check — Brain 2 not supported on 26.04+
+check_ubuntu_brain2() {
+  _ubuntu_ver=$(lsb_release -rs 2>/dev/null || echo "")
+  if [ -n "$_ubuntu_ver" ]; then
+    _ubuntu_major=$(echo "$_ubuntu_ver" | cut -d. -f1)
+    if [ "$_ubuntu_major" -ge 26 ] 2>/dev/null; then
+      red "  Brain 2 currently not support this version of Ubuntu"
+      red "  please downgrade to ver 24.04 or lower"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# If --brain2 flag was passed, validate Ubuntu version
+if [ "$BRAIN2_ENABLED" = '1' ]; then
+  if ! check_ubuntu_brain2; then
+    BRAIN2_ENABLED=0
+  fi
+fi
+
 # Color helpers (must be defined before use)
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -240,7 +261,13 @@ if [ -z "$BRAIN2_ENABLED" ]; then
     echo ""
     read -rp 'Choose [1-3]: ' _brain_choice
     case "$_brain_choice" in
-      1) BRAIN2_ENABLED=1 ;;
+      1)
+      if check_ubuntu_brain2; then
+        BRAIN2_ENABLED=1
+      else
+        BRAIN2_ENABLED=0
+      fi
+      ;;
       2) BRAIN2_ENABLED=0 ;;
       3) exit 0 ;;
       *) BRAIN2_ENABLED=0 ;;
