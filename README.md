@@ -6,7 +6,7 @@
 
 *Remembers what matters. Forgets what doesn't.*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.sh.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org/)
@@ -44,7 +44,9 @@
 </td>
 <td width="50%">
 
-### :rocket: Brain 2 — Reasoning Engine (Only for user have high RAM)
+### :rocket: Brain 2 — Qwen3.6-plus Reasoning Engine
+
+*Powered by [QwenProxy](https://github.com/pedrofariasx/qwenproxy) — cloud Qwen3.6-plus via chat.qwen.ai*
 
 | | |
 |---|---|
@@ -58,13 +60,15 @@
 | 📊 **Search Feedback Loop** | Boost importance for memories that influenced responses |
 | ⏱️ **Bi-Temporal Tracking** | `valid_from` / `valid_until` timestamps |
 | 📋 **Research Hints** | Compact summaries injected — no fact dump |
+| 🔑 **Auto-Login** | QWEN_EMAIL/QWEN_PASSWORD — one-time setup |
+| 🌐 **OpenAI API Base URL** | `http://127.0.0.1:8000/v1` — use with any tool |
 
 </td>
 </tr>
-</table---
+</table>
 
 > [!TIP]
-> Run `hermes-noxem` to start. Choose **Brain 1 only** (fast, low RAM) or **Brain 1 + Brain 2** (full power). No `hermes memory setup` needed.
+> Run `hermes-noxem` to start. Choose **Brain 1 only** (fast, low RAM) or **Brain 1 + Brain 2** (full power). Brain 2 requires a free [Qwen account](https://chat.qwen.ai) — credentials saved once, auto-login after.
 
 ---
 
@@ -94,7 +98,7 @@ hermes-noxem
 ```
 
 > [!NOTE]
-> First run downloads brain components (~300 MB for Brain 1, ~2-3 GB total with Brain 2). Subsequent starts use the local cache.
+> First run downloads Brain 1 (~300 MB). Brain 2 setup is automatic — it clones [QwenProxy](https://github.com/pedrofariasx/qwenproxy), installs dependencies + Playwright, and prompts for your Qwen credentials.
 
 ### Brain Mode
 
@@ -108,36 +112,64 @@ When you run `hermes-noxem`, choose your mode:
 Skip the prompt with flags:
 
 ```bash
-hermes-noxem --brain2      # Full mode, no prompt
-hermes-noxem --no-brain2   # Memory-only, no prompt
+hermes-noxem --brain2     # Full mode, no prompt
+hermes-noxem --no-brain2  # Memory-only, no prompt
 ```
+
+### Using Brain 2 as an OpenAI API
+
+Brain 2 exposes a full OpenAI-compatible API on port 8000. Use it with any tool:
+
+```bash
+# Base URL
+http://127.0.0.1:8000/v1
+
+# Available models
+qwen3.6-plus              # With thinking/reasoning
+qwen3.6-plus-no-thinking  # Faster, no reasoning
+
+# Example
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.6-plus-no-thinking","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Both streaming and non-streaming are supported — it works as a drop-in OpenAI base URL.
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-  Hermes Agent
-       │
-       ▼
-  Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js :3001)
-       │                              │
-       │                    ┌─────────┴─────────┐
-       │                    │                   │
-       │              Semantic Engine    Context Advisor
-       │              ─────────────    ────────────────
-       │              Vector KNN       Drift detection
-       │              Dedup/categorize Context recovery
-       │              Importance score Background research
-       │                    │                   │
-       │                    └─────────┬─────────┘
-       │                              │
-       │                     SQLite DB
-       │                  (FTS5 + Vectors)
-       │
-       └── Tools: memory_search · memory_store ·
-                  memory_supersede · memory_lineage ·
-                  memory_contradiction_check · memory_feedback
+Hermes Agent
+│
+▼
+Noxem Plugin (Python) ──HTTP──► Noxem Server (Node.js :3001)
+│                               │
+│                    ┌──────────┴──────────┐
+│                    │                     │
+│              Semantic Engine        QwenProxy Adapter (:8000)
+│              ─────────────         ─────────────────────────
+│              Vector KNN             SSE ↔ JSON bridge
+│              Dedup/categorize       Model name normalization
+│              Importance score       OpenAI-compatible API
+│                    │                     │
+│                    └──────────┬──────────┘
+│                               │
+│                          QwenProxy (:3000)
+│                          ─────────────────
+│                          Playwright → chat.qwen.ai
+│                          Anti-bot header extraction
+│                          Auto-login (headless)
+│                               │
+│                          Qwen3.6-plus (cloud)
+│                               │
+│                          SQLite DB
+│                          (FTS5 + Vectors)
+│
+└── Tools: memory_search · memory_store ·
+          memory_supersede · memory_lineage ·
+          memory_contradiction_check · memory_feedback
 ```
 
 ---
@@ -145,24 +177,24 @@ hermes-noxem --no-brain2   # Memory-only, no prompt
 ## 🔄 Memory Lifecycle
 
 ```
-  Store ──► Enrich ──► Categorize ──► Extract Entity ──► Score Importance
-    │          │           │                │                  │
-    ▼          ▼           ▼                ▼                  ▼
-  SQLite    Context     Auto-tag      Entity+attr       0.1 – 1.0
-  + FTS5    prefix      (12 types)    pairs              (type-based)
-    │
-    ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │  Background Maintenance (every 5 min)                   │
-  │                                                         │
-  │  Dedup ──► Contradict ──► Consolidate ──► Clean/Auto-correct │
-  └─────────────────────────────────────────────────────────┘
-    │
-    ▼
-  Search ──► Hybrid (KNN + FTS5) ──► RRF merge ──► MMR rerank ──► Score
-    │
-    ▼
-  Feedback: recalled memories get importance boost (+0.03)
+Store ──► Enrich ──► Categorize ──► Extract Entity ──► Score Importance
+  │         │          │               │                   │
+  ▼         ▼          ▼               ▼                   ▼
+SQLite  Context    Auto-tag       Entity+attr         0.1 – 1.0
++ FTS5  prefix     (12 types)     pairs              (type-based)
+  │
+  ▼
+┌─────────────────────────────────────────────────────────┐
+│              Background Maintenance (every 5 min)       │
+│                                                         │
+│  Dedup ──► Contradict ──► Consolidate ──► Clean/Auto-correct │
+└─────────────────────────────────────────────────────────┘
+  │
+  ▼
+Search ──► Hybrid (KNN + FTS5) ──► RRF merge ──► MMR rerank ──► Score
+  │
+  ▼
+Feedback: recalled memories get importance boost (+0.03)
 ```
 
 ---
@@ -212,7 +244,10 @@ hermes noxem config          # Show current configuration
 | `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
 | `HF_FETCH_TIMEOUT` | `180000` | Component download timeout (ms) |
 | `HF_FETCH_RETRIES` | `3` | Retry count for failed component downloads |
-| `HF_ENDPOINT` | _(empty)_ | Mirror URL for component downloads (auto-fallback on retry) |
+| `QWENPROXY_PORT` | `3000` | QwenProxy server port |
+| `QWENPROXY_URL` | `http://127.0.0.1:3000` | QwenProxy upstream URL |
+| `LLM_MODEL` | `qwen3.6-plus-no-thinking` | Model for Brain 2 calls |
+| `LLM_TIMEOUT` | `120000` | QwenProxy request timeout (ms) |
 
 <details>
 <summary>📋 Full env variable list</summary>
@@ -227,7 +262,8 @@ hermes noxem config          # Show current configuration
 | `EMBEDDING_LOAD_RETRIES` | `2` | Brain 1 engine retry count |
 | `EMBEDDING_LOAD_TIMEOUT` | `300000` | Brain 1 engine load timeout (ms) |
 | `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear engine cache on retry |
-| `LLM_LOAD_RETRIES` | `2` | Component download retry count |
+| `LLM_URL` / `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | LLM API endpoint (adapter proxies to QwenProxy) |
+| `LLM_PORT` / `GEMMA4_PORT` | `8000` | Adapter listening port |
 | `MEMORY_MAX_RESULTS` | `5` | Default search result limit |
 | `MEMORY_API_KEY` | _(empty)_ | Bearer token for API auth |
 | `CORS_ORIGIN` | `http://localhost:*` | CORS allowed origins |
