@@ -289,7 +289,7 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
     dim " Starting QwenProxy server..."
     (cd "$QWENPROXY_DIR" && npm start) &
     QWENPROXY_PID=$!
-    wait_for_port $QWENPROXY_PORT "QwenProxy" 60
+    wait_for_port $QWENPROXY_PORT "QwenProxy" 120
 
     # Start the SSE-to-JSON adapter on the traditional LLM port
     dim " Starting QwenProxy adapter..."

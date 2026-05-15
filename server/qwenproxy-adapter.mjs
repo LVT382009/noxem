@@ -119,9 +119,9 @@ const server = createServer(async (req, res) => {
 			return res.end(JSON.stringify({ error: 'Invalid JSON' }));
 		}
 
-		// Always use no-thinking model for advisor/research calls (they don't need reasoning)
-		// But if the caller explicitly requests a different model, respect it
-		const model = reqObj.model || DEFAULT_MODEL;
+		// CRITICAL: Ignore whatever model name the caller sends (e.g., "onnx-community/Qwen3-0.6B-ONNX"
+		// from advisor-engine) — QwenProxy only accepts "qwen3.6-plus" or "qwen3.6-plus-no-thinking"
+		const model = DEFAULT_MODEL;
 		// Force stream: true for QwenProxy (it only supports SSE)
 		const proxyBody = { ...reqObj, model, stream: true };
 

@@ -129,7 +129,7 @@ set QWENPROXY_PID=0
 
 echo Waiting for QwenProxy on port %QWENPROXY_PORT%...
 set WAITED=0
-set MAX_WAIT_QP=60
+set MAX_WAIT_QP=120
 :wait_qwenproxy
 curl -s -o nul --connect-timeout 1 http://127.0.0.1:%QWENPROXY_PORT%/health >nul 2>&1
 if %ERRORLEVEL%==0 goto qwenproxy_ready
