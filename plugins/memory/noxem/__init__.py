@@ -72,6 +72,10 @@ class NoxemMemoryProvider:
         self._server_pids = []
         atexit.register(self.shutdown)
 
+        # Load noxem.json and propagate to env vars if not already set
+        # This bridges the gap: config saved by `hermes memory setup` reaches Node.js servers
+        self._load_noxem_config()
+
         # Try auto-starting both servers in background if memory server not reachable
         if not self._check_server_health():
             self._try_start_servers_async()
@@ -89,6 +93,48 @@ class NoxemMemoryProvider:
         t = threading.Thread(target=_start, daemon=True)
         t.start()
         self._server_start_thread = t
+
+    def _load_noxem_config(self):
+        """Read noxem.json and propagate saved values to env vars if not already set.
+
+        This bridges the config gap: `hermes memory setup` saves to noxem.json,
+        but Node.js server processes only read from process.env. By setting env
+        vars here, child processes (launched by the launcher or auto-start) inherit them.
+        """
+        config_path = Path(self._hermes_home).expanduser() / "noxem.json"
+        if not config_path.exists():
+            return
+        try:
+            cfg = json.loads(config_path.read_text())
+        except Exception:
+            return
+
+        env_map = {
+            "memory_server": "NOXEM_SERVER",
+            "brain2_provider": "BRAIN2_PROVIDER",
+            "llm_url": "LLM_URL",
+            "llm_model": "LLM_MODEL",
+            "llm_api_key": "LLM_API_KEY",
+            "embedding_enabled": "ENABLE_EMBEDDING",
+        }
+        for json_key, env_var in env_map.items():
+            val = cfg.get(json_key)
+            if val and env_var not in os.environ:
+                os.environ[env_var] = str(val)
+
+        # Also set GEMMA_URL/GEMMA_MODEL as legacy fallback aliases
+        if "llm_url" in cfg and "GEMMA_URL" not in os.environ:
+            os.environ["GEMMA_URL"] = str(cfg["llm_url"])
+        if "llm_model" in cfg and "GEMMA_MODEL" not in os.environ:
+            os.environ["GEMMA_MODEL"] = str(cfg["llm_model"])
+
+        # Update self._server_url if config changed it
+        if "NOXEM_SERVER" in os.environ:
+            self._server_url = os.environ["NOXEM_SERVER"]
+        if "LLM_URL" in os.environ:
+            self._llm_url = os.environ["LLM_URL"]
+
+        logger.debug(f"Noxem config loaded from {config_path}: provider={cfg.get('brain2_provider', 'qwenproxy')}")
 
     def _try_start_servers(self):
         """Attempt to start both the memory server and LLM server from the deployed location."""
@@ -262,9 +308,28 @@ class NoxemMemoryProvider:
                 "required": False,
             },
             {
+                "key": "brain2_provider",
+                "description": "Brain 2 provider: qwenproxy (cloud) or local (any OpenAI-compatible LLM)",
+                "default": "qwenproxy",
+                "choices": ["qwenproxy", "local"],
+                "required": False,
+            },
+            {
                 "key": "llm_url",
                 "description": "LLM API endpoint (for advisor + extraction)",
                 "default": "http://127.0.0.1:8000/v1/chat/completions",
+                "required": False,
+            },
+            {
+                "key": "llm_model",
+                "description": "Model name for LLM calls (ignored for QwenProxy — auto-normalized)",
+                "default": "qwen3.6-plus-no-thinking",
+                "required": False,
+            },
+            {
+                "key": "llm_api_key",
+                "description": "API key for LLM endpoint (optional, not needed for Ollama/llama.cpp)",
+                "default": "",
                 "required": False,
             },
             {
@@ -279,7 +344,15 @@ class NoxemMemoryProvider:
     def save_config(self, values: dict, hermes_home: str) -> None:
         config_path = Path(hermes_home) / "noxem.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(values, indent=2))
+        # Merge with existing config so we don't lose previously saved fields
+        existing = {}
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text())
+            except Exception:
+                pass
+        existing.update(values)
+        config_path.write_text(json.dumps(existing, indent=2))
         logger.info(f"Noxem config saved to {config_path}")
 
     # ── Tools ─────────────────────────────────────────────────

@@ -39,7 +39,7 @@ echo      Select "noxem" from the list
 echo   3. Verify: hermes noxem status
 echo.
 echo Requirements:
-echo   - Gemma 4 running on port 8000 (for advisor)
+echo   - Brain 2: QwenProxy (cloud) OR any local LLM (Ollama, LM Studio, llama.cpp)
 echo   - EmbeddingGemma 300M auto-downloads on first start
 echo.
 pause

@@ -589,7 +589,7 @@ app.get("/memory/search", async (req, res) => {
         const expandRes = await fetch(process.env.LLM_URL || process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "qwen3", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
+          body: JSON.stringify({ model: process.env.LLM_MODEL || process.env.GEMMA_MODEL || "qwen3.6-plus-no-thinking", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
           signal: AbortSignal.timeout(1500),
         });
         if (expandRes.ok) {

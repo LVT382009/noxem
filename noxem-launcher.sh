@@ -40,42 +40,40 @@ MEMORY_SERVER="$NOXEM_DIR/server/memory-server.mjs"
 ADAPTER_SERVER="$NOXEM_DIR/server/qwenproxy-adapter.mjs"
 QWENPROXY_DIR="${HOME}/qwenproxy"
 QWENPROXY_ENV="$QWENPROXY_DIR/.env"
+NOXEM_CONFIG="${HOME}/.hermes/noxem.json"
 MEMORY_PID=""
 ADAPTER_PID=""
 QWENPROXY_PID=""
 
-# Brain 2 — optional, controlled by flag or interactive prompt
-BRAIN2_ENABLED="" # unset = ask; 1 = on; 0 = off
+# Brain 2 — controlled by flag or interactive prompt
+BRAIN2_ENABLED=""   # unset = ask; 1 = on; 0 = off
+BRAIN2_PROVIDER=""  # unset = ask; qwenproxy = cloud; local = any OpenAI-compatible
+
 for _arg in "$@"; do
   case "$_arg" in
     --brain2) BRAIN2_ENABLED=1; shift ;;
     --no-brain2) BRAIN2_ENABLED=0; shift ;;
+    --qwenproxy) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=qwenproxy; shift ;;
+    --local) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=local; shift ;;
   esac
 done
 
 # OS detection
 OS="$(uname -s)"
 
-# Ubuntu version check — Brain 2 not supported on 26.04+
+# Ubuntu version check — Brain 2 QwenProxy not supported on 26.04+
 check_ubuntu_brain2() {
   _ubuntu_ver=$(lsb_release -rs 2>/dev/null || echo "")
   if [ -n "$_ubuntu_ver" ]; then
     _ubuntu_major=$(echo "$_ubuntu_ver" | cut -d. -f1)
     if [ "$_ubuntu_major" -ge 26 ] 2>/dev/null; then
-      red "  Brain 2 currently not support this version of Ubuntu"
-      red "  please downgrade to ver 24.04 or lower"
+      red " Brain 2 (QwenProxy) currently not supported on Ubuntu 26.04+"
+      red " please downgrade to ver 24.04 or lower, or use a local model instead"
       return 1
     fi
   fi
   return 0
 }
-
-# If --brain2 flag was passed, validate Ubuntu version
-if [ "$BRAIN2_ENABLED" = '1' ]; then
-  if ! check_ubuntu_brain2; then
-    BRAIN2_ENABLED=0
-  fi
-fi
 
 # Color helpers (must be defined before use)
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -88,6 +86,37 @@ if [ -z "${HF_ENDPOINT:-}" ] && grep -qi microsoft /proc/version 2>/dev/null; th
   dim " WSL detected: using hf-mirror.com for downloads"
 fi
 
+# ── Read saved config from noxem.json ─────────────────────────
+read_noxem_config() {
+  if [ -f "$NOXEM_CONFIG" ]; then
+    # Simple JSON parse with grep/sed (no jq dependency)
+    _cfg_provider=$(grep -o '"brain2_provider"[[:space:]]*:[[:space:]]*"[^"]*"' "$NOXEM_CONFIG" 2>/dev/null | head -1 | grep -o '"[^"]*"$' | tr -d '"' || echo "")
+    _cfg_llm_url=$(grep -o '"llm_url"[[:space:]]*:[[:space:]]*"[^"]*"' "$NOXEM_CONFIG" 2>/dev/null | head -1 | grep -o '"[^"]*"$' | tr -d '"' || echo "")
+    _cfg_llm_model=$(grep -o '"llm_model"[[:space:]]*:[[:space:]]*"[^"]*"' "$NOXEM_CONFIG" 2>/dev/null | head -1 | grep -o '"[^"]*"$' | tr -d '"' || echo "")
+    _cfg_llm_api_key=$(grep -o '"llm_api_key"[[:space:]]*:[[:space:]]*"[^"]*"' "$NOXEM_CONFIG" 2>/dev/null | head -1 | grep -o '"[^"]*"$' | tr -d '"' || echo "")
+    _cfg_memory_server=$(grep -o '"memory_server"[[:space:]]*:[[:space:]]*"[^"]*"' "$NOXEM_CONFIG" 2>/dev/null | head -1 | grep -o '"[^"]*"$' | tr -d '"' || echo "")
+
+    # Apply saved config to env vars (env vars take precedence if already set)
+    if [ -n "$_cfg_provider" ] && [ -z "$BRAIN2_PROVIDER" ]; then
+      BRAIN2_PROVIDER="$_cfg_provider"
+    fi
+    if [ -n "$_cfg_llm_url" ] && [ -z "${LLM_URL:-}" ]; then
+      export LLM_URL="$_cfg_llm_url"
+    fi
+    if [ -n "$_cfg_llm_model" ] && [ -z "${LLM_MODEL:-}" ]; then
+      export LLM_MODEL="$_cfg_llm_model"
+    fi
+    if [ -n "$_cfg_llm_api_key" ] && [ -z "${LLM_API_KEY:-}" ]; then
+      export LLM_API_KEY="$_cfg_llm_api_key"
+    fi
+    if [ -n "$_cfg_memory_server" ] && [ -z "${NOXEM_SERVER:-}" ]; then
+      export NOXEM_SERVER="$_cfg_memory_server"
+      # Extract port from URL for memory server
+      MEMORY_PORT=$(echo "$_cfg_memory_server" | grep -oE '[0-9]+$' || echo "$MEMORY_PORT")
+    fi
+  fi
+}
+
 # ── Prompt for Qwen credentials (email + password) ──
 prompt_qwen_credentials() {
   # Check if .env already has credentials
@@ -98,7 +127,7 @@ prompt_qwen_credentials() {
 
   echo ""
   green '╔══════════════════════════════════════════════╗'
-  green '║ DeepSeek Login Required                        ║'
+  green '║ Qwen Account Login Required                 ║'
   green '╚══════════════════════════════════════════════╝'
   echo ""
   echo "QwenProxy needs your Qwen account credentials for automated login."
@@ -123,6 +152,60 @@ QWEN_PASSWORD=${_qwen_password}
 ENVEOF
   chmod 600 "$QWENPROXY_ENV"
   green " Credentials saved to $QWENPROXY_ENV"
+}
+
+# ── Prompt for local LLM settings ──
+prompt_local_llm() {
+  echo ""
+  green '╔══════════════════════════════════════════════╗'
+  green '║ Local LLM Configuration                     ║'
+  green '╚══════════════════════════════════════════════╝'
+  echo ""
+  echo "Enter your local LLM endpoint details."
+  echo "Supported: Ollama, LM Studio, llama.cpp, any OpenAI-compatible API"
+  echo ""
+  echo " Common base URLs:"
+  echo "   Ollama:     http://localhost:11434/v1"
+  echo "   LM Studio:  http://localhost:1234/v1"
+  echo "   llama.cpp:  http://127.0.0.1:8080/v1"
+  echo ""
+
+  # Base URL
+  local _default_url="${LLM_URL:-http://localhost:11434/v1}"
+  read -rp "Base URL [${_default_url}]: " _local_url
+  _local_url="${_local_url:-$_default_url}"
+
+  # Model name
+  local _default_model="${LLM_MODEL:-}"
+  if [ -z "$_default_model" ]; then
+    # Try to detect from Ollama
+    if command -v ollama &>/dev/null; then
+      local _first_model
+      _first_model=$(ollama list 2>/dev/null | head -3 | tail -1 | awk '{print $1}' || echo "")
+      if [ -n "$_first_model" ]; then
+        _default_model="$_first_model"
+        dim " Detected Ollama model: $_default_model"
+      fi
+    fi
+  fi
+  read -rp "Model name [${_default_model:-gemma4:e4b}]: " _local_model
+  _local_model="${_local_model:-${_default_model:-gemma4:e4b}}"
+
+  # API key (optional)
+  echo ""
+  dim " API key is optional — not needed for Ollama or llama.cpp"
+  read -rp "API key (press Enter to skip): " _local_api_key
+
+  # Export for adapter and server processes
+  export LLM_URL="${_local_url}/chat/completions"
+  export LOCAL_LLM_URL="$_local_url"
+  export LLM_MODEL="$_local_model"
+  export BRAIN2_PROVIDER="local"
+  if [ -n "$_local_api_key" ]; then
+    export LLM_API_KEY="$_local_api_key"
+  fi
+
+  green " Local LLM configured: $_local_url model=$_local_model"
 }
 
 # ── Setup QwenProxy (clone + install + Playwright) ──
@@ -175,9 +258,9 @@ cleanup() {
   fi
   if [ "$BRAIN2_ENABLED" = "1" ]; then
     if [ -n "$ADAPTER_PID" ]; then
-      kill "$ADAPTER_PID" 2>/dev/null && dim " QwenProxy adapter stopping..." || true
+      kill "$ADAPTER_PID" 2>/dev/null && dim " LLM adapter stopping..." || true
     fi
-    if [ -n "$QWENPROXY_PID" ]; then
+    if [ "$BRAIN2_PROVIDER" = "qwenproxy" ] && [ -n "$QWENPROXY_PID" ]; then
       kill "$QWENPROXY_PID" 2>/dev/null && dim " QwenProxy stopping..." || true
     fi
   fi
@@ -188,7 +271,9 @@ cleanup() {
     kill -0 "$MEMORY_PID" 2>/dev/null && mem_alive=true
     if [ "$BRAIN2_ENABLED" = "1" ]; then
       kill -0 "$ADAPTER_PID" 2>/dev/null && adapter_alive=true
-      kill -0 "$QWENPROXY_PID" 2>/dev/null && qp_alive=true
+      if [ "$BRAIN2_PROVIDER" = "qwenproxy" ]; then
+        kill -0 "$QWENPROXY_PID" 2>/dev/null && qp_alive=true
+      fi
     fi
     [ "$mem_alive" = "false" ] && [ "$adapter_alive" = "false" ] && [ "$qp_alive" = "false" ] && break
     sleep 1
@@ -198,8 +283,10 @@ cleanup() {
   if [ "$BRAIN2_ENABLED" = "1" ]; then
     kill -9 "$ADAPTER_PID" 2>/dev/null || true
     wait "$ADAPTER_PID" 2>/dev/null || true
-    kill -9 "$QWENPROXY_PID" 2>/dev/null || true
-    wait "$QWENPROXY_PID" 2>/dev/null || true
+    if [ "$BRAIN2_PROVIDER" = "qwenproxy" ]; then
+      kill -9 "$QWENPROXY_PID" 2>/dev/null || true
+      wait "$QWENPROXY_PID" 2>/dev/null || true
+    fi
     dim " Brain 2 stopped"
   fi
   wait "$MEMORY_PID" 2>/dev/null || true
@@ -229,21 +316,24 @@ wait_for_port() {
   printf " Waiting for %s " "$name"
   while [ $elapsed -lt $timeout ]; do
     if check_port "$port"; then
-      green "✓"
+      green "OK"
       return 0
     fi
     printf "."
     sleep 1
     elapsed=$((elapsed + 1))
   done
-  red "✗ TIMEOUT"
+  red "TIMEOUT"
   return 1
 }
 
 # ── Start servers ──
 cd "$NOXEM_DIR"
 
-# ── Brain 2 selection ──
+# Read saved config first (env vars/cli flags take precedence)
+read_noxem_config
+
+# ── Brain 1 + Brain 2 selection ──
 if [ -z "$BRAIN2_ENABLED" ]; then
   if [ ! -t 0 ]; then
     BRAIN2_ENABLED=0
@@ -253,21 +343,13 @@ if [ -z "$BRAIN2_ENABLED" ]; then
     green '║ Noxem — Brain Selection           ║'
     green '╚═══════════════════════════════════╝'
     echo ""
-    echo 'Enable Brain 2 (Qwen3.6-plus via QwenProxy — requires separate setup) for this session?'
-    echo ""
-    echo ' [1] Yes — full memory + advisor + research + extraction'
-    echo ' [2] No — memory search only (faster startup, less RAM)'
+    echo ' [1] Brain 1 + Brain 2 — full memory + advisor + research + extraction'
+    echo ' [2] Brain 1 only — memory search only (faster startup, less RAM)'
     echo ' [3] Quit'
     echo ""
     read -rp 'Choose [1-3]: ' _brain_choice
     case "$_brain_choice" in
-      1)
-      if check_ubuntu_brain2; then
-        BRAIN2_ENABLED=1
-      else
-        BRAIN2_ENABLED=0
-      fi
-      ;;
+      1) BRAIN2_ENABLED=1 ;;
       2) BRAIN2_ENABLED=0 ;;
       3) exit 0 ;;
       *) BRAIN2_ENABLED=0 ;;
@@ -276,14 +358,70 @@ if [ -z "$BRAIN2_ENABLED" ]; then
 fi
 export BRAIN2_ENABLED
 
+# ── Brain 2 provider selection (only if Brain 2 enabled and not already set) ──
+if [ "$BRAIN2_ENABLED" = '1' ] && [ -z "$BRAIN2_PROVIDER" ]; then
+  if [ ! -t 0 ]; then
+    # Non-interactive: use saved config or default to qwenproxy
+    BRAIN2_PROVIDER="${_cfg_provider:-qwenproxy}"
+  else
+    echo ""
+    green '╔═══════════════════════════════════════╗'
+    green '║ Brain 2 — Provider Selection           ║'
+    green '╚═══════════════════════════════════════╝'
+    echo ""
+    echo ' [1] Qwen 3.6 Plus — free cloud via QwenProxy (requires Qwen account)'
+    echo ' [2] Local model — any OpenAI-compatible LLM (Ollama, LM Studio, llama.cpp...)'
+    echo ' [3] Skip Brain 2 — fall back to Brain 1 only'
+    echo ""
+    read -rp 'Choose [1-3]: ' _provider_choice
+    case "$_provider_choice" in
+      1)
+        if check_ubuntu_brain2; then
+          BRAIN2_PROVIDER=qwenproxy
+        else
+          echo ""
+          dim " QwenProxy not supported on this Ubuntu version."
+          dim " You can still use a local model instead."
+          read -rp 'Configure a local model instead? [y/N]: ' _use_local
+          if [[ "$_use_local" =~ ^[Yy]$ ]]; then
+            BRAIN2_PROVIDER=local
+            prompt_local_llm
+          else
+            BRAIN2_ENABLED=0
+            export BRAIN2_ENABLED
+          fi
+        fi
+        ;;
+      2)
+        BRAIN2_PROVIDER=local
+        prompt_local_llm
+        ;;
+      3)
+        BRAIN2_ENABLED=0
+        export BRAIN2_ENABLED
+        ;;
+      *)
+        BRAIN2_PROVIDER=qwenproxy
+        ;;
+    esac
+  fi
+fi
+export BRAIN2_PROVIDER
+
 echo ""
 if [ "$BRAIN2_ENABLED" = '1' ]; then
-  green '╔═══════════════════════════════════╗'
-  green '║ Noxem — Starting Servers          ║'
-  green '╚═══════════════════════════════════╝'
+  if [ "$BRAIN2_PROVIDER" = 'local' ]; then
+    green '╔═══════════════════════════════════╗'
+    green '║ Noxem — Starting Servers (Local)  ║'
+    green '╚═══════════════════════════════════╝'
+  else
+    green '╔═══════════════════════════════════╗'
+    green '║ Noxem — Starting Servers (Cloud)  ║'
+    green '╚═══════════════════════════════════╝'
+  fi
 else
   green '╔═══════════════════════════════════╗'
-  green '║ Noxem — Brain 1 Only             ║'
+  green '║ Noxem — Brain 1 Only              ║'
   green '╚═══════════════════════════════════╝'
 fi
 echo ""
@@ -302,47 +440,81 @@ node "$MEMORY_SERVER" &
 MEMORY_PID=$!
 wait_for_port $MEMORY_PORT "Memory server" 180
 
-# 2. Brain 2 — QwenProxy + adapter (optional)
+# 2. Brain 2 — QwenProxy + adapter, or local model adapter
 if [ "$BRAIN2_ENABLED" = '1' ]; then
-  echo "[2/2] Starting Brain 2 (QwenProxy)..."
+  if [ "$BRAIN2_PROVIDER" = 'local' ]; then
+    # ── Local LLM mode ──────────────────────────────────────
+    echo "[2/2] Starting Brain 2 (Local model)..."
 
-  # Setup QwenProxy (clone, install, Playwright, credentials)
-  if ! setup_qwenproxy; then
-    red " QwenProxy setup failed — continuing without Brain 2"
-    BRAIN2_ENABLED=0
-    export BRAIN2_ENABLED
-  else
-    # Start QwenProxy server (it auto-logs in with credentials from .env)
-  # Kill any leftover process on QwenProxy port from a previous session
-  if check_port $QWENPROXY_PORT; then
-    dim " Port $QWENPROXY_PORT in use -- killing existing process..."
-    fuser -k $QWENPROXY_PORT/tcp 2>/dev/null || true
-    # Wait for port to actually free up
-    _kill_wait=0
-    while check_port $QWENPROXY_PORT && [ $_kill_wait -lt 15 ]; do
-      fuser -k $QWENPROXY_PORT/tcp 2>/dev/null || true
-      sleep 1
-      _kill_wait=$((_kill_wait + 1))
-    done
-  fi
-  dim " Starting QwenProxy server..."
-  (cd "$QWENPROXY_DIR" && npm start >/dev/null 2>&1) &
-  QWENPROXY_PID=$!
-  wait_for_port $QWENPROXY_PORT "QwenProxy" 120
+    # Verify the local endpoint is reachable
+    dim " Checking local LLM endpoint..."
+    local_base_url="${LOCAL_LLM_URL:-${LLM_URL%\/chat\/completions}}"
+    if curl -s -o /dev/null --connect-timeout 3 "$local_base_url/models" 2>/dev/null; then
+      green " Local LLM is reachable at $local_base_url"
+    else
+      red " WARNING: Local LLM not reachable at $local_base_url"
+      dim " Make sure your LLM server is running. The adapter will proxy when it becomes available."
+    fi
 
-    # Start the SSE-to-JSON adapter on the traditional LLM port
-    dim " Starting QwenProxy adapter..."
-    export QWENPROXY_URL="http://127.0.0.1:${QWENPROXY_PORT}"
+    # Export adapter env vars
+    export QWENPROXY_URL="http://127.0.0.1:${QWENPROXY_PORT}"  # not used in local mode, but set for compat
+
+    # Start the LLM adapter in local passthrough mode
+    dim " Starting LLM adapter (local mode)..."
     node "$ADAPTER_SERVER" &
     ADAPTER_PID=$!
     wait_for_port $LLM_PORT "Adapter" 15
 
     echo ""
-    green 'Both servers ready!'
-    echo '  Memory server  → http://127.0.0.1:'$MEMORY_PORT
-    echo '  QwenProxy      → http://127.0.0.1:'$QWENPROXY_PORT
-    echo '  Adapter (LLM)  → http://127.0.0.1:'$LLM_PORT
+    green 'Both servers ready! (local mode)'
+    echo ' Memory server  -> http://127.0.0.1:'$MEMORY_PORT
+    echo ' LLM adapter    -> http://127.0.0.1:'$LLM_PORT
+    echo ' Local endpoint -> '"${LOCAL_LLM_URL:-${LLM_URL}}"
+    echo ' Model          -> '"${LLM_MODEL}"
     echo ''
+
+  else
+    # ── QwenProxy mode (cloud) ──────────────────────────────
+    echo "[2/2] Starting Brain 2 (QwenProxy)..."
+
+    # Setup QwenProxy (clone, install, Playwright, credentials)
+    if ! setup_qwenproxy; then
+      red " QwenProxy setup failed — continuing without Brain 2"
+      BRAIN2_ENABLED=0
+      export BRAIN2_ENABLED
+    else
+      # Start QwenProxy server (it auto-logs in with credentials from .env)
+      # Kill any leftover process on QwenProxy port from a previous session
+      if check_port $QWENPROXY_PORT; then
+        dim " Port $QWENPROXY_PORT in use -- killing existing process..."
+        fuser -k $QWENPROXY_PORT/tcp 2>/dev/null || true
+        # Wait for port to actually free up
+        _kill_wait=0
+        while check_port $QWENPROXY_PORT && [ $_kill_wait -lt 15 ]; do
+          fuser -k $QWENPROXY_PORT/tcp 2>/dev/null || true
+          sleep 1
+          _kill_wait=$((_kill_wait + 1))
+        done
+      fi
+      dim " Starting QwenProxy server..."
+      (cd "$QWENPROXY_DIR" && npm start >/dev/null 2>&1) &
+      QWENPROXY_PID=$!
+      wait_for_port $QWENPROXY_PORT "QwenProxy" 120
+
+      # Start the LLM adapter in QwenProxy mode
+      dim " Starting LLM adapter (QwenProxy mode)..."
+      export QWENPROXY_URL="http://127.0.0.1:${QWENPROXY_PORT}"
+      node "$ADAPTER_SERVER" &
+      ADAPTER_PID=$!
+      wait_for_port $LLM_PORT "Adapter" 15
+
+      echo ""
+      green 'Both servers ready! (QwenProxy/cloud mode)'
+      echo ' Memory server  -> http://127.0.0.1:'$MEMORY_PORT
+      echo ' QwenProxy      -> http://127.0.0.1:'$QWENPROXY_PORT
+      echo ' LLM adapter    -> http://127.0.0.1:'$LLM_PORT
+      echo ''
+    fi
   fi
 else
   echo "[2/2] Brain 2 — skipped"
@@ -365,7 +537,11 @@ fi
 
 echo ""
 if [ "$BRAIN2_ENABLED" = "1" ]; then
-  green "Hermes session ended. (Both brains were active)"
+  if [ "$BRAIN2_PROVIDER" = "local" ]; then
+    green "Hermes session ended. (Brain 1 + Brain 2 local)"
+  else
+    green "Hermes session ended. (Brain 1 + Brain 2 QwenProxy)"
+  fi
 else
   green "Hermes session ended. (Brain 1 only)"
 fi
