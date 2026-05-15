@@ -446,6 +446,24 @@ class NoxemMemoryProvider:
                     "required": ["memory_ids"],
                 },
             },
+               {
+                   "name": "session_search",
+                   "description": "Search across all session histories for relevant conversations, tool calls, and decisions from past sessions",
+                   "parameters": {
+                       "type": "object",
+                       "properties": {
+                           "query": {"type": "string", "description": "Search query � keywords, tool names, file paths, etc."},
+                           "limit": {"type": "integer", "description": "Max results", "default": 10},
+                           "method": {
+                               "type": "string",
+                               "description": "Search method: fts (keyword), semantic (embedding), or hybrid (both)",
+                               "enum": ["hybrid", "fts", "semantic"],
+                               "default": "hybrid",
+                           },
+                       },
+                       "required": ["query"],
+                   },
+               },
         ]
 
     def handle_tool_call(self, name: str, args: dict) -> str:
@@ -484,6 +502,14 @@ class NoxemMemoryProvider:
                 "memory_ids": args.get("memory_ids", []),
             })
             return json.dumps(result)
+        elif name == "session_search":
+            result = self._api_post("/memory/cross-session-search", {
+                "query": args.get("query", ""),
+                "session_id": self._session_id or "",
+                "limit": args.get("limit", 10),
+                "method": args.get("method", "hybrid"),
+            })
+            return json.dumps(result)
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     # ── Optional Hooks ────────────────────────────────────────
@@ -495,7 +521,8 @@ class NoxemMemoryProvider:
             "Brain-1 for semantic search + dedup. "
             "Brain-2 for advisor + context recovery + background web research.\n"
             "Memory types: preference, fact, project, goal, pattern, entity, event, issue, setup, learning, profile.\n"
-            "Use `memory_search` to look up past info and `memory_store` to save facts."
+            "Use `memory_search` to look up past info, `memory_store` to save facts, "
+            "`session_search` to find relevant conversations from past sessions."
         )
 
     MAX_MEMORY_TOKENS = int(os.environ.get("NOXEM_MAX_MEMORY_TOKENS", "2000"))
@@ -542,6 +569,29 @@ class NoxemMemoryProvider:
                     )
         except Exception:
             pass
+
+        # 2b) Cross-session context injection — find relevant messages from other sessions
+        if query and query.strip():
+            try:
+                cross_result = self._api_post("/memory/cross-session-search", {
+                    "query": query.strip()[:200],
+                    "session_id": session_id,
+                    "limit": 5,
+                })
+                cross_messages = cross_result.get("results", [])
+                if cross_messages:
+                    cross_lines = []
+                    for r in cross_messages[:5]:
+                        role = r.get("role", "?")
+                        text = (r.get("content_text") or "")[:150]
+                        src_session = (r.get("session_id") or "")[:8]
+                        cross_lines.append(f"[{role}@{src_session}]: {text}")
+                    if cross_lines:
+                        parts.append(
+                            "[Noxem Cross-Session Context]\n" + "\n".join(cross_lines)
+                        )
+            except Exception:
+                pass
 
         if parts:
             return "\n\n".join(parts)
@@ -647,17 +697,24 @@ class NoxemMemoryProvider:
         """Persist conversation turn with retry + local buffering. Non-blocking."""
         session_id = kwargs.get("session_id", self._session_id or "")
 
+        tool_calls = kwargs.get("tool_calls")
+        project_path = kwargs.get("project_path", "")
+        model_name = kwargs.get("model_name", "")
+
         def _sync():
             try:
-                self._sync_impl(session_id, user_content, assistant_content)
+                self._sync_impl(session_id, user_content, assistant_content, tool_calls, project_path, model_name)
             except Exception:
                 pass  # Prevent daemon thread exception during interpreter shutdown
 
-        def _sync_impl(session_id, user_content, assistant_content):
+        def _sync_impl(session_id, user_content, assistant_content, tool_calls=None, project_path="", model_name=""):
             data = {
                 "user_message": (user_content or "")[:2000],
                 "assistant_response": (assistant_content or "")[:4000],
                 "session_id": session_id,
+                "tool_calls": tool_calls,
+                "project_path": project_path,
+                "model_name": model_name,
             }
             # Try once
             try:
