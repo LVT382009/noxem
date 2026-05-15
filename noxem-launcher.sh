@@ -286,19 +286,22 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
     export BRAIN2_ENABLED
   else
     # Start QwenProxy server (it auto-logs in with credentials from .env)
-  # Kill any leftover QwenProxy from a previous session
+  # Kill any leftover process on QwenProxy port from a previous session
   if check_port $QWENPROXY_PORT; then
-    dim " Killing existing process on port $QWENPROXY_PORT..."
-    _qp_pid=$(lsof -ti :$QWENPROXY_PORT 2>/dev/null || fuser $QWENPROXY_PORT/tcp 2>/dev/null | head -1 || true)
-    if [ -n "$_qp_pid" ]; then
-      kill $_qp_pid 2>/dev/null || true
+    dim " Port $QWENPROXY_PORT in use -- killing existing process..."
+    fuser -k $QWENPROXY_PORT/tcp 2>/dev/null || true
+    # Wait for port to actually free up
+    _kill_wait=0
+    while check_port $QWENPROXY_PORT && [ $_kill_wait -lt 15 ]; do
+      fuser -k $QWENPROXY_PORT/tcp 2>/dev/null || true
       sleep 1
-    fi
+      _kill_wait=$((_kill_wait + 1))
+    done
   fi
   dim " Starting QwenProxy server..."
   (cd "$QWENPROXY_DIR" && npm start) &
   QWENPROXY_PID=$!
-    wait_for_port $QWENPROXY_PORT "QwenProxy" 120
+  wait_for_port $QWENPROXY_PORT "QwenProxy" 120
 
     # Start the SSE-to-JSON adapter on the traditional LLM port
     dim " Starting QwenProxy adapter..."

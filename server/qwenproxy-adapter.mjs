@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 /**
- * QwenProxy Adapter — bridges QwenProxy SSE-only API to non-streaming OpenAI format.
+ * QwenProxy Adapter — full OpenAI-compatible API base URL on port 8000.
  *
- * QwenProxy (port 3000) only returns SSE streaming responses, but Noxem's
- * advisor-engine, research-engine, and memory-extract all expect non-streaming
- * JSON responses (stream: false). This adapter sits on port 8000 and:
+ * This adapter makes QwenProxy usable as a standard OpenAI API base URL:
+ *   base_url = http://127.0.0.1:8000/v1
  *
- * 1. Accepts standard OpenAI POST /v1/chat/completions with stream: false
- * 2. Forwards to QwenProxy with stream: true
- * 3. Collects SSE chunks, strips reasoning_content, assembles non-streaming JSON
- * 4. Returns a single response object
+ * It handles two roles:
+ * 1. **Non-streaming bridge** (for Noxem internals): advisor-engine, research-engine,
+ *    and memory-extract send stream:false — adapter collects SSE from QwenProxy
+ *    and returns a single JSON response.
+ * 2. **Streaming passthrough** (for external tools): when stream:true is requested,
+ *    adapter forwards SSE chunks directly to the client, making it a drop-in
+ *    OpenAI-compatible endpoint for any tool that supports custom base URLs.
  *
- * This means ZERO changes needed in advisor-engine.mjs, research-engine.mjs,
- * memory-extract.mjs, or memory-server.mjs — they all think they're talking
- * to the old gemma4-server on port 8000.
+ * Model name normalization: whatever model name the caller sends, the adapter
+ * maps it to a valid QwenProxy model (qwen3.6-plus or qwen3.6-plus-no-thinking).
  */
 
 import { createServer } from 'http';
@@ -23,7 +24,17 @@ const ADAPTER_PORT = parseInt(process.env.LLM_PORT || process.env.GEMMA4_PORT ||
 const DEFAULT_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
-// ── SSE parsing ──────────────────────────────────────────────
+// ── Model normalization ──────────────────────────────────────
+// QwenProxy only accepts "qwen3.6-plus" or "qwen3.6-plus-no-thinking"
+// Map any incoming model name to a valid one
+function normalizeModel(requestedModel) {
+	if (!requestedModel) return DEFAULT_MODEL;
+	const m = requestedModel.toLowerCase();
+	if (m.includes('thinking') && !m.includes('no-thinking')) return 'qwen3.6-plus';
+	return 'qwen3.6-plus-no-thinking';
+}
+
+// ── SSE collection (for non-streaming mode) ──────────────────
 
 async function collectSSE(url, bodyObj, timeoutMs = 60000) {
 	const res = await fetch(url, {
@@ -63,10 +74,59 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
 		} catch { /* skip malformed lines */ }
 	}
 
-	// If no content but has reasoning, use reasoning as content (shouldn't happen with no-thinking model)
 	if (!content && reasoning) content = reasoning;
 
-	return { content, model, finishReason, usage };
+	return { content, reasoning, model, finishReason, usage };
+}
+
+// ── SSE streaming passthrough ─────────────────────────────────
+
+async function streamSSE(upstreamUrl, bodyObj, clientRes, timeoutMs = 120000) {
+	const upstream = await fetch(upstreamUrl, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(bodyObj),
+		signal: AbortSignal.timeout(timeoutMs),
+	});
+
+	if (!upstream.ok) {
+		const text = await upstream.text().catch(() => '');
+		clientRes.writeHead(upstream.status, { 'Content-Type': 'application/json' });
+		return clientRes.end(JSON.stringify({ error: { message: `QwenProxy error: ${text.substring(0, 300)}`, type: 'upstream_error' } }));
+	}
+
+	clientRes.writeHead(200, {
+		'Content-Type': 'text/event-stream',
+		'Cache-Control': 'no-cache',
+		'Connection': 'keep-alive',
+		'X-Accel-Buffering': 'no',
+	});
+
+	const reader = upstream.body.getReader();
+	const decoder = new TextDecoder();
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			clientRes.write(decoder.decode(value, { stream: true }));
+		}
+	} catch (err) {
+		LOG_DEBUG && console.error(`[qwenproxy-adapter] Stream error: ${err.message}`);
+	} finally {
+		clientRes.end();
+	}
+}
+
+// ── Read request body ────────────────────────────────────────
+
+function readBody(req) {
+	return new Promise((resolve, reject) => {
+		let body = '';
+		req.on('data', chunk => body += chunk);
+		req.on('end', () => resolve(body));
+		req.on('error', reject);
+	});
 }
 
 // ── HTTP server ──────────────────────────────────────────────
@@ -100,56 +160,57 @@ const server = createServer(async (req, res) => {
 			const data = await qp.json();
 			res.writeHead(200, { 'Content-Type': 'application/json' });
 			return res.end(JSON.stringify(data));
-		} catch (err) {
+		} catch {
 			res.writeHead(200, { 'Content-Type': 'application/json' });
 			return res.end(JSON.stringify({ object: 'list', data: [
-				{ id: DEFAULT_MODEL, object: 'model', created: Date.now(), owned_by: 'qwen' }
+				{ id: 'qwen3.6-plus', object: 'model', created: Date.now(), owned_by: 'qwen' },
+				{ id: 'qwen3.6-plus-no-thinking', object: 'model', created: Date.now(), owned_by: 'qwen' },
 			]}));
 		}
 	}
 
 	// POST /v1/chat/completions
 	if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
-		let body = '';
-		for await (const chunk of req) body += chunk;
+		const body = await readBody(req);
 
 		let reqObj;
 		try { reqObj = JSON.parse(body); } catch {
 			res.writeHead(400, { 'Content-Type': 'application/json' });
-			return res.end(JSON.stringify({ error: 'Invalid JSON' }));
+			return res.end(JSON.stringify({ error: { message: 'Invalid JSON', type: 'invalid_request_error' } }));
 		}
 
-		// CRITICAL: Ignore whatever model name the caller sends (e.g., "onnx-community/Qwen3-0.6B-ONNX"
-		// from advisor-engine) — QwenProxy only accepts "qwen3.6-plus" or "qwen3.6-plus-no-thinking"
-		const model = DEFAULT_MODEL;
-		// Force stream: true for QwenProxy (it only supports SSE)
+		const model = normalizeModel(reqObj.model);
+		const wantStream = reqObj.stream === true;
 		const proxyBody = { ...reqObj, model, stream: true };
 
-		LOG_DEBUG && console.error(`[qwenproxy-adapter] POST /v1/chat/completions model=${model}`);
+		LOG_DEBUG && console.error(`[qwenproxy-adapter] POST /v1/chat/completions model=${model} stream=${wantStream}`);
 
 		try {
-			// Timeout: 60s for advisor, research may need more
-			const timeoutMs = parseInt(process.env.LLM_TIMEOUT || '60000');
-			const result = await collectSSE(`${QWENPROXY_URL}/v1/chat/completions`, proxyBody, timeoutMs);
+			const timeoutMs = parseInt(process.env.LLM_TIMEOUT || '120000');
 
-			const response = {
-				id: `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-				object: 'chat.completion',
-				created: Math.floor(Date.now() / 1000),
-				model: result.model,
-				choices: [{
-					index: 0,
-					message: { role: 'assistant', content: result.content },
-					finish_reason: result.finishReason,
-				}],
-				usage: result.usage,
-			};
-
-			res.writeHead(200, { 'Content-Type': 'application/json' });
-			return res.end(JSON.stringify(response));
+			if (wantStream) {
+				// Streaming: pass SSE through directly — works as OpenAI base URL
+				return await streamSSE(`${QWENPROXY_URL}/v1/chat/completions`, proxyBody, res, timeoutMs);
+			} else {
+				// Non-streaming: collect SSE, return single JSON (for Noxem internals)
+				const result = await collectSSE(`${QWENPROXY_URL}/v1/chat/completions`, proxyBody, timeoutMs);
+				const response = {
+					id: `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+					object: 'chat.completion',
+					created: Math.floor(Date.now() / 1000),
+					model: result.model,
+					choices: [{
+						index: 0,
+						message: { role: 'assistant', content: result.content },
+						finish_reason: result.finishReason,
+					}],
+					usage: result.usage,
+				};
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				return res.end(JSON.stringify(response));
+			}
 		} catch (err) {
 			LOG_DEBUG && console.error(`[qwenproxy-adapter] Error: ${err.message}`);
-			// Return a fallback response so callers don't crash
 			const fallback = {
 				id: `chatcmpl-fallback-${Date.now()}`,
 				object: 'chat.completion',
@@ -167,15 +228,16 @@ const server = createServer(async (req, res) => {
 		}
 	}
 
-	// 404 for everything else
+	// 404
 	res.writeHead(404, { 'Content-Type': 'application/json' });
-	res.end(JSON.stringify({ error: 'Not found' }));
+	res.end(JSON.stringify({ error: { message: 'Not found', type: 'not_found' } }));
 });
 
 server.listen(ADAPTER_PORT, '127.0.0.1', () => {
 	console.log(`[qwenproxy-adapter] Listening on http://127.0.0.1:${ADAPTER_PORT}`);
 	console.log(`[qwenproxy-adapter] Proxying to ${QWENPROXY_URL}`);
 	console.log(`[qwenproxy-adapter] Default model: ${DEFAULT_MODEL}`);
+	console.log(`[qwenproxy-adapter] OpenAI base URL: http://127.0.0.1:${ADAPTER_PORT}/v1`);
 });
 
 // Graceful shutdown
