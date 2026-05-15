@@ -1,5 +1,7 @@
 <div align="center">
 
+<a href="https://freeimage.host/"><img src="https://iili.io/BmitHp2.png" alt="BmitHp2.png" border="0" /></a>
+
 # 🧠 Noxem
 
 **Persistent memory that makes agents actually remember**
@@ -45,8 +47,6 @@
 <td width="50%">
 
 ### :rocket: Brain 2 — Qwen3.6-plus Reasoning Engine
-
-*Powered by [QwenProxy](https://github.com/pedrofariasx/qwenproxy) — cloud Qwen3.6-plus via chat.qwen.ai*
 
 | | |
 |---|---|
@@ -98,7 +98,7 @@ hermes-noxem
 ```
 
 > [!NOTE]
-> First run downloads Brain 1 (~300 MB). Brain 2 setup is automatic — it clones [QwenProxy](https://github.com/pedrofariasx/qwenproxy), installs dependencies + Playwright, and prompts for your Qwen credentials.
+> First run downloads Brain 1 (~300 MB).
 
 ### Brain Mode
 
