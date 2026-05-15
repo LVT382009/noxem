@@ -2,13 +2,7 @@
 
 <a href="https://freeimage.host/"><img src="https://iili.io/BmitHp2.png" alt="BmitHp2.png" border="0" /></a>
 
-# 🧠 Noxem
-
-**Persistent memory that makes agents actually remember**
-
-*Remembers what matters. Forgets what doesn't.*
-
-[![License: MIT](https://img.sh.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org/)
