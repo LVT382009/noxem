@@ -120,10 +120,18 @@ set BRAIN2_ENABLED=0
 goto :skip_brain2
 
 :creds_ok
-REM Start QwenProxy server
 echo Starting QwenProxy server...
+REM Kill any leftover QwenProxy from a previous session
+curl -s -o nul --connect-timeout 1 http://127.0.0.1:%QWENPROXY_PORT%/health >/dev/null 2>&1
+if %ERRORLEVEL%==0 (
+  echo Killing existing process on port %QWENPROXY_PORT%...
+  for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":%QWENPROXY_PORT% " ^| findstr LISTENING') do (
+    taskkill /PID %%a /F >/dev/null 2>&1
+  )
+  timeout /t 1 /nobreak >/dev/null
+)
 pushd "%QWENPROXY_DIR%"
-start /B npm start
+npm start
 popd
 set QWENPROXY_PID=0
 
