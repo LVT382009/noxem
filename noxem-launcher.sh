@@ -299,7 +299,7 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
     done
   fi
   dim " Starting QwenProxy server..."
-  (cd "$QWENPROXY_DIR" && npm start) &
+  (cd "$QWENPROXY_DIR" && npm start >/dev/null 2>&1) &
   QWENPROXY_PID=$!
   wait_for_port $QWENPROXY_PORT "QwenProxy" 120
 

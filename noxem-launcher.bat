@@ -131,7 +131,7 @@ if %ERRORLEVEL%==0 (
   timeout /t 1 /nobreak >/dev/null
 )
 pushd "%QWENPROXY_DIR%"
-npm start
+npm start >/dev/null 2>&1
 popd
 set QWENPROXY_PID=0
 
