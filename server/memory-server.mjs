@@ -15,8 +15,11 @@ import {
   upsertCoreBlock, getCoreBlock, getAllCoreBlocks, deleteCoreBlock,
   logCitation, getRecentCitationCount, getSessionCitations,
   compressMemory, getRawText, getCompressibleMemories,
+  upsertSessionRecord, getSession, updateSessionStatusById, updateSessionSummaryById, heartbeatSession, listSessions,
+  storeSessionMessage, getSessionMessages, getRecentSessionMessages, getSessionMessageStats,
+  searchCrossSessionMessages, getStaleSessionsList, purgeArchivedSessions,
 } from './memory-store.mjs';
-import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd } from './advisor-engine.mjs';
+import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, setCrossSessionFns, generateAdvisorSessionSummary } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { triggerResearch, getRecentResearch, getResearchStatus } from './research-engine.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
@@ -92,6 +95,13 @@ const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false' && process.env.BRA
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
 const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false' && process.env.BRAIN2_ENABLED !== '0';
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
+
+// Wire cross-session search functions into Brain 2 advisor (avoids circular imports)
+setCrossSessionFns({
+  searchCrossSessionMessages,
+  getRecentSessionMessages,
+  getSession,
+});
 
 // Weibull decay: w = exp(-(age/eta)^k) — steeper initial drop then long tail
 // eta = scale (days), k = shape (1=exponential, >1=accelerating aging, <1=rapid then slow)
@@ -1175,9 +1185,35 @@ function shouldSkipMessage(text) {
 
 app.post('/memory/sync', async (req, res) => {
   try {
-    const { user_message, assistant_response, session_id } = req.body;
+    const { user_message, assistant_response, session_id, tool_calls, project_path, model_name } = req.body;
     if (!user_message && !assistant_response) {
       return res.status(400).json({ error: 'user_message or assistant_response required' });
+    }
+
+    // ─── Session Message Storage (dual-write: raw messages + extracted facts) ───
+    if (session_id) {
+      upsertSessionRecord({ session_id, project_path: project_path || '', model_name: model_name || '' });
+
+      if (user_message?.trim()) {
+        storeSessionMessage({
+          session_id,
+          role: 'user',
+          content_type: 'text',
+          content_text: user_message.trim(),
+        });
+      }
+
+      if (assistant_response?.trim()) {
+        const assistantToolCalls = tool_calls || null;
+        storeSessionMessage({
+          session_id,
+          role: 'assistant',
+          content_type: assistantToolCalls ? 'tool_use' : 'text',
+          content_text: assistant_response.trim(),
+          tool_calls: assistantToolCalls,
+          tool_name: assistantToolCalls?.[0]?.name || null,
+        });
+      }
     }
 
     const memories = [];
@@ -1215,8 +1251,7 @@ app.post('/memory/sync', async (req, res) => {
     }
 
     const ids = memories.length > 0 ? storeMemories(memories) : [];
- res.json({ ok: true, stored: ids.length, ids });
-
+ res.json({ ok: true, stored: ids.length, ids, session_stored: !!session_id });
  // Trigger background research pipeline (non-blocking, async)
  if (ENABLE_ADVISOR && user_message?.trim()) {
    triggerResearch({
@@ -1270,11 +1305,28 @@ app.post('/memory/session/end', async (req, res) => {
   try {
     const { conversation_history, session_id } = req.body;
 
+    // Store any remaining conversation messages as session_messages
+    if (session_id && conversation_history?.length) {
+      for (const turn of conversation_history.slice(-20)) {
+        if (turn.role === 'user' || turn.role === 'assistant') {
+          storeSessionMessage({
+            session_id,
+            role: turn.role,
+            content_type: 'text',
+            content_text: (turn.content || '').substring(0, 5000),
+          });
+        }
+      }
+    }
+
     // AI extraction
     let newMemories = [];
+    let sessionSummary = null;
     if (ENABLE_ADVISOR) {
       const sessionMems = getSessionMemories(session_id);
       newMemories = await analyzeSessionEnd(conversation_history || [], sessionMems);
+      // Generate session summary for cross-session injection
+      sessionSummary = await generateAdvisorSessionSummary(conversation_history || [], sessionMems);
     }
 
     // Store extracted memories
@@ -1290,11 +1342,151 @@ app.post('/memory/session/end', async (req, res) => {
       }
     }
 
-    res.json({ ok: true, extracted: newMemories.length, stored_ids: ids });
+    // Mark session as completed with summary
+    if (session_id) {
+      updateSessionStatusById(session_id, 'completed');
+      if (sessionSummary) {
+        updateSessionSummaryById(session_id, sessionSummary);
+      }
+    }
+
+    res.json({ ok: true, extracted: newMemories.length, stored_ids: ids, session_completed: !!session_id });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ─── Session Lifecycle Endpoints ─────────────────────────────────
+
+// List all sessions (with optional status filter)
+app.get('/sessions', (req, res) => {
+  try {
+    const { status, limit, offset } = req.query;
+    const sessions = listSessions(status || null, parseInt(limit) || 50, parseInt(offset) || 0);
+    // Enrich with message counts
+    const enriched = sessions.map(s => {
+      const stats = getSessionMessageStats(s.session_id);
+      return { ...s, message_count: stats?.count || 0, last_msg_at: stats?.last_msg_at, first_msg_at: stats?.first_msg_at };
+    });
+    res.json({ ok: true, sessions: enriched });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get a specific session with stats and recent messages
+app.get('/session/:id', (req, res) => {
+  try {
+    const session = getSession(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    const stats = getSessionMessageStats(req.params.id);
+    const recentMessages = getRecentSessionMessages(req.params.id, 20);
+    res.json({ ok: true, session, message_count: stats?.count || 0, recent_messages: recentMessages });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete/archive a session
+app.delete('/session/:id', (req, res) => {
+  try {
+    const session = getSession(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    updateSessionStatusById(req.params.id, 'archived');
+    res.json({ ok: true, archived: req.params.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Cross-Session Search ────────────────────────────────────────
+
+app.post('/memory/cross-session-search', async (req, res) => {
+  try {
+    const { query, session_id, limit, method } = req.body;
+    if (!query?.trim()) return res.status(400).json({ error: 'query required' });
+
+    const limitNum = Math.min(parseInt(limit) || 20, 50);
+    const excludeSessionId = session_id || '';
+
+    // FTS5 keyword search across all sessions (excluding current)
+    const ftsResults = searchCrossSessionMessages({
+      query: query.trim(),
+      exclude_session_id: excludeSessionId,
+      limit: limitNum,
+    });
+
+    // Optional: hybrid search with embedding if available
+    let semanticResults = [];
+    if (isEmbeddingReady() && method !== 'keyword') {
+      try {
+        const queryVec = await embed(query.trim());
+        const vecHits = vectorKnnSearch(queryVec, limitNum);
+        if (vecHits) {
+          semanticResults = vecHits.filter(h => h.session_id !== excludeSessionId);
+        }
+      } catch {}
+    }
+
+    // Merge FTS + semantic via Reciprocal Rank Fusion (RRF)
+    const merged = rrfMerge(ftsResults, semanticResults, limitNum);
+
+    // Compute total token estimate for budget management
+    const totalTokens = merged.reduce((sum, r) => sum + estimateTokenCount(r.content_text || r.text || ''), 0);
+
+    res.json({
+      ok: true,
+      results: merged,
+      total_results: merged.length,
+      total_token_estimate: totalTokens,
+      method: isEmbeddingReady() ? 'hybrid_rrf' : 'keyword_fts',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// RRF merge: combine FTS and semantic search results
+function rrfMerge(ftsResults, semanticResults, limit, k = 60) {
+  const scores = new Map();
+
+  // Score FTS results (lower fts_rank = better, so invert)
+  ftsResults.forEach((r, i) => {
+    const key = r.message_id || `fts-${i}`;
+    if (!scores.has(key)) scores.set(key, { ...r, rrf_score: 0, source: 'fts' });
+    scores.get(key).rrf_score += 1 / (k + i + 1);
+  });
+
+  // Score semantic results (higher score = better, but they're ranked by position)
+  semanticResults.forEach((r, i) => {
+    const key = `mem-${r.id}`;
+    if (!scores.has(key)) {
+      scores.set(key, {
+        message_id: key,
+        session_id: r.session_id,
+        role: 'memory',
+        content_type: 'extracted_fact',
+        content_text: r.text,
+        timestamp: new Date(r.created_at).getTime(),
+        session_title: '',
+        source: 'semantic',
+      });
+    }
+    const existing = scores.get(key);
+    existing.rrf_score += 1 / (k + i + 1);
+    existing.source = existing.source === 'fts' ? 'hybrid' : 'semantic';
+  });
+
+  // Sort by RRF score descending
+  return [...scores.values()]
+    .sort((a, b) => b.rrf_score - a.rrf_score)
+    .slice(0, limit);
+}
+
+// Rough token estimate (~4 chars per token)
+function estimateTokenCount(text) {
+  return Math.ceil((text || '').length / 4);
+}
 
 // ─── Web Search ───────────────────────────────────────────────────
 

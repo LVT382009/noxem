@@ -142,6 +142,64 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(e
     CREATE UNIQUE INDEX IF NOT EXISTS idx_core_memory_key ON core_memory(key);
   `) } catch {}
 
+// Session-based conversation storage: sessions + session_messages tables
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    project_path TEXT NOT NULL DEFAULT '',
+    session_title TEXT NOT NULL DEFAULT '',
+    session_summary TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','idle','completed','archived')),
+    model_name TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+    last_active_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+    completed_at INTEGER,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    metadata TEXT NOT NULL DEFAULT '{}'
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status, last_active_at);
+  CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(last_active_at DESC);
+`) } catch {}
+
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS session_messages (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
+    content_type TEXT NOT NULL DEFAULT 'text',
+    content_text TEXT,
+    tool_calls TEXT,
+    tool_call_id TEXT,
+    tool_name TEXT,
+    timestamp INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+    sequence_num INTEGER NOT NULL DEFAULT 0,
+    token_count INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_session_messages_session ON session_messages(session_id, sequence_num);
+  CREATE INDEX IF NOT EXISTS idx_session_messages_timestamp ON session_messages(timestamp DESC);
+  CREATE INDEX IF NOT EXISTS idx_session_messages_tool ON session_messages(tool_name) WHERE tool_name IS NOT NULL;
+`) } catch {}
+
+// FTS5 index on session_messages.content_text for cross-session search
+try { db.exec(`
+  CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
+  USING fts5(content_text, tokenize='porter unicode61 remove_diacritics 1 tokenchars "_-.@"', content='session_messages', content_rowid='rowid');
+`) } catch {}
+
+// FTS sync triggers for session_messages
+try { db.exec(`
+  CREATE TRIGGER IF NOT EXISTS session_messages_ai AFTER INSERT ON session_messages BEGIN
+    INSERT INTO messages_fts(rowid, content_text) VALUES (new.rowid, new.content_text);
+  END;
+  CREATE TRIGGER IF NOT EXISTS session_messages_ad AFTER DELETE ON session_messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content_text) VALUES ('delete', old.rowid, old.content_text);
+  END;
+  CREATE TRIGGER IF NOT EXISTS session_messages_au AFTER UPDATE ON session_messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content_text) VALUES ('delete', old.rowid, old.content_text);
+    INSERT INTO messages_fts(rowid, content_text) VALUES (new.rowid, new.content_text);
+  END;
+`) } catch {}
+
 // Initialize sqlite-vec for native KNN (optional — falls back to JS cosine)
 initVectorIndex(db).catch(() => {});
 
@@ -514,6 +572,160 @@ export function getSessionCitations(sessionId, limit = 20) {
   return getCitationsBySession.all(sessionId || '', Math.min(limit, 100));
 }
 
+
+// Session prepared statements
+const upsertSession = db.prepare(`
+  INSERT INTO sessions (session_id, project_path, model_name, last_active_at)
+  VALUES (@session_id, @project_path, @model_name, @last_active_at)
+  ON CONFLICT(session_id) DO UPDATE SET
+    last_active_at = @last_active_at,
+    project_path = CASE WHEN @project_path != '' THEN @project_path ELSE sessions.project_path END,
+    model_name = CASE WHEN @model_name != '' THEN @model_name ELSE sessions.model_name END
+`);
+const getSessionById = db.prepare('SELECT * FROM sessions WHERE session_id = ?');
+const updateSessionStatus = db.prepare('UPDATE sessions SET status = @status, completed_at = @completed_at WHERE session_id = @session_id');
+const updateSessionSummary = db.prepare('UPDATE sessions SET session_summary = @session_summary WHERE session_id = @session_id');
+const updateSessionHeartbeat = db.prepare('UPDATE sessions SET last_active_at = @last_active_at WHERE session_id = @session_id AND status = \'active\'');
+const listSessionsByStatus = db.prepare('SELECT * FROM sessions WHERE status = ? ORDER BY last_active_at DESC LIMIT ?');
+const listAllSessions = db.prepare('SELECT * FROM sessions ORDER BY last_active_at DESC LIMIT ? OFFSET ?');
+
+// Session message prepared statements
+const insertSessionMessage = db.prepare(`
+  INSERT INTO session_messages (message_id, session_id, role, content_type, content_text, tool_calls, tool_call_id, tool_name, timestamp, sequence_num, token_count)
+  VALUES (@message_id, @session_id, @role, @content_type, @content_text, @tool_calls, @tool_call_id, @tool_name, @timestamp, @sequence_num, @token_count)
+`);
+const getMessagesBySession = db.prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY sequence_num ASC LIMIT ? OFFSET ?');
+const getMessagesBySessionDesc = db.prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY sequence_num DESC LIMIT ?');
+const countMessagesBySession = db.prepare('SELECT COUNT(*) as count, MAX(timestamp) as last_msg_at, MIN(timestamp) as first_msg_at FROM session_messages WHERE session_id = ?');
+const deleteMessagesBySession = db.prepare('DELETE FROM session_messages WHERE session_id = ?');
+const getNextSequenceNum = db.prepare('SELECT COALESCE(MAX(sequence_num), 0) + 1 as next_seq FROM session_messages WHERE session_id = ?');
+
+// Cross-session FTS search prepared statements
+const searchMessagesFts = db.prepare(`
+  SELECT m.message_id, m.session_id, m.role, m.content_type, m.content_text, m.tool_calls, m.tool_name, m.timestamp, m.sequence_num,
+    s.session_title, s.status as session_status,
+    f.rank as fts_rank
+  FROM messages_fts f
+  JOIN session_messages m ON m.rowid = f.rowid
+  JOIN sessions s ON m.session_id = s.session_id
+  WHERE messages_fts MATCH @query
+    AND (m.session_id != @exclude_session_id OR @exclude_session_id = '')
+    AND s.status != 'archived'
+  ORDER BY f.rank
+  LIMIT @limit
+`);
+const searchMessagesFtsAll = db.prepare(`
+  SELECT m.message_id, m.session_id, m.role, m.content_type, m.content_text, m.tool_calls, m.tool_name, m.timestamp, m.sequence_num,
+    s.session_title, s.status as session_status,
+    f.rank as fts_rank
+  FROM messages_fts f
+  JOIN session_messages m ON m.rowid = f.rowid
+  JOIN sessions s ON m.session_id = s.session_id
+  WHERE messages_fts MATCH @query
+    AND s.status != 'archived'
+  ORDER BY f.rank
+  LIMIT @limit
+`);
+
+// Stale session detection
+const getStaleSessions = db.prepare(`
+  SELECT session_id, last_active_at FROM sessions
+  WHERE status = 'active' AND last_active_at < (? - @threshold_ms)
+`);
+const archiveOldSessions = db.prepare(`
+  DELETE FROM sessions WHERE status = 'archived' AND completed_at < (? - @retention_ms)
+`);
+
+// ─── Session operation exports ──────────────────────────────────
+
+export function upsertSessionRecord({ session_id, project_path = '', model_name = '' }) {
+  if (!session_id) return;
+  const now = Date.now();
+  upsertSession.run({ session_id, project_path, model_name, last_active_at: now });
+  return getSessionById.get(session_id);
+}
+
+export function getSession(sessionId) {
+  return getSessionById.get(sessionId);
+}
+
+export function updateSessionStatusById(sessionId, status, completedAt = null) {
+  updateSessionStatus.run({
+    session_id: sessionId,
+    status,
+    completed_at: completedAt || (status === 'completed' || status === 'archived' ? Date.now() : null),
+  });
+}
+
+export function updateSessionSummaryById(sessionId, summary) {
+  updateSessionSummary.run({ session_id: sessionId, session_summary: typeof summary === 'string' ? summary : JSON.stringify(summary) });
+}
+
+export function heartbeatSession(sessionId) {
+  if (!sessionId) return;
+  updateSessionHeartbeat.run({ last_active_at: Date.now() });
+}
+
+export function listSessions(status = null, limit = 50, offset = 0) {
+  if (status) return listSessionsByStatus.all(status, Math.min(limit, 200));
+  return listAllSessions.all(Math.min(limit, 200), offset);
+}
+
+export function storeSessionMessage({ session_id, role, content_type = 'text', content_text = '', tool_calls = null, tool_call_id = null, tool_name = null, token_count = null }) {
+  if (!session_id) return null;
+  const { next_seq } = getNextSequenceNum.get(session_id);
+  const message_id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  insertSessionMessage.run({
+    message_id,
+    session_id,
+    role,
+    content_type,
+    content_text,
+    tool_calls: tool_calls ? (typeof tool_calls === 'string' ? tool_calls : JSON.stringify(tool_calls)) : null,
+    tool_call_id,
+    tool_name,
+    timestamp: Date.now(),
+    sequence_num: next_seq,
+    token_count,
+  });
+  // Update session heartbeat
+  heartbeatSession(session_id);
+  return message_id;
+}
+
+export function getSessionMessages(sessionId, limit = 50, offset = 0) {
+  return getMessagesBySession.all(sessionId, Math.min(limit, 500), offset);
+}
+
+export function getRecentSessionMessages(sessionId, limit = 20) {
+  return getMessagesBySessionDesc.all(sessionId, Math.min(limit, 200));
+}
+
+export function getSessionMessageStats(sessionId) {
+  return countMessagesBySession.get(sessionId);
+}
+
+export function searchCrossSessionMessages({ query, exclude_session_id = '', limit = 20 }) {
+  if (!query || !query.trim()) return [];
+  try {
+    const sanitized = query.replace(/['"]/g, '').replace(/[^\w\s]/g, ' ').trim();
+    if (!sanitized) return [];
+    if (exclude_session_id) {
+      return searchMessagesFts.all({ query: sanitized, exclude_session_id, limit: Math.min(limit, 50) });
+    }
+    return searchMessagesFtsAll.all({ query: sanitized, limit: Math.min(limit, 50) });
+  } catch {
+    return [];
+  }
+}
+
+export function getStaleSessionsList(thresholdMs = 1800000) {
+  return getStaleSessions.all(Date.now(), { threshold_ms: thresholdMs });
+}
+
+export function purgeArchivedSessions(retentionMs = 7776000000) {
+  return archiveOldSessions.run(Date.now(), { retention_ms: retentionMs }).changes;
+}
 
 export { db };
 

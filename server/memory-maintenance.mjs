@@ -1,4 +1,4 @@
-import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
+import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories, getStaleSessionsList, updateSessionStatusById, purgeArchivedSessions } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, estimateImportance, extractEntityAttribute, normalize, cosineSimilarity } from './embedding-engine.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
@@ -144,6 +144,25 @@ export async function runMaintenance() {
     }
 
     // 6. Significance-gated consolidation: cluster related low-importance memories
+  // 7. Session lifecycle: detect stale sessions and purge old archived ones
+  const SESSION_STALE_THRESHOLD_MS = parseInt(process.env.SESSION_STALE_THRESHOLD_MS || '1800000'); // 30 min
+  const SESSION_ARCHIVE_RETENTION_MS = parseInt(process.env.SESSION_ARCHIVE_RETENTION_MS || '7776000000'); // 90 days
+  try {
+    const staleSessions = getStaleSessionsList(SESSION_STALE_THRESHOLD_MS);
+    for (const s of staleSessions) {
+      updateSessionStatusById(s.session_id, 'archived');
+    }
+    results.sessions_archived = staleSessions.length;
+    if (staleSessions.length > 0) LOG_DEBUG && console.log(`[Maintenance] Archived ${staleSessions.length} stale sessions (idle > ${Math.round(SESSION_STALE_THRESHOLD_MS / 60000)}min)`);
+
+    const purgedSessions = purgeArchivedSessions(SESSION_ARCHIVE_RETENTION_MS);
+    results.sessions_purged = purgedSessions;
+    if (purgedSessions > 0) LOG_DEBUG && console.log(`[Maintenance] Purged ${purgedSessions} archived sessions older than ${Math.round(SESSION_ARCHIVE_RETENTION_MS / 86400000)} days`);
+  } catch (err) {
+    LOG_DEBUG && console.error('[Maintenance] Session cleanup error:', err.message);
+  }
+
+  // 6b. Significance-gated consolidation
     try {
       const consolidated = await consolidateMemories(memories);
       results.consolidated = consolidated;
