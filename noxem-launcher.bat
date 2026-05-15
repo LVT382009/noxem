@@ -79,8 +79,13 @@ if not exist "%QWENPROXY_DIR%\node_modules" (
   echo Installing npm dependencies...
   pushd "%QWENPROXY_DIR%"
   npm install --silent
-  echo Installing Playwright browsers...
-  npx playwright install chromium
+  REM Skip Playwright install if Hermes already cached Chromium
+  dir "%USERPROFILE%\.cache\ms-playwright\chromium-*\chrome-win\chrome.exe" >/dev/null 2>&1 && (
+    echo Playwright Chromium already cached (from Hermes^) - skipping download
+  ) || (
+    echo Installing Playwright browsers...
+    npx playwright install chromium
+  )
   popd
 )
 

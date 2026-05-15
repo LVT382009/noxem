@@ -126,13 +126,17 @@ setup_qwenproxy() {
       return 1
     }
 
-    # Install Playwright browsers
-    dim " Installing Playwright browsers..."
-    (cd "$QWENPROXY_DIR" && npx playwright install chromium 2>/dev/null) || {
-      red " Playwright browser install failed."
-      dim " Try manually: cd $QWENPROXY_DIR && npx playwright install chromium"
-      return 1
-    }
+    # Install Playwright browsers — skip if Hermes already cached Chromium
+    if ls "$HOME/.cache/ms-playwright/chromium-"*/chrome-linux64/chrome 2>/dev/null | head -1 | grep -q .; then
+      dim " Playwright Chromium already cached (from Hermes) — skipping download"
+    else
+      dim " Installing Playwright browsers..."
+      (cd "$QWENPROXY_DIR" && npx playwright install chromium 2>/dev/null) || {
+        red " Playwright browser install failed."
+        dim " Try manually: cd $QWENPROXY_DIR && npx playwright install chromium"
+        return 1
+      }
+    fi
 
     green " QwenProxy setup complete!"
   fi
