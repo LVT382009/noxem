@@ -2,7 +2,9 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch } from './vector-index.mjs';
+import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, deleteVec } from './vector-index.mjs';
+
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -64,26 +66,26 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 
   `);
 
-// Covering indexes for search performance
-try { db.exec('CREATE INDEX IF NOT EXISTS idx_memories_active_type ON memories(status, type, importance DESC, created_at DESC)'); } catch {}
-try { db.exec("CREATE INDEX IF NOT EXISTS idx_memories_active_recent ON memories(status, created_at DESC, importance DESC) WHERE status = 'active'"); } catch {}
-try { db.exec("CREATE INDEX IF NOT EXISTS idx_memories_active_entity ON memories(entity, status, importance DESC) WHERE status = 'active'"); } catch {}
-
 // Schema migrations — add tracking columns to existing databases
-try { db.exec(`ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0`); } catch {}
-try { db.exec(`ALTER TABLE memories ADD COLUMN last_recalled_at TEXT`); } catch {}
-try { db.exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`); } catch {}
-try { db.exec(`ALTER TABLE memories ADD COLUMN context_prefix TEXT NOT NULL DEFAULT ''`); } catch {}
-try { db.exec(`ALTER TABLE memories ADD COLUMN entity TEXT NOT NULL DEFAULT ''`); } catch {}
-try { db.exec(`ALTER TABLE memories ADD COLUMN attribute TEXT NOT NULL DEFAULT ''`); } catch {}
-try { db.exec(`ALTER TABLE memories ADD COLUMN valid_from TEXT`); } catch {}
-try { db.exec(`ALTER TABLE memories ADD COLUMN valid_until TEXT`); } catch {}
-try { db.exec(`ALTER TABLE memories ADD COLUMN source_memory_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
-try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(entity, attribute)`); } catch {}
+try { db.exec(`ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`ALTER TABLE memories ADD COLUMN last_recalled_at TEXT`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`ALTER TABLE memories ADD COLUMN context_prefix TEXT NOT NULL DEFAULT ''`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`ALTER TABLE memories ADD COLUMN entity TEXT NOT NULL DEFAULT ''`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`ALTER TABLE memories ADD COLUMN attribute TEXT NOT NULL DEFAULT ''`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`ALTER TABLE memories ADD COLUMN valid_from TEXT`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`ALTER TABLE memories ADD COLUMN valid_until TEXT`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`ALTER TABLE memories ADD COLUMN source_memory_ids TEXT NOT NULL DEFAULT '[]'`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(entity, attribute)`); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
 
-  try { db.exec('ALTER TABLE memories ADD COLUMN compression_level INTEGER NOT NULL DEFAULT 0'); } catch {}
-  try { db.exec('ALTER TABLE memories ADD COLUMN compressed_from INTEGER REFERENCES memories(id)'); } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_memories_compression ON memories(compression_level, status)'); } catch {}
+  try { db.exec('ALTER TABLE memories ADD COLUMN compression_level INTEGER NOT NULL DEFAULT 0'); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+  try { db.exec('ALTER TABLE memories ADD COLUMN compressed_from INTEGER REFERENCES memories(id)'); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_memories_compression ON memories(compression_level, status)'); } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
+
+// Covering indexes for search performance (must be AFTER ALTER TABLE adds importance/entity columns)
+try { db.exec('CREATE INDEX IF NOT EXISTS idx_memories_active_type ON memories(status, type, importance DESC, created_at DESC)'); } catch (e) { LOG_DEBUG && console.error('[Schema] Covering index active_type failed:', e.message); }
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_memories_active_recent ON memories(status, created_at DESC, importance DESC) WHERE status = 'active'"); } catch (e) { LOG_DEBUG && console.error('[Schema] Covering index active_recent failed:', e.message); }
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_memories_active_entity ON memories(entity, status, importance DESC) WHERE status = 'active'"); } catch (e) { LOG_DEBUG && console.error('[Schema] Covering index active_entity failed:', e.message); }
 
   // memory_raw: stores original text for drill-down from compressed memories
   try { db.exec(`
@@ -92,7 +94,7 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(e
       raw_text TEXT NOT NULL,
       stored_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-  `) } catch {}
+  `) } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
 
 
   // Citation log: track which memories influenced LLM responses
@@ -107,7 +109,7 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(e
     CREATE INDEX IF NOT EXISTS idx_citation_memory ON citation_log(memory_id);
     CREATE INDEX IF NOT EXISTS idx_citation_session ON citation_log(session_id);
     CREATE INDEX IF NOT EXISTS idx_citation_cited ON citation_log(cited_at);
-  `) } catch {}
+  `) } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
 
 
   // Phase 1: Knowledge Graph + Core Memory
@@ -128,7 +130,7 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(e
     CREATE INDEX IF NOT EXISTS idx_edges_to ON memory_edges(to_id);
     CREATE INDEX IF NOT EXISTS idx_edges_relation ON memory_edges(relation);
     CREATE INDEX IF NOT EXISTS idx_edges_from_relation ON memory_edges(from_id, relation);
-  `) } catch {}
+  `) } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
 
   try { db.exec(`
     CREATE TABLE IF NOT EXISTS core_memory (
@@ -140,10 +142,10 @@ try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_entity_attr ON memories(e
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_core_memory_key ON core_memory(key);
-  `) } catch {}
+  `) } catch (e) { if (!e.message.includes("duplicate") && !e.message.includes("already exists")) LOG_DEBUG && console.error("[Schema]", e.message); }
 
 // Initialize sqlite-vec for native KNN (optional — falls back to JS cosine)
-initVectorIndex(db).catch(() => {});
+initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
 
 const insert = db.prepare(
   `INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from)
@@ -198,6 +200,7 @@ const countAll = db.prepare(`SELECT status, type, COUNT(*) as count FROM memorie
 const countActive = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE status = 'active'`);
 const getSuperseded = db.prepare(`SELECT * FROM memories WHERE status = 'superseded'`);
 const getByEntityAttr = db.prepare(`SELECT * FROM memories WHERE entity = ? AND attribute = ? AND status = 'active' ORDER BY created_at DESC`);
+const getTopActiveScored = db.prepare(`SELECT id, session_id, type, text, importance, recall_count, created_at FROM memories WHERE status = 'active' ORDER BY importance DESC, recall_count DESC, created_at DESC LIMIT ?`);
 
 const searchFts = db.prepare(`
   SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count,
@@ -312,7 +315,7 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
     try {
       const vec = bufferToFloat32(embedding);
       insertVec(db, id, vec);
-    } catch {}
+    } catch (e) { LOG_DEBUG && console.error('[StoreMemory] Vec insert failed:', e.message); }
   }
   return id;
 }
@@ -323,7 +326,7 @@ export function storeMemories(items) {
     session_id: m.session_id || '',
     type: m.type || 'general',
     text: m.text,
-    embedding: m.embedding || null,
+    embedding: ensureEmbeddingBuffer(m.embedding) || null,
     metadata: JSON.stringify(m.metadata || {}),
     importance: m.importance ?? 0.5,
     context_prefix: m.context_prefix || '',
@@ -331,6 +334,16 @@ export function storeMemories(items) {
     attribute: m.attribute || '',
     valid_from: m.valid_from || now,
   }));
+  const ids = insertTx(prepared);
+  // Update vector index for batch
+  if (isVecReady()) {
+    for (let i = 0; i < ids.length; i++) {
+      if (prepared[i].embedding) {
+        try { insertVec(db, ids[i], bufferToFloat32(prepared[i].embedding)); } catch (e) { LOG_DEBUG && console.error('[StoreMemories] Vec insert failed for', ids[i], e.message); }
+      }
+    }
+  }
+  return ids;
   return insertTx(prepared);
 }
 
@@ -344,7 +357,7 @@ export function updateMemoryType(id, type) {
 
 export function deleteMemory(id) {
   removeById.run(id);
-  try { deleteVec(db, id); } catch {} // clean vector index
+  try { deleteVec(db, id); } catch (e) { LOG_DEBUG && console.error('[DeleteMemory] Vec cleanup failed:', e.message); }
 }
 
 export function deleteInvalid() {
@@ -356,11 +369,19 @@ export function searchMemories({ query, limit = 10 }) {
   if (!query || !query.trim()) return [];
   const limitNum = Math.min(Math.max(1, limit), 50);
   try {
-    const sanitized = query.replace(/['"]/g, '').replace(/[^\w\s]/g, ' ').trim();
-    if (!sanitized) return searchRecent.all({ query: `%${query}%`, limit: limitNum });
+    // Strip FTS5 special syntax: column: prefix, operators (AND, OR, NOT, NEAR), quotes
+    let sanitized = query
+      .replace(/(?:\w+:)/g, '')           // strip column: prefixes
+      .replace(/\b(?:AND|OR|NOT|NEAR)\b/gi, '') // strip FTS5 operators
+      .replace(/['"*^$]/g, '')            // strip quotes and FTS5 modifiers
+      .replace(/[^\w\s]/g, ' ')           // strip remaining non-word chars
+      .replace(/\s+/g, ' ')               // collapse whitespace
+      .trim();
+    if (!sanitized) return searchRecent.all({ query: `%${query.replace(/[%_]/g, '\\$&')}%`, limit: limitNum });
     return searchFts.all({ query: sanitized, limit: limitNum });
-  } catch {
-    return searchRecent.all({ query: `%${query}%`, limit: limitNum });
+  } catch (e) {
+    LOG_DEBUG && console.error('[SearchMemories] FTS error, falling back to LIKE:', e.message);
+    return searchRecent.all({ query: `%${query.replace(/[%_]/g, '\\$&')}%`, limit: limitNum });
   }
 }
 
@@ -505,7 +526,7 @@ export function getCompressibleMemories(maxLevel, olderThanDays, limit = 50) {
 
 // Citation operations
 export function logCitation(memoryId, sessionId, context = '') {
-  try { insertCitation.run(memoryId, sessionId || '', context.substring(0, 200)); } catch {}
+  try { insertCitation.run(memoryId, sessionId || '', context.substring(0, 200)); } catch (e) { LOG_DEBUG && console.error('[LogCitation] Failed:', e.message); }
 }
 export function getRecentCitationCount(memoryId) {
   return getCitationsByMemory.get(memoryId)?.count || 0;

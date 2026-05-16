@@ -56,7 +56,7 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     const content = data?.choices?.[0]?.message?.content || '[]';
 
     // Extract JSON array from response
-    const jsonMatch = content.match(/\[[\s\S]*?\]/);
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return [];
 
     const memories = JSON.parse(jsonMatch[0]);

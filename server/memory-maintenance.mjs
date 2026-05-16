@@ -65,10 +65,10 @@ export async function runMaintenance() {
 
       for (const d of dupes) {
         const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
-        updateMemoryStatus(older.id, 'invalid');
+        updateMemoryStatus(older.id, 'superseded', newer.id);
         results.duplicates++;
       }
-      if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] Marked ${dupes.length} duplicates as invalid`);
+      if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] Marked ${dupes.length} duplicates as superseded`);
     } catch (err) {
       LOG_DEBUG && console.error('[Maintenance] Dedup error:', err.message);
     }
