@@ -209,7 +209,8 @@ function validateCacheDir(cacheDir) {
 
 export async function initEmbeddingEngine() {
   if (modelReady) return;
-  if (loadPromise) return loadPromise;
+  // S-#39: Guard against race — if a concurrent caller already started loading, reuse their promise
+  if (loadPromise) { await loadPromise; return; }
   validateCacheDir(EMBED_CACHE_DIR);
 
   loadPromise = (async () => {

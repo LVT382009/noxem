@@ -285,31 +285,26 @@ async function consolidateMemories(memories) {
   for (const [entity, entityMems] of byEntity) {
     if (entityMems.length < CONSOLIDATION_MIN_CLUSTER) continue;
 
-    const visited = new Set();
-    const clusters = [];
+    // S-#37: Union-Find for transitive closure (prevents single-link misses)
+    const parent = Array.from({ length: entityMems.length }, (_, i) => i);
+    function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+    function union(a, b) { parent[find(a)] = find(b); }
 
     for (let i = 0; i < entityMems.length; i++) {
-      if (visited.has(i)) continue;
-      const cluster = [entityMems[i]];
-      visited.add(i);
-
-      for (let j = i + 1; j < entityMems.length; j++) {
-        if (visited.has(j)) continue;
-        const sim = cosineSimilarity(
-          entityMems[i].embedding,
-          entityMems[j].embedding
-        );
-        if (sim > CONSOLIDATION_SIM_THRESHOLD) {
-          cluster.push(entityMems[j]);
-          visited.add(j);
+        for (let j = i + 1; j < entityMems.length; j++) {
+            const sim = cosineSimilarity(entityMems[i].embedding, entityMems[j].embedding);
+            if (sim > CONSOLIDATION_SIM_THRESHOLD) union(i, j);
         }
-      }
-
-      if (cluster.length >= CONSOLIDATION_MIN_CLUSTER) {
-        clusters.push(cluster);
-      }
     }
 
+    const groups = new Map();
+    for (let i = 0; i < entityMems.length; i++) {
+        const root = find(i);
+        if (!groups.has(root)) groups.set(root, []);
+        groups.get(root).push(entityMems[i]);
+    }
+
+    const clusters = [...groups.values()].filter(c => c.length >= CONSOLIDATION_MIN_CLUSTER);
     for (const cluster of clusters) {
       try {
         cluster.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
@@ -330,7 +325,7 @@ async function consolidateMemories(memories) {
         let embedding = null;
         try {
           const vec = await embed(summaryText);
-          embedding = new Float32Array(vec);
+          embedding = vec; // S-#53: storeMemory->ensureEmbeddingBuffer converts array to Buffer
         } catch {}
 
         const newId = storeMemory({

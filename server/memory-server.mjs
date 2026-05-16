@@ -6,7 +6,7 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 import { isVecReady } from './vector-index.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
-  getAllActiveMemories, getSessionMemories, getMemoriesByType,
+  getAllActiveMemories, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
   deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
@@ -227,12 +227,16 @@ let _cacheCounter = 0;
 let _cacheMisses = 0;
 
 function hashVec(vec) {
-  // Fast hash: sample 8 evenly-spaced elements from the vector
-  if (!vec || vec.length < 8) return 0;
-  const step = Math.floor(vec.length / 8);
-  let h = 0;
-  for (let i = 0; i < 8; i++) h = (h * 31 + Math.round(vec[i * step] * 1000)) | 0;
-  return h;
+  // S-#31: Use FNV-1a across all dimensions for better distribution
+  if (!vec || vec.length === 0) return 0;
+  let h = 0x811c9dc5; // FNV offset basis (32-bit)
+  const step = Math.max(1, Math.floor(vec.length / 32)); // sample ~32 elements
+  for (let i = 0; i < vec.length; i += step) {
+    const q = Math.round(vec[i] * 10000) & 0xFF; // quantize to byte
+    h ^= q;
+    h = Math.imul(h, 0x01000193); // FNV prime
+  }
+  return h >>> 0; // unsigned 32-bit
 }
 
 function findCachedResult(queryVec) {
@@ -293,7 +297,8 @@ function extractAndStoreEdges(fromMemoryId, text, sessionId) {
     for (const pattern of EDGE_PATTERNS) {
       const match = text.match(pattern.re);
       if (match) {
-        const objectText = (match[1] || match[2] || '').trim().replace(/[.!?,;]+$/, '');
+        // S-#46: Use last capture group (for 2-group patterns, match[2] is the object/destination)
+      const objectText = (match[match.length - 1] || '').trim().replace(/[.!?,;]+$/, '');
         if (!objectText || objectText.length < 2) continue;
 
         // Find existing memory matching the object
@@ -787,7 +792,7 @@ app.get('/memory/session/:sessionId', (req, res) => {
     const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
     const offsetNum = Math.max(parseInt(offset) || 0, 0);
     const all = getSessionMemories(req.params.sessionId, limitNum + offsetNum);
-    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: all.length });
+    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: getSessionMemoryCount(req.params.sessionId) }); // S-#54
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -797,7 +802,7 @@ app.get('/memory/type/:type', (req, res) => {
     const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
     const offsetNum = Math.max(parseInt(offset) || 0, 0);
     const all = getMemoriesByType(req.params.type, limitNum + offsetNum);
-    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: all.length });
+    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: getTypeMemoryCount(req.params.type) }); // S-#54
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

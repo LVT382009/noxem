@@ -37,6 +37,10 @@ warnings.filterwarnings('ignore', message='.*local_dir_use_symlinks.*', category
 logger = logging.getLogger(__name__)
 
 MEMORY_SERVER_DEFAULT = "http://127.0.0.1:3001"
+# P-#31: For SSL/TLS, set NOXEM_SERVER to https:// URL and ensure the
+# Node.js server is started with --tls-cert and --tls-key flags, e.g.:
+#   node server/memory-server.mjs --tls-cert=/path/to/cert.pem --tls-key=/path/to/key.pem
+# For self-signed certs, set NODE_TLS_REJECT_UNAUTHORIZED=0 in env (dev only).
 
 
 class NoxemMemoryProvider:
@@ -69,13 +73,13 @@ class NoxemMemoryProvider:
         self._sync_thread = None
         self._server_start_thread = None
         self._server_reachable = threading.Event()  # P-#19
-        with self._sync_lock:  # P-#19
-            self._sync_fail_count = 0
+        self._sync_fail_count = 0
         self._sync_lock = threading.Lock()  # P-#18
         self._shutdown_event = threading.Event()  # P-#24
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
         self._server_procs = []
+        self._stderr_logs = []  # P-#22
         atexit.register(self.shutdown)
 
         # Load noxem.json and propagate to env vars if not already set
@@ -174,6 +178,7 @@ class NoxemMemoryProvider:
             if path.exists():
                 try:
                     _llm_stderr_log = open(home / "noxem-server-stderr.log", "a")  # P-#22
+                    self._stderr_logs.append(_llm_stderr_log)
                     popen_kwargs = {
                         "cwd": str(path.parent),
                         "env": env,
@@ -188,6 +193,7 @@ class NoxemMemoryProvider:
                         **popen_kwargs,
                     )
                     self._server_procs.append(proc)
+                    self._write_pid_file(home / 'noxem-server.pid', proc.pid)  # P-#29
                     logger.info(f"Noxem auto-started LLM server from {path} (PID {proc.pid})")
                     sys.stderr.write(f"[Noxem] Auto-starting LLM server... (PID {proc.pid})\n")
                     break
@@ -204,6 +210,7 @@ class NoxemMemoryProvider:
             if path.exists():
                 try:
                     _mem_stderr_log = open(home / "noxem-memory-stderr.log", "a")  # P-#22
+                    self._stderr_logs.append(_mem_stderr_log)
                     popen_kwargs = {
                         "cwd": str(path.parent),
                         "env": env,
@@ -304,6 +311,20 @@ class NoxemMemoryProvider:
         if flushed > 0:
             logger.info(f"Noxem flushed {flushed} buffered turns to memory server")
 
+    # P-#29: PID file helpers for reliable process cleanup on Windows
+    def _write_pid_file(self, path, pid):
+        try:
+            path.write_text(str(pid))
+        except Exception:
+            pass
+
+    def _clean_pid_file(self, path):
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
+
     def shutdown(self) -> None:
         """Process exit cleanup. Join daemon threads then kill auto-started server processes."""
         self._shutdown_event.set()  # P-#24
@@ -316,16 +337,22 @@ class NoxemMemoryProvider:
         except Exception:
             pass
         for proc in self._server_procs:
-		try:
-			proc.terminate()
-			try:
-				proc.wait(timeout=5)
-			except subprocess.TimeoutExpired:
-				proc.kill()
-			logger.info(f"Noxem stopped auto-started server PID {proc.pid}")
-		except (ProcessLookupError, PermissionError, OSError):
-			pass
-	self._server_procs.clear()
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                logger.info(f"Noxem stopped auto-started server PID {proc.pid}")
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        self._server_procs.clear()
+        for log_fh in self._stderr_logs:  # P-#22
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+        self._stderr_logs.clear()
         logger.info("Noxem shutdown complete")
 
     # ── Config ────────────────────────────────────────────────
@@ -506,10 +533,7 @@ class NoxemMemoryProvider:
         elif name == "memory_lineage":
             if "id" not in args:  # P-#28
                 return json.dumps({"error": "Missing required parameter: id"})
-            mid = args.get("id")
-        if mid is None:
-            return json.dumps({"error": "id is required"})
-        result = self._api_get(f"/memory/{mid}/lineage")
+            result = self._api_get(f"/memory/{args['id']}/lineage")
             return json.dumps(result)
         elif name == "memory_contradiction_check":
             result = self._api_post("/memory/contradiction-check", {
@@ -705,6 +729,8 @@ class NoxemMemoryProvider:
             # Try once
             try:
                 result = self._api_post("/memory/sync", data)
+                if result.get("error"):  # P-#25
+                    raise Exception(result["error"])
                 self._server_reachable.set()  # P-#19
                 with self._sync_lock:  # P-#19
                     self._sync_fail_count = 0
@@ -715,10 +741,14 @@ class NoxemMemoryProvider:
                     self._sync_fail_count += 1
 
             # Retry once after 2s (server might be starting up)
-            if self._sync_fail_count <= 3:
+            with self._sync_lock:  # P-#19
+                _fail_count = self._sync_fail_count
+            if _fail_count <= 3:
                 time.sleep(2.0)
                 try:
                     result = self._api_post("/memory/sync", data)
+                    if result.get("error"):  # P-#25
+                        raise Exception(result["error"])
                     self._server_reachable.set()  # P-#19
                     with self._sync_lock:  # P-#19
                         self._sync_fail_count = 0
@@ -729,18 +759,23 @@ class NoxemMemoryProvider:
 
             # Buffer turn for later replay
             with self._queue_lock:
+                if len(self._pending_queue) >= self._pending_queue.maxlen:  # P-#23
+                    logger.warning(
+                        f"Noxem pending queue at capacity ({self._pending_queue.maxlen}), "
+                        f"oldest items will be dropped"
+                    )
                 self._pending_queue.append(data)
-            if len(self._pending_queue) >= self._pending_queue.maxlen:
-                logger.warning(f"Pending queue at capacity ({self._pending_queue.maxlen}), oldest turns will be dropped")  # P-#23
                 queue_len = len(self._pending_queue)
 
-            if self._sync_fail_count == 1:
+            with self._sync_lock:  # P-#19
+                _fail_count = self._sync_fail_count
+            if _fail_count == 1:
                 logger.warning(
                     f"sync_turn failed — server at {self._server_url} not reachable. "
                     f"Turn buffered (queue: {queue_len}). Server will retry on next sync."
                 )
-            elif self._sync_fail_count % 20 == 0:
-                logger.warning(f"sync_turn failed {self._sync_fail_count}x — queue: {queue_len}")
+            elif _fail_count % 20 == 0:  # P-#19
+                logger.warning(f"sync_turn failed {_fail_count}x — queue: {queue_len}")
 
         with self._sync_lock:  # P-#18
             if self._sync_thread and self._sync_thread.is_alive():
@@ -762,8 +797,11 @@ class NoxemMemoryProvider:
 
     def on_pre_compress(self, messages: list):
         try:
+            # P-#32: Truncate conversation history to prevent oversized payloads
+            max_msgs = 50
+            truncated = messages[-max_msgs:] if len(messages) > max_msgs else messages
             result = self._api_post("/memory/advisor/compress", {
-                "conversation_history": messages,
+                "conversation_history": truncated,  # P-#32
                 "session_id": self._session_id,
             })
             return result.get("analysis", "")

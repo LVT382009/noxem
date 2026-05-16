@@ -198,6 +198,8 @@ const getBySessionBefore = db.prepare(`SELECT * FROM memories WHERE session_id =
 
 const countAll = db.prepare(`SELECT status, type, COUNT(*) as count FROM memories GROUP BY status, type`);
 const countActive = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE status = 'active'`);
+const countBySession = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE session_id = ? AND status = 'active'`);
+const countByType = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE type = ? AND status = 'active'`);
 const getSuperseded = db.prepare(`SELECT * FROM memories WHERE status = 'superseded'`);
 const getByEntityAttr = db.prepare(`SELECT * FROM memories WHERE entity = ? AND attribute = ? AND status = 'active' ORDER BY created_at DESC`);
 const getTopActiveScored = db.prepare(`SELECT id, session_id, type, text, importance, recall_count, created_at FROM memories WHERE status = 'active' ORDER BY importance DESC, recall_count DESC, created_at DESC LIMIT ?`);
@@ -427,6 +429,14 @@ export function getMemoryStats() {
   const counts = countAll.all();
   const active = countActive.get();
   return { active: active.count, breakdown: counts };
+}
+
+export function getSessionMemoryCount(sessionId) {
+  return countBySession.get(sessionId).count;
+}
+
+export function getTypeMemoryCount(type) {
+  return countByType.get(type).count;
 }
 
 export function getSupersededMemories() {

@@ -84,15 +84,17 @@ def _cmd_config(args):
 
 
 def _cmd_run(args):
-    """Run maintenance manually."""
+    """Run maintenance manually. The POST endpoint triggers maintenance without requiring a body."""
     result = _api_post("/memory/maintenance/run")
     print(f"Maintenance: {json.dumps(result, indent=2)}")
 
 
-def _api_post(path):
+def _api_post(path, body=None):
+    """POST to the Noxem server. body=None sends empty JSON (for trigger endpoints like maintenance/run)."""
     url = f"{_get_server()}{path}"
+    data = json.dumps(body or {}).encode()
     try:
-        with urlopen(Request(url, data=b"{}", headers={"Content-Type": "application/json"}), timeout=30) as r:
+        with urlopen(Request(url, data=data, headers={"Content-Type": "application/json"}), timeout=30) as r:
             return json.loads(r.read().decode())
     except URLError as e:
         return {"error": str(e)}
