@@ -1577,7 +1577,11 @@ process.on('uncaughtException', (err) => {
   }
   // Non-fatal: debounce and count
   const count = (_errorCounts.get(msg) || 0) + 1;
-  _errorCounts.set(msg, count);
+  if (_errorCounts.size >= MAX_ERROR_ENTRIES) {
+		const oldest = _errorCounts.keys().next().value;
+		_errorCounts.delete(oldest);
+	}
+	_errorCounts.set(msg, count);
   if (count === 1) {
     console.error(`Uncaught exception (non-fatal): ${msg}`);
     _startErrorLogger();

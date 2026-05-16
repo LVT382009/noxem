@@ -279,6 +279,7 @@ export async function initEmbeddingEngine() {
       }
     }
     LOG_DEBUG && console.error('Brain-1: all load attempts failed. Vector search will be unavailable.');
+	loadPromise = null; // Allow retry on next initEmbeddingEngine() call
   })();
 
   return loadPromise;
