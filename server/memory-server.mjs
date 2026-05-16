@@ -48,10 +48,17 @@ function rateLimiter(req, res, next) {
   next();
 }
 // Periodic cleanup of stale rate limit buckets
+const RATE_LIMIT_MAX_BUCKETS = 10_000;
 setInterval(() => {
   const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS * 2;
   for (const [ip, bucket] of rateLimitBuckets) {
     if (bucket.start < cutoff) rateLimitBuckets.delete(ip);
+  }
+  // Evict oldest entries if map exceeds max size
+  if (rateLimitBuckets.size > RATE_LIMIT_MAX_BUCKETS) {
+    const entries = [...rateLimitBuckets.entries()].sort((a, b) => a[1].start - b[1].start);
+    const toRemove = rateLimitBuckets.size - RATE_LIMIT_MAX_BUCKETS;
+    for (let i = 0; i < toRemove; i++) rateLimitBuckets.delete(entries[i][0]);
   }
 }, 120_000);
 
@@ -157,6 +164,7 @@ startup().catch(err => {
 // ─── Background Embedding Queue ────────────────────────────────────
 // Queues memories for async embedding — store/sync return instantly
 const _embedQueue = [];
+const EMBED_QUEUE_MAX = 1000;
 let _embedProcessing = false;
 
 async function processEmbedQueue() {
@@ -165,8 +173,15 @@ async function processEmbedQueue() {
   while (_embedQueue.length > 0) {
     const batch = _embedQueue.splice(0, 10); // Process in batches of 10
     if (!isEmbeddingReady()) {
-      // Re-queue and retry after delay
-      _embedQueue.unshift(...batch);
+      // Re-queue and retry after delay (max 3 retries per batch)
+      for (const item of batch) {
+        item._retries = (item._retries || 0) + 1;
+        if (item._retries <= 3) {
+          _embedQueue.unshift(item);
+        } else {
+          LOG_DEBUG && console.warn('[EmbedQueue] Dropping item after 3 retries:', item.id);
+        }
+      }
       _embedProcessing = false;
       setTimeout(processEmbedQueue, 5000);
       return;
@@ -192,6 +207,10 @@ async function processEmbedQueue() {
 }
 
 function enqueueEmbedding(id, text, contextPrefix) {
+  if (_embedQueue.length >= EMBED_QUEUE_MAX) {
+    LOG_DEBUG && console.warn('[EmbedQueue] Queue full, dropping embedding for', id);
+    return;
+  }
   _embedQueue.push({ id, text, contextPrefix });
   if (!_embedProcessing) processEmbedQueue();
 }
@@ -406,7 +425,7 @@ function applyRecencyScore(results) {
   const dayMs = 24 * 60 * 60 * 1000;
   return results.map(r => {
     const ts = r.created_at ? new Date(r.created_at).getTime() : now;
-    const createdAt = Number.isFinite(ts) ? ts : now;
+    const createdAt = Number.isFinite(ts) ? ts : 0; // 0 = oldest, not newest, for invalid dates
     const ageMs = Math.max(0, now - createdAt);
     const ageDays = ageMs / dayMs;
     const recallCount = r.recall_count ?? 0;
@@ -1329,7 +1348,7 @@ app.post('/memory/reembed', async (req, res) => {
       return res.json({ ok: true, reembedded: 0, message: 'no memories missing embeddings' });
     }
 
-    const texts = missing.map(m => m.text);
+    const texts = missing.map(m => (m.context_prefix ? m.context_prefix + ' ' : '') + m.text);
     const embeddings = await embedBatch(texts);
     const ids = missing.map(m => m.id);
 
@@ -1447,7 +1466,10 @@ app.post('/memory/maintenance/stop', (_req, res) => {
 
 // Purge low-importance old memories
 const AUTO_PURGE_DAYS = parseInt(process.env.AUTO_PURGE_DAYS || '365');
-app.post('/memory/purge', (_req, res) => {
+app.post('/memory/purge', (req, res) => {
+  if (!req.body?.confirm) {
+    return res.status(400).json({ error: 'Purge requires confirm=true in request body' });
+  }
   try {
     const before = getMemoryStats();
     const purgeStmt = db.prepare(
@@ -1524,6 +1546,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 // Handle uncaught errors gracefully — debounce non-fatal errors like llm-server
 const _errorCounts = new Map();
+const MAX_ERROR_ENTRIES = 1000;
 let _errorLogInterval = null;
 function _startErrorLogger() {
   if (_errorLogInterval) return;

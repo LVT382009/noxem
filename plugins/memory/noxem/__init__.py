@@ -519,7 +519,11 @@ class NoxemMemoryProvider:
             "Use `memory_search` to look up past info and `memory_store` to save facts."
         )
 
-    MAX_MEMORY_TOKENS = int(os.environ.get("NOXEM_MAX_MEMORY_TOKENS", "2000"))
+    MAX_MEMORY_TOKENS = 2000
+    try:
+        MAX_MEMORY_TOKENS = int(os.environ.get("NOXEM_MAX_MEMORY_TOKENS", "2000"))
+    except (ValueError, TypeError):
+        pass
 
     def prefetch(self, query: str, **kwargs):
         """Curated context injection via /memory/release + research hints, fallback to /memory/search."""

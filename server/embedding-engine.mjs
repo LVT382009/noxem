@@ -289,7 +289,7 @@ export function getEmbeddingError() {
 
 function normalize(v) {
   const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
-  if (norm < 1e-10) return v;
+  if (norm < 1e-10) return null;
   return v.map(x => x / norm);
 }
 
@@ -311,7 +311,8 @@ export async function embed(text, role = 'document') {
     const inputs = await tokenizer(prefix + text, { padding: true });
     const { sentence_embedding } = await model(inputs);
     const arr = Array.from(sentence_embedding.data);
-    return normalize(arr.slice(0, EMBED_DIM));
+    const result = normalize(arr.slice(0, EMBED_DIM));
+  return result || arr.slice(0, EMBED_DIM); // fallback to unnormalized if zero vector
   });
 }
 
@@ -328,7 +329,8 @@ export async function embedBatch(texts, role = 'document') {
     const vectors = [];
     for (let i = 0; i < texts.length; i++) {
       const start = i * dim;
-      vectors.push(normalize(flat.slice(start, start + truncDim)));
+      const n = normalize(flat.slice(start, start + truncDim));
+    vectors.push(n || flat.slice(start, start + truncDim));
     }
     return vectors;
   });

@@ -215,7 +215,7 @@ const searchFts = db.prepare(`
 const searchRecent = db.prepare(`
   SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count
   FROM memories
-  WHERE status = 'active' AND text LIKE @query
+  WHERE status = 'active' AND text LIKE @query ESCAPE '\'
   ORDER BY created_at DESC
   LIMIT @limit
 `);
@@ -246,14 +246,14 @@ const getEdgeById = db.prepare('SELECT * FROM memory_edges WHERE id = ?');
 // Recursive graph traversal: multi-hop from a starting memory
 const traverseGraph = db.prepare(`
   WITH RECURSIVE graph_walk(id, from_id, to_id, relation, strength, depth, path) AS (
-    SELECT e.id, e.from_id, e.to_id, e.relation, e.strength, 1, '/' || e.from_id || '-' || e.relation || '->' || e.to_id || '/'
+    SELECT e.id, e.from_id, e.to_id, e.relation, e.strength, 1, '|' || e.from_id || '-' || e.relation || '->' || e.to_id || '|'
     FROM memory_edges e
     WHERE e.from_id = ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now'))
     UNION ALL
-    SELECT e.id, e.from_id, e.to_id, e.relation, gw.strength * e.strength, gw.depth + 1, gw.path || e.from_id || '-' || e.relation || '->' || e.to_id || '/'
+    SELECT e.id, e.from_id, e.to_id, e.relation, gw.strength * e.strength, gw.depth + 1, gw.path || e.from_id || '-' || e.relation || '->' || e.to_id || '|'
     FROM memory_edges e
     JOIN graph_walk gw ON e.from_id = gw.to_id
-    WHERE gw.depth < ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now')) AND gw.path NOT LIKE '%/' || e.to_id || '/%'
+    WHERE gw.depth < ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now')) AND gw.path NOT LIKE '%|' || e.to_id || '|%'
   )
   SELECT * FROM graph_walk ORDER BY depth, strength DESC LIMIT ?
 `);
@@ -289,9 +289,15 @@ function bufferToFloat32(buf) {
 function ensureEmbeddingBuffer(embedding) {
   if (!embedding) return null;
   if (Buffer.isBuffer(embedding)) return embedding;
-  if (embedding instanceof Float32Array) return Buffer.from(embedding.buffer);
+  if (embedding instanceof Float32Array) return Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
   if (embedding instanceof ArrayBuffer) return Buffer.from(embedding);
-  if (Array.isArray(embedding)) return Buffer.from(new Float32Array(embedding).buffer);
+  if (Array.isArray(embedding)) {
+    if (embedding.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+      console.warn('[ensureEmbeddingBuffer] Array contains non-finite values, filtering');
+      embedding = embedding.map(v => (typeof v === 'number' && Number.isFinite(v)) ? v : 0);
+    }
+    return Buffer.from(new Float32Array(embedding).buffer);
+  }
   return null;
 }
 

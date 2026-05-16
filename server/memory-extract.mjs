@@ -29,8 +29,8 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
   const model = llmModel || LLM_MODEL;
 
   const prompt = EXTRACTION_PROMPT
-    .replace('{{userMessage}}', (userMessage || '').substring(0, 2000))
-    .replace('{{assistantResponse}}', (assistantResponse || '').substring(0, 4000));
+    .split('{{userMessage}}').join((userMessage || '').substring(0, 2000))
+    .split('{{assistantResponse}}').join((assistantResponse || '').substring(0, 4000));
 
   const body = JSON.stringify({
     model,
@@ -55,17 +55,21 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '[]';
 
-    // Extract JSON array from response
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return [];
-
-    const memories = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(memories)) return [];
-
-    return memories.filter(m => m.text && m.type).map(m => ({
-      text: m.text.trim().substring(0, 500),
-      type: m.type.substring(0, 50),
-    }));
+  // Extract JSON array from response (non-greedy to handle multiple arrays)
+  const matches = [...content.matchAll(/\[[\s\S]*?\]/g)];
+  if (!matches.length) return [];
+  for (const match of matches) {
+    try {
+      const memories = JSON.parse(match[0]);
+      if (Array.isArray(memories) && memories.length > 0) {
+        return memories.filter(m => m.text && m.type).map(m => ({
+          text: m.text.trim().substring(0, 500),
+          type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
+        }));
+      }
+    } catch {}
+  }
+  return [];
   } catch (err) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
       console.error('Extraction timed out (LLM too slow)');

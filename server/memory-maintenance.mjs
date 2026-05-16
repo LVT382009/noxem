@@ -177,7 +177,7 @@ function autoCorrectCategories(memories, maxCorrections = 25) {
     // Goals/intentions
     { pattern: /(?:goal|planning to|want to|intend to|aim to|going to|will build|i need to)/i, correctType: 'goal', wrongTypes: ['fact', 'project'] },
     // Events with temporal markers
-    { pattern: /(?:yesterday|last week|on w+day|at d{1,2}(?:am|pm)|happened|occurred)/i, correctType: 'event', wrongTypes: ['fact'] },
+    { pattern: /(?:yesterday|last week|on \w+day|at \d{1,2}(?:am|pm)|happened|occurred)/i, correctType: 'event', wrongTypes: ['fact'] },
     // Setup/config
     { pattern: /(?:installed|configured|set up|setup|deployed|running on|using version|environment)/i, correctType: 'setup', wrongTypes: ['fact', 'entity'] },
     // Learning/research
@@ -355,6 +355,7 @@ async function consolidateMemories(memories) {
         for (const m of cluster) {
           updateMemoryStatus(m.id, 'superseded', newId);
           setValidUntil.run(new Date().toISOString(), m.id);
+        deleteVec(db, m.id);
         }
 
         consolidatedCount++;
