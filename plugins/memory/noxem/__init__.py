@@ -294,7 +294,7 @@ class NoxemMemoryProvider:
             self._pending_queue.clear()
 
         flushed = 0
-        for data in items:
+        for i, data in enumerate(items):
             try:
                 result = self._api_post("/memory/sync", data)
                 if result.get("stored", 0) is not None:
@@ -325,6 +325,20 @@ class NoxemMemoryProvider:
         except Exception:
             pass
 
+    def _kill_stale_pid(self, path):
+        """Kill process from stale PID file (crash recovery)."""
+        try:
+            if path.exists():
+                pid = int(path.read_text().strip())
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    logger.info(f"Noxem killed stale PID {pid} from {path.name}")
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                self._clean_pid_file(path)
+        except Exception:
+            pass
+
     def shutdown(self) -> None:
         """Process exit cleanup. Join daemon threads then kill auto-started server processes."""
         self._shutdown_event.set()  # P-#24
@@ -347,6 +361,10 @@ class NoxemMemoryProvider:
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         self._server_procs.clear()
+        # P-#29: Clean up PID files on shutdown
+        home = Path(self._hermes_home).expanduser()
+        self._clean_pid_file(home / 'noxem-server.pid')
+        self._clean_pid_file(home / 'noxem-memory.pid')
         for log_fh in self._stderr_logs:  # P-#22
             try:
                 log_fh.close()

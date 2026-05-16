@@ -19,7 +19,7 @@ if start:
             end = i
             break
 
-if start and end and end > start:
+if start is not None and end is not None and end > start:
     indent1 = '\t\t'
     indent2 = '\t\t\t'
     new_lines = [
