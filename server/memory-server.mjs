@@ -223,6 +223,7 @@ const _queryCache = new Map(); // hash -> { queryVec, results, timestamp }
 const QUERY_CACHE_MAX = 100;
 const QUERY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 let _cacheHits = 0;
+let _cacheCounter = 0;
 let _cacheMisses = 0;
 
 function hashVec(vec) {

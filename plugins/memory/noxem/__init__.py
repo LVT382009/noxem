@@ -63,12 +63,16 @@ class NoxemMemoryProvider:
         """Called at agent startup."""
         self._session_id = session_id
         self._hermes_home = kwargs.get("hermes_home", os.environ.get("HERMES_HOME", "~/.hermes"))
+        self._hermes_home = str(Path(self._hermes_home).expanduser())  # P-#27
         self._server_url = os.environ.get("NOXEM_SERVER", MEMORY_SERVER_DEFAULT)
         self._llm_url = os.environ.get("LLM_URL", os.environ.get("GEMMA_URL", "http://127.0.0.1:8000/v1/chat/completions"))
         self._sync_thread = None
         self._server_start_thread = None
-        self._server_reachable = False
-        self._sync_fail_count = 0
+        self._server_reachable = threading.Event()  # P-#19
+        with self._sync_lock:  # P-#19
+            self._sync_fail_count = 0
+        self._sync_lock = threading.Lock()  # P-#18
+        self._shutdown_event = threading.Event()  # P-#24
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
         self._server_procs = []
@@ -169,11 +173,12 @@ class NoxemMemoryProvider:
         for path in llm_candidates:
             if path.exists():
                 try:
+                    _llm_stderr_log = open(home / "noxem-server-stderr.log", "a")  # P-#22
                     popen_kwargs = {
                         "cwd": str(path.parent),
                         "env": env,
                         "stdout": subprocess.DEVNULL,
-                        "stderr": subprocess.DEVNULL,
+                        "stderr": _llm_stderr_log,
                         "start_new_session": True,
                     }
                     if platform.system() == "Windows":
@@ -198,11 +203,12 @@ class NoxemMemoryProvider:
         for path in memory_candidates:
             if path.exists():
                 try:
+                    _mem_stderr_log = open(home / "noxem-memory-stderr.log", "a")  # P-#22
                     popen_kwargs = {
                         "cwd": str(path.parent),
                         "env": env,
                         "stdout": subprocess.DEVNULL,
-                        "stderr": subprocess.DEVNULL,
+                        "stderr": _mem_stderr_log,
                         "start_new_session": True,
                     }
                     if platform.system() == "Windows":
@@ -225,7 +231,9 @@ class NoxemMemoryProvider:
         # Wait up to 90s for memory server to become ready
         # LLM server takes longer but we don't block on it — the advisor gracefully handles it
         for i in range(90):
-            time.sleep(1)
+            if self._shutdown_event.is_set():  # P-#24
+                return False
+            self._shutdown_event.wait(1)  # P-#24
             # Check /ready endpoint first (faster than full /health)
             try:
                 url = f"{self._server_url}/ready"
@@ -234,7 +242,7 @@ class NoxemMemoryProvider:
                     data = json.loads(resp.read().decode())
                     if data.get("ok"):
                         logger.info(f"Noxem memory server ready after {i+1}s")
-                        self._server_reachable = True
+                        self._server_reachable.set()  # P-#19
                         return True
             except Exception:
                 pass
@@ -247,8 +255,9 @@ class NoxemMemoryProvider:
             req = Request(url, headers={"Accept": "application/json"})
             with urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode())
-                self._server_reachable = True
-                self._sync_fail_count = 0
+                self._server_reachable.set()  # P-#19
+                with self._sync_lock:  # P-#19
+                    self._sync_fail_count = 0
                 if log_init:
                     stats = data.get("memory", {})
                     emb = "ON" if data.get("embedding") else "OFF"
@@ -260,7 +269,7 @@ class NoxemMemoryProvider:
                     )
                 return True
         except Exception:
-            self._server_reachable = False
+            self._server_reachable.clear()  # P-#19
             if log_init:
                 logger.warning(
                     f"Noxem server NOT reachable at {self._server_url} — "
@@ -297,6 +306,7 @@ class NoxemMemoryProvider:
 
     def shutdown(self) -> None:
         """Process exit cleanup. Join daemon threads then kill auto-started server processes."""
+        self._shutdown_event.set()  # P-#24
         if self._server_start_thread and self._server_start_thread.is_alive():
             self._server_start_thread.join(timeout=5.0)
         if self._sync_thread and self._sync_thread.is_alive():
@@ -484,6 +494,9 @@ class NoxemMemoryProvider:
             })
             return json.dumps(result)
         elif name == "memory_supersede":
+            if "old_id" not in args or "new_id" not in args:  # P-#28
+                missing = [k for k in ("old_id", "new_id") if k not in args]
+                return json.dumps({"error": f"Missing required parameter(s): {', '.join(missing)}"})
             result = self._api_post("/memory/supersede", {
                 "old_id": args["old_id"],
                 "new_id": args["new_id"],
@@ -491,7 +504,12 @@ class NoxemMemoryProvider:
             })
             return json.dumps(result)
         elif name == "memory_lineage":
-            result = self._api_get(f"/memory/{args['id']}/lineage")
+            if "id" not in args:  # P-#28
+                return json.dumps({"error": "Missing required parameter: id"})
+            mid = args.get("id")
+        if mid is None:
+            return json.dumps({"error": "id is required"})
+        result = self._api_get(f"/memory/{mid}/lineage")
             return json.dumps(result)
         elif name == "memory_contradiction_check":
             result = self._api_post("/memory/contradiction-check", {
@@ -510,7 +528,7 @@ class NoxemMemoryProvider:
     # ── Optional Hooks ────────────────────────────────────────
 
     def system_prompt_block(self):
-        status = "CONNECTED" if self._server_reachable else "OFFLINE — memories will NOT be saved until server starts"
+        status = "CONNECTED" if self._server_reachable.is_set() else "OFFLINE — memories will NOT be saved until server starts"
         return (
             f"[Noxem Memory — {status}]\n"
             "Brain-1 for semantic search + dedup. "
@@ -541,7 +559,7 @@ class NoxemMemoryProvider:
             text = result.get("text", "")
             count = result.get("memories", 0)
             if text and text.strip():
-                self._server_reachable = True
+                self._server_reachable.set()  # P-#19
                 parts.append(f"[Noxem Memory Recall — {count} memories]\n{text}")
         except Exception:
             pass
@@ -594,7 +612,7 @@ class NoxemMemoryProvider:
                 used_chars += len(line) + 1
 
             if lines:
-                self._server_reachable = True
+                self._server_reachable.set()  # P-#19
                 return f"[Noxem Memory Recall]\n" + "\n".join(lines)
         except Exception as e:
             logger.debug(f"prefetch failed: {e}")
@@ -663,7 +681,7 @@ class NoxemMemoryProvider:
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Health-check every 10 turns if server was unreachable. Flush queue on reconnect."""
-        if not self._server_reachable and turn_number % 10 == 1:
+        if not self._server_reachable.is_set() and turn_number % 10 == 1:
             if self._check_server_health():
                 self._flush_pending_queue()
                 logger.info(f"Noxem server reconnected at turn {turn_number}")
@@ -687,20 +705,23 @@ class NoxemMemoryProvider:
             # Try once
             try:
                 result = self._api_post("/memory/sync", data)
-                self._server_reachable = True
-                self._sync_fail_count = 0
+                self._server_reachable.set()  # P-#19
+                with self._sync_lock:  # P-#19
+                    self._sync_fail_count = 0
                 self._flush_pending_queue()
                 return
             except Exception:
-                self._sync_fail_count += 1
+                with self._sync_lock:  # P-#19
+                    self._sync_fail_count += 1
 
             # Retry once after 2s (server might be starting up)
             if self._sync_fail_count <= 3:
                 time.sleep(2.0)
                 try:
                     result = self._api_post("/memory/sync", data)
-                    self._server_reachable = True
-                    self._sync_fail_count = 0
+                    self._server_reachable.set()  # P-#19
+                    with self._sync_lock:  # P-#19
+                        self._sync_fail_count = 0
                     self._flush_pending_queue()
                     return
                 except Exception:
@@ -709,6 +730,8 @@ class NoxemMemoryProvider:
             # Buffer turn for later replay
             with self._queue_lock:
                 self._pending_queue.append(data)
+            if len(self._pending_queue) >= self._pending_queue.maxlen:
+                logger.warning(f"Pending queue at capacity ({self._pending_queue.maxlen}), oldest turns will be dropped")  # P-#23
                 queue_len = len(self._pending_queue)
 
             if self._sync_fail_count == 1:
@@ -719,10 +742,11 @@ class NoxemMemoryProvider:
             elif self._sync_fail_count % 20 == 0:
                 logger.warning(f"sync_turn failed {self._sync_fail_count}x — queue: {queue_len}")
 
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-        self._sync_thread = threading.Thread(target=_sync, daemon=True)
-        self._sync_thread.start()
+        with self._sync_lock:  # P-#18
+            if self._sync_thread and self._sync_thread.is_alive():
+                self._sync_thread.join(timeout=5.0)
+            self._sync_thread = threading.Thread(target=_sync, daemon=True)
+            self._sync_thread.start()
 
     def on_session_end(self, messages: list) -> None:
         try:

@@ -63,7 +63,8 @@ export async function runMaintenance() {
         }
       }
 
-      for (const d of dupes) {
+      const alreadySuperseded = new Set(); // S-#28
+    for (const d of dupes) {
         const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
         updateMemoryStatus(older.id, 'superseded', newer.id);
         results.duplicates++;

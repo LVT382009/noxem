@@ -27,11 +27,12 @@ function dequeueFetch() {
 async function fetchWithRetry(url, opts, retries = HF_FETCH_RETRIES) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      // Create a fresh AbortSignal for each attempt (signals are single-use)
+      // Always create a fresh timeout signal per attempt (signals are single-use)
       const retryOpts = { ...opts };
-      if (!opts.signal) {
-        retryOpts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
-      }
+      const freshSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+      retryOpts.signal = opts.signal && typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([freshSignal, opts.signal])
+        : freshSignal;
       const result = await _origFetch(url, retryOpts);
       return result;
     } catch (err) {
@@ -114,7 +115,10 @@ function withLock(fn) {
   const next = new Promise(r => { release = r; });
   const prev = inferenceLock;
   inferenceLock = next;
-  return prev.then(() => fn()).finally(release);
+  return prev.then(() => Promise.race([
+    fn(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Inference timeout')), 60000)),
+  ])).finally(release);
 }
 
 

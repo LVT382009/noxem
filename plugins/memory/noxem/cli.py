@@ -51,14 +51,15 @@ def _cmd_search(args):
     if not args.query:
         print("Usage: hermes noxem search <query>")
         return
-    data = _api_get(f"/memory/search?q={urllib.parse.quote(args.query, safe='')}&limit={args.limit}")
+    _truncated_query = args.query[:500]  # P-#34
+    data = _api_get(f"/memory/search?q={urllib.parse.quote(_truncated_query, safe='')}&limit={args.limit}")
     results = data.get("results", [])
     if not results:
         print("No memories found.")
         return
     print(f"Found {len(results)} memories:")
     for i, m in enumerate(results, 1):
-        score = m.get('score') or 0
+        score = float(m.get('score') or 0)  # P-#33
         print(f"\n  [{i}] ({m.get('type', '?')}) [rel: {score:.2f}]")
         print(f"      {m.get('text', '')[:200]}")
         print(f"      session: {m.get('session_id', '')[:20]}")
@@ -67,6 +68,9 @@ def _cmd_search(args):
 def _cmd_advice(args):
     """Get advisor analysis."""
     data = _api_get("/memory/advisor/analysis")
+    if "error" in data:  # P-#35
+        print(f"Error: {data['error']}")
+        return
     print(data.get("analysis", "No advisor analysis available."))
 
 

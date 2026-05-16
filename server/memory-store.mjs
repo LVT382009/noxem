@@ -281,7 +281,8 @@ const getCitationsBySession = db.prepare('SELECT memory_id, COUNT(*) as count FR
 // Convert SQLite BLOB (Node Buffer) to a regular JS array of float32 values
 function bufferToFloat32(buf) {
   if (!buf) return null;
-  return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / Float32Array.BYTES_PER_ELEMENT));
+  if (buf.byteLength % 4 !== 0) console.warn("[bufferToFloat32] misaligned buffer:", buf.byteLength);  // S-#43
+  return Array.from(new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / Float32Array.BYTES_PER_ELEMENT)));
 }
 
 // Ensure embedding is a Node Buffer for SQLite BLOB binding
