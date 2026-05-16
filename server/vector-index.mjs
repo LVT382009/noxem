@@ -12,6 +12,19 @@ export async function initVectorIndex(db) {
   try {
     sqliteVec = await import('sqlite-vec');
     sqliteVec.load(db);
+
+    // Check for EMBED_DIM mismatch: if vec0 table already exists with different dimension
+    try {
+      const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_vecs'").get();
+      if (existing?.sql) {
+        const dimMatch = existing.sql.match(/float\[(\d+)\]/);
+        if (dimMatch && parseInt(dimMatch[1]) !== EMBED_DIM) {
+          console.warn(`[VectorIndex] EMBED_DIM mismatch: table has ${dimMatch[1]}d but config is ${EMBED_DIM}d. Dropping and recreating.`);
+          db.exec('DROP TABLE IF EXISTS memory_vecs');
+        }
+      }
+    } catch (e) { LOG_DEBUG && console.error('[VectorIndex] Dim check error:', e.message); }
+
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memory_vecs USING vec0(embedding float[${EMBED_DIM}] distance_metric=cosine)`);
     vecAvailable = true;
     vecTableReady = true;
@@ -34,7 +47,7 @@ export function insertVec(db, memoryId, embeddingArray) {
     const vec = new Float32Array(embeddingArray.slice(0, EMBED_DIM));
     db.prepare('INSERT OR REPLACE INTO memory_vecs(rowid, embedding) VALUES (?, ?)').run(memoryId, vec);
   } catch (err) {
-    // Silently fail — vector index is best-effort
+    LOG_DEBUG && console.error('[VectorIndex] insertVec failed:', err.message);
   }
 }
 
@@ -47,7 +60,7 @@ export function insertVecBatch(db, ids, embeddings) {
       if (embeddings[i]) {
         try {
           stmt.run(ids[i], new Float32Array(embeddings[i].slice(0, EMBED_DIM)));
-        } catch {}
+        } catch (err) { LOG_DEBUG && console.error('[VectorIndex] batch insert failed for', ids[i], err.message); }
       }
     }
   });
@@ -60,13 +73,24 @@ export function knnSearch(db, queryEmbedding, topK = 5) {
   if (!vecTableReady) return null;
   try {
     const vec = new Float32Array(queryEmbedding.slice(0, EMBED_DIM));
-    const results = db.prepare(`
-      SELECT rowid as id, distance
-      FROM memory_vecs
-      WHERE embedding MATCH ?
-      ORDER BY distance
-      LIMIT ?
-    `).all(vec, topK);
+    // Some sqlite-vec builds require AND k = ?; others work with LIMIT ?
+    let results;
+    try {
+      results = db.prepare(`
+  SELECT rowid as id, distance
+  FROM memory_vecs
+  WHERE embedding MATCH ? AND k = ?
+  ORDER BY distance
+`).all(vec, topK);
+    } catch {
+      results = db.prepare(`
+  SELECT rowid as id, distance
+  FROM memory_vecs
+  WHERE embedding MATCH ?
+  ORDER BY distance
+  LIMIT ?
+`).all(vec, topK);
+    }
     // sqlite-vec returns cosine distance (0 = identical, 2 = opposite)
     // Convert to similarity: score = 1 - distance
     return results.map(r => ({
@@ -74,6 +98,7 @@ export function knnSearch(db, queryEmbedding, topK = 5) {
       score: Math.max(0, Math.round((1 - r.distance) * 1000) / 1000),
     }));
   } catch (err) {
+    LOG_DEBUG && console.error('[VectorIndex] knnSearch error:', err.message);
     return null;
   }
 }
@@ -83,7 +108,7 @@ export function deleteVec(db, memoryId) {
   if (!vecTableReady) return;
   try {
     db.prepare('DELETE FROM memory_vecs WHERE rowid = ?').run(memoryId);
-  } catch {}
+  } catch (err) { LOG_DEBUG && console.error('[VectorIndex] deleteVec failed:', err.message); }
 }
 
 export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec };

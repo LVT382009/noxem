@@ -243,21 +243,23 @@ export async function initEmbeddingEngine() {
         // Transformers.js fires many concurrent fetch() requests for model files;
         // loading tokenizer + model in parallel doubles the concurrent connections,
         // which triggers ConnectTimeoutError on HuggingFace CDN (xethub.hf.co).
-        const loadWithTimeout = Promise.race([
-          (async () => {
-            const tok = await AutoTokenizer.from_pretrained(MODEL_ID, { cache_dir: EMBED_CACHE_DIR });
-            const mod = await AutoModel.from_pretrained(MODEL_ID, {
-              dtype: DTYPE,
-              cache_dir: EMBED_CACHE_DIR,
-            });
-            return [tok, mod];
-          })(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`Model load timed out after ${LOAD_TIMEOUT_MS / 1000}s`)), LOAD_TIMEOUT_MS)
-          ),
-        ]);
-        [tokenizer, model] = await loadWithTimeout;
-        modelReady = true;
+      let loadTimeoutId;
+      const loadWithTimeout = Promise.race([
+        (async () => {
+          const tok = await AutoTokenizer.from_pretrained(MODEL_ID, { cache_dir: EMBED_CACHE_DIR });
+          const mod = await AutoModel.from_pretrained(MODEL_ID, {
+            dtype: DTYPE,
+            cache_dir: EMBED_CACHE_DIR,
+          });
+          return [tok, mod];
+        })(),
+        new Promise((_, reject) => {
+          loadTimeoutId = setTimeout(() => reject(new Error(`Model load timed out after ${LOAD_TIMEOUT_MS / 1000}s`)), LOAD_TIMEOUT_MS);
+        }),
+      ]);
+      [tokenizer, model] = await loadWithTimeout;
+      clearTimeout(loadTimeoutId); // Clear timeout timer after successful load
+      modelReady = true;
         loadError = null;
         LOG_DEBUG && console.log(`Brain-1 ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
         return;
@@ -321,10 +323,12 @@ export async function embedBatch(texts, role = 'document') {
     const { sentence_embedding } = await model(inputs);
     const dim = sentence_embedding.dims[1];
     const flat = Array.from(sentence_embedding.data);
+    // Guard: EMBED_DIM must not exceed model's native output dimension
+    const truncDim = Math.min(EMBED_DIM, dim);
     const vectors = [];
     for (let i = 0; i < texts.length; i++) {
       const start = i * dim;
-      vectors.push(normalize(flat.slice(start, start + EMBED_DIM)));
+      vectors.push(normalize(flat.slice(start, start + truncDim)));
     }
     return vectors;
   });

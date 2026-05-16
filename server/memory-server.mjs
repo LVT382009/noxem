@@ -23,8 +23,8 @@ import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './mem
 
 const app = express();
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:* http://127.0.0.1:*',
-  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  origin: process.env.CORS_ORIGIN || true, // Allow all origins in dev; set CORS_ORIGIN for prod
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -1084,8 +1084,11 @@ app.get('/memory/:id/lineage', (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const lineage = [];
+    const MAX_LINEAGE_DEPTH = 50;
+    let depth = 0;
     let current = getMemory(id);
-    while (current) {
+    while (current && depth < MAX_LINEAGE_DEPTH) {
+      depth++;
       const meta = JSON.parse(current.metadata || '{}');
       lineage.push({
         id: current.id,
@@ -1106,6 +1109,9 @@ app.get('/memory/:id/lineage', (req, res) => {
       } else {
         break;
       }
+    }
+    if (depth >= MAX_LINEAGE_DEPTH && current?.superseded_by) {
+      lineage.push({ id: current.superseded_by, text: '... (lineage truncated at depth cap)', type: 'truncated', status: 'active' });
     }
     res.json({ ok: true, lineage });
   } catch (err) {

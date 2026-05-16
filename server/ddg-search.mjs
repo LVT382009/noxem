@@ -6,17 +6,18 @@ import { search as ddgScrapeSearch, SafeSearchType } from 'duck-duck-scrape';
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-function fetchUrl(url, timeout = 10000) {
+function fetchUrl(url, timeout = 10000, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
+    if (maxRedirects <= 0) return reject(new Error('Too many redirects'));
     const parsed = parseUrl(url);
     const mod = parsed.protocol === 'https:' ? https : http;
     const req = mod.get(url, {
       headers: { 'User-Agent': USER_AGENT },
       timeout,
     }, (res) => {
-      // Follow redirects
+      // Follow redirects (with depth limit)
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchUrl(res.headers.location, timeout).then(resolve).catch(reject);
+        return fetchUrl(res.headers.location, timeout, maxRedirects - 1).then(resolve).catch(reject);
       }
       // Reject non-200 responses (e.g., 202 bot challenge, 429 rate limit)
       if (res.statusCode !== 200) {
