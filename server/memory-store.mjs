@@ -191,7 +191,7 @@ let ftsReady = false;
 if (sessionMessagesReady) {
   try { db.exec(`
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
-    USING fts5(content_text, tokenize='porter unicode61 remove_diacritics 1 tokenchars "_-.@"', content='session_messages', content_rowid='rowid');
+    USING fts5(content_text, tokenize="porter unicode61 remove_diacritics 1 tokenchars '_-.@'", content='session_messages', content_rowid='rowid');
   `);
     ftsReady = true;
   } catch (e) { console.warn('[Schema] messages_fts creation failed - cross-session search disabled:', e.message); }
@@ -213,7 +213,7 @@ if (ftsReady) {
   `) } catch (e) { console.warn('[Schema] FTS triggers creation failed:', e.message); }
 }
 
-const SESSION_STORAGE_READY = sessionsTableReady && sessionMessagesReady;
+const SESSION_STORAGE_READY = sessionsTableReady && sessionMessagesReady && ftsReady;
 if (!SESSION_STORAGE_READY) {
   console.warn('[Schema] Session storage tables NOT available - session conversations will NOT be saved');
 }
