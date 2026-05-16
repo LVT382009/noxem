@@ -344,7 +344,6 @@ export function storeMemories(items) {
     }
   }
   return ids;
-  return insertTx(prepared);
 }
 
 export function updateMemoryStatus(id, status, supersededBy = null) {

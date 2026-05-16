@@ -16,7 +16,9 @@ Resilience features:
 import json
 import logging
 import os
+import platform
 import re
+import signal
 import subprocess
 import time
 import threading
@@ -69,7 +71,7 @@ class NoxemMemoryProvider:
         self._sync_fail_count = 0
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
-        self._server_pids = []
+        self._server_procs = []
         atexit.register(self.shutdown)
 
         # Load noxem.json and propagate to env vars if not already set
@@ -114,9 +116,10 @@ class NoxemMemoryProvider:
             "brain2_provider": "BRAIN2_PROVIDER",
             "llm_url": "LLM_URL",
             "llm_model": "LLM_MODEL",
-            "llm_api_key": "LLM_API_KEY",
             "embedding_enabled": "ENABLE_EMBEDDING",
         }
+        # Store API key separately — only pass to child server processes, not global env
+        self._llm_api_key = cfg.get("llm_api_key", "")
         for json_key, env_var in env_map.items():
             val = cfg.get(json_key)
             if val and env_var not in os.environ:
@@ -151,6 +154,9 @@ class NoxemMemoryProvider:
         env.setdefault("ENABLE_MAINTENANCE", "true")
         env.setdefault("ENABLE_RESEARCH", "true")
         env.setdefault("NODE_OPTIONS", "--dns-result-order=ipv4first")
+        # Pass API key only to child server processes, not global env
+        if self._llm_api_key:
+            env["LLM_API_KEY"] = self._llm_api_key
         # Propagate HF mirror setting if configured
         if "HF_ENDPOINT" not in env and os.environ.get("HF_ENDPOINT"):
             env["HF_ENDPOINT"] = os.environ["HF_ENDPOINT"]
@@ -163,15 +169,20 @@ class NoxemMemoryProvider:
         for path in llm_candidates:
             if path.exists():
                 try:
+                    popen_kwargs = {
+                        "cwd": str(path.parent),
+                        "env": env,
+                        "stdout": subprocess.DEVNULL,
+                        "stderr": subprocess.DEVNULL,
+                        "start_new_session": True,
+                    }
+                    if platform.system() == "Windows":
+                        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
                     proc = subprocess.Popen(
                         [node_bin, str(path)],
-                        cwd=str(path.parent),
-                        env=env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
+                        **popen_kwargs,
                     )
-                    self._server_pids.append(proc.pid)
+                    self._server_procs.append(proc)
                     logger.info(f"Noxem auto-started LLM server from {path} (PID {proc.pid})")
                     sys.stderr.write(f"[Noxem] Auto-starting LLM server... (PID {proc.pid})\n")
                     break
@@ -187,15 +198,20 @@ class NoxemMemoryProvider:
         for path in memory_candidates:
             if path.exists():
                 try:
+                    popen_kwargs = {
+                        "cwd": str(path.parent),
+                        "env": env,
+                        "stdout": subprocess.DEVNULL,
+                        "stderr": subprocess.DEVNULL,
+                        "start_new_session": True,
+                    }
+                    if platform.system() == "Windows":
+                        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
                     proc = subprocess.Popen(
                         [node_bin, str(path)],
-                        cwd=str(path.parent),
-                        env=env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
+                        **popen_kwargs,
                     )
-                    self._server_pids.append(proc.pid)
+                    self._server_procs.append(proc)
                     logger.info(f"Noxem auto-started memory server from {path} (PID {proc.pid})")
                     sys.stderr.write(f"[Noxem] Auto-starting memory server... (PID {proc.pid})\n")
                     started = True
@@ -271,7 +287,8 @@ class NoxemMemoryProvider:
                 # Re-queue remaining items on failure
                 with self._queue_lock:
                     self._pending_queue.appendleft(data)
-                    for remaining in items[items.index(data) + 1:]:
+                    remaining_start = i + 1
+                    for remaining in items[remaining_start:]:
                         self._pending_queue.append(remaining)
                     break
 
@@ -288,13 +305,17 @@ class NoxemMemoryProvider:
             sys.stdout.flush()
         except Exception:
             pass
-        for pid in self._server_pids:
-            try:
-                os.kill(pid, 15)  # SIGTERM
-                logger.info(f"Noxem stopped auto-started server PID {pid}")
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-        self._server_pids.clear()
+        for proc in self._server_procs:
+		try:
+			proc.terminate()
+			try:
+				proc.wait(timeout=5)
+			except subprocess.TimeoutExpired:
+				proc.kill()
+			logger.info(f"Noxem stopped auto-started server PID {proc.pid}")
+		except (ProcessLookupError, PermissionError, OSError):
+			pass
+	self._server_procs.clear()
         logger.info("Noxem shutdown complete")
 
     # ── Config ────────────────────────────────────────────────
@@ -760,8 +781,15 @@ class NoxemMemoryProvider:
             "Content-Type": "application/json",
             "Accept": "application/json",
         })
-        with urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode())
+        try:
+            with urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode())
+        except URLError as e:
+            logger.debug(f"Noxem API POST {path} failed: {e}")
+            return {"error": str(e)}
+        except Exception as e:
+            logger.debug(f"Noxem API POST {path} error: {e}")
+            return {"error": str(e)}
 
     @staticmethod
     def _urlencode(s: str) -> str:
