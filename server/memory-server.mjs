@@ -106,7 +106,7 @@ const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false' && BRAIN2_ENABLE
 const ENABLE_QUERY_REWRITE = BRAIN2_ENABLED && process.env.ENABLE_QUERY_REWRITE !== 'false';
 const ENABLE_SMART_EXTRACT = BRAIN2_ENABLED && process.env.ENABLE_SMART_EXTRACT !== 'false';
 const ENABLE_PROACTIVE_ADVISOR = BRAIN2_ENABLED && process.env.ENABLE_PROACTIVE_ADVISOR !== 'false';
-const ADVISOR_INTERVAL = parseInt(process.env.ADVISOR_INTERVAL || '10');
+const ADVISOR_INTERVAL = Math.max(1, Math.min(3600, parseInt(process.env.ADVISOR_INTERVAL || '10') || 10));
 const REWRITE_TIMEOUT_MS = parseInt(process.env.REWRITE_TIMEOUT_MS || '3000');
 const EXTRACT_DEBOUNCE_MS = parseInt(process.env.EXTRACT_DEBOUNCE_MS || '2000');
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
@@ -609,7 +609,7 @@ app.post('/memory/store', (req, res) => {
         alreadyExtracted: [trimmed],
       });
     }
-  res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped', extraction: smart ? 'tier1_immediate_tier2_async' : undefined });
+  res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped', extraction: ENABLE_SMART_EXTRACT && smart ? 'tier1_immediate_tier2_async' : undefined });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

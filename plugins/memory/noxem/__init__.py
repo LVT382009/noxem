@@ -84,7 +84,10 @@ class NoxemMemoryProvider:
 
         # Brain 2: Proactive advisor state
         self._advisor_cache = None  # Cached advisor output (consumed by prefetch)
-        self._advisor_interval = int(os.environ.get("ADVISOR_INTERVAL", "10"))
+        try:
+            self._advisor_interval = max(1, min(3600, int(os.environ.get("ADVISOR_INTERVAL", "10"))))
+        except (ValueError, TypeError):
+            self._advisor_interval = 10
         self._last_advisor_turn = 0
         self._consecutive_errors = 0  # Track for error-loop detection
 
