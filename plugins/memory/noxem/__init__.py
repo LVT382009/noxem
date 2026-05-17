@@ -84,6 +84,8 @@ class NoxemMemoryProvider:
 
         # Brain 2: Proactive advisor state
         self._advisor_cache = None  # Cached advisor output (consumed by prefetch)
+        self._advisor_lock = threading.Lock()  # Guards _advisor_cache reads/writes
+        self._advisor_request_in_progress = False  # Prevents concurrent advisor requests
         try:
             self._advisor_interval = max(1, min(3600, int(os.environ.get("ADVISOR_INTERVAL", "10"))))
         except (ValueError, TypeError):
@@ -642,9 +644,10 @@ class NoxemMemoryProvider:
             pass
 
         # Brain 2: Inject advisor warnings (if any)
-        if self._advisor_cache:
-            parts.append(f"[Noxem Advisor]\n{self._advisor_cache}")
-            self._advisor_cache = None  # consume — only shown once
+        with self._advisor_lock:
+            if self._advisor_cache:
+                parts.append("[Noxem Advisor]\n" + self._advisor_cache)
+                self._advisor_cache = None  # consume — only shown once
 
         if parts:
             return "\n\n".join(parts)
@@ -764,18 +767,27 @@ class NoxemMemoryProvider:
         return (os.environ.get("ENABLE_PROACTIVE_ADVISOR", "true").lower() != "false"
                 and self._server_reachable.is_set())
 
-    def _request_advisor_analysis(self, message):
+    def _request_advisor_analysis(self, message, session_id=None):
         """Fire advisor analysis in background thread. Result cached for next prefetch."""
+        with self._advisor_lock:
+            if self._advisor_request_in_progress:
+                return  # Already running — skip
+            self._advisor_request_in_progress = True
+        effective_session = session_id or self._session_id or ""
         def _run():
             try:
                 result = self._api_post("/memory/advisor/proactive", {
                     "user_message": (message or "")[:500],
-                    "session_id": self._session_id or "",
+                    "session_id": effective_session,
                 })
                 if result and "advice" in result and result["advice"] != "SILENT":
-                    self._advisor_cache = result["advice"][:500]  # Budget cap
+                    with self._advisor_lock:
+                        self._advisor_cache = result["advice"][:500]  # Budget cap
             except Exception:
                 pass  # Non-critical — advisor is best-effort
+            finally:
+                with self._advisor_lock:
+                    self._advisor_request_in_progress = False
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
 
@@ -884,8 +896,9 @@ class NoxemMemoryProvider:
         """Handle session switches — update session ID + request advisor analysis after compaction."""
         self._session_id = new_session_id
         # After context compression, request advisor analysis to check for lost context
+        # Pass parent_session_id so advisor analyzes the compressed session, not the new one
         if not reset and parent_session_id and self._advisor_enabled():
-            self._request_advisor_analysis("[Context was just compressed — check for lost context]")
+            self._request_advisor_analysis("[Context was just compressed — check for lost context]", session_id=parent_session_id)
 
     def on_memory_write(self, action: str, target: str, content: str, metadata=None, **kwargs) -> None:
         """Mirror built-in memory writes to Noxem."""
