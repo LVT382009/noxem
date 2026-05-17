@@ -150,6 +150,18 @@ const serverStartTime = Date.now();
 async function startup() {
   // Start maintenance immediately — doesn't need embedding
   if (ENABLE_MAINTENANCE) startMaintenanceCron();
+  // Brain 2: Initialize extraction queue with dependency injection
+  if (ENABLE_SMART_EXTRACT) {
+    initExtractionQueue({
+      embedFn: embed,
+      storeMemoryFn: storeMemory,
+      addVecsToIndexFn: addVecsToIndex,
+      vectorKnnSearchFn: vectorKnnSearch,
+      invalidateQueryCacheFn: invalidateQueryCache,
+      isEmbeddingReadyFn: isEmbeddingReady,
+    });
+    LOG_DEBUG && console.log('[Brain2] Extraction queue initialized');
+  }
   startupComplete = true;
   LOG_DEBUG && console.log('Memory server ready (FTS search available)');
 
@@ -427,6 +439,7 @@ brain2_features: {
   rewrite_timeout_ms: REWRITE_TIMEOUT_MS,
   extract_debounce_ms: EXTRACT_DEBOUNCE_MS,
 },
+extraction_queue: getExtractionQueueStatus(),
 core_memory_blocks: getAllCoreBlocks().length,
       query_cache: { size: _queryCache.size, hits: _cacheHits, misses: _cacheMisses, hit_rate: _cacheHits + _cacheMisses > 0 ? Math.round(_cacheHits / (_cacheHits + _cacheMisses) * 100) : 0 },
     llm: llmOk,
@@ -560,6 +573,7 @@ const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goa
 app.post('/memory/store', (req, res) => {
   try {
     const { text, session_id, type, metadata } = req.body;
+    const smart = req.query.smart === 'true';
     if (!text || typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text required (non-empty string)' });
     if (text.length > 10000) return res.status(400).json({ error: 'text too long (max 10000 chars)' });
     if (type && !VALID_TYPES.includes(type)) return res.status(400).json({ error: `invalid type: ${type}. Valid: ${VALID_TYPES.join(', ')}` });
@@ -586,7 +600,16 @@ app.post('/memory/store', (req, res) => {
   const enqueued = enqueueEmbedding(id, trimmed, contextPrefix);
 
   invalidateQueryCache();
-  res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped' });
+    // Brain 2: Smart extraction for /memory/store?smart=true
+    if (ENABLE_SMART_EXTRACT && smart && trimmed) {
+      enqueueExtraction({
+        user_message: trimmed,
+        assistant_response: '',
+        session_id: session_id || '',
+        alreadyExtracted: [trimmed],
+      });
+    }
+  res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped', extraction: smart ? 'tier1_immediate_tier2_async' : undefined });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1310,6 +1333,16 @@ app.post('/memory/sync', async (req, res) => {
  res.json({ ok: true, stored: ids.length, ids });
     invalidateQueryCache();
 
+    // Brain 2: Enqueue for async LLM extraction (Tier 2)
+    if (ENABLE_SMART_EXTRACT && memories.length > 0) {
+      enqueueExtraction({
+        user_message: (user_message || "").substring(0, 2000),
+        assistant_response: (assistant_response || "").substring(0, 4000),
+        session_id: session_id || "",
+        alreadyExtracted: memories.map(m => m.text),
+      });
+    }
+
  // Trigger background research pipeline (non-blocking, async)
  if (ENABLE_ADVISOR && user_message?.trim()) {
    triggerResearch({
@@ -1357,6 +1390,47 @@ app.post('/memory/advisor/advice', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+
+// Brain 2: Proactive advisor — auto-analyze for drift, context loss
+app.post('/memory/advisor/proactive', async (req, res) => {
+  if (!ENABLE_PROACTIVE_ADVISOR) {
+    return res.json({ ok: true, advice: 'SILENT' });
+  }
+
+  const { user_message, session_id } = req.body || {};
+
+  try {
+    const sessionMems = getSessionMemories(session_id).slice(-15);
+    const NL = '\n';
+    const memoryBlock = sessionMems.map(m => `[${m.type}] ${m.text}`).join(NL);
+    const userMsg = (user_message || '').substring(0, 500);
+    const userContent = 'Current memories:' + NL + (memoryBlock || 'None') + NL + NL + 'Latest user message: ' + userMsg + NL + NL + 'Analyze for drift or critical context:';
+
+    const messages = [
+      { role: 'system', content: PROACTIVE_ADVISOR_PROMPT },
+      { role: 'user', content: userContent },
+    ];
+
+    const advisorRes = await callLLM(messages, 200, 0.1, 10000);
+    const data = await advisorRes?.json?.();
+    const advice = data?.choices?.[0]?.message?.content?.trim() || 'SILENT';
+
+    if (advice === 'SILENT' || advice.length < 10) {
+      return res.json({ ok: true, advice: 'SILENT' });
+    }
+
+    res.json({ ok: true, advice: advice.substring(0, 500) });
+  } catch (err) {
+    // Never fail the pipeline — advisor is best-effort
+    res.json({ ok: true, advice: 'SILENT' });
+  }
+});
+
+// Brain 2: Extraction queue status
+app.get('/memory/extraction/status', (_req, res) => {
+  res.json({ ok: true, ...getExtractionQueueStatus(), smart_extract_enabled: ENABLE_SMART_EXTRACT });
 });
 
 app.post('/memory/session/end', async (req, res) => {
