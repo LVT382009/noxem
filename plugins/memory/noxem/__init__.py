@@ -16,7 +16,9 @@ Resilience features:
 import json
 import logging
 import os
+import platform
 import re
+import signal
 import subprocess
 import time
 import threading
@@ -35,6 +37,10 @@ warnings.filterwarnings('ignore', message='.*local_dir_use_symlinks.*', category
 logger = logging.getLogger(__name__)
 
 MEMORY_SERVER_DEFAULT = "http://127.0.0.1:3001"
+# P-#31: For SSL/TLS, set NOXEM_SERVER to https:// URL and ensure the
+# Node.js server is started with --tls-cert and --tls-key flags, e.g.:
+#   node server/memory-server.mjs --tls-cert=/path/to/cert.pem --tls-key=/path/to/key.pem
+# For self-signed certs, set NODE_TLS_REJECT_UNAUTHORIZED=0 in env (dev only).
 
 
 class NoxemMemoryProvider:
@@ -61,15 +67,19 @@ class NoxemMemoryProvider:
         """Called at agent startup."""
         self._session_id = session_id
         self._hermes_home = kwargs.get("hermes_home", os.environ.get("HERMES_HOME", "~/.hermes"))
+        self._hermes_home = str(Path(self._hermes_home).expanduser())  # P-#27
         self._server_url = os.environ.get("NOXEM_SERVER", MEMORY_SERVER_DEFAULT)
         self._llm_url = os.environ.get("LLM_URL", os.environ.get("GEMMA_URL", "http://127.0.0.1:8000/v1/chat/completions"))
         self._sync_thread = None
         self._server_start_thread = None
-        self._server_reachable = False
+        self._server_reachable = threading.Event()  # P-#19
         self._sync_fail_count = 0
+        self._sync_lock = threading.Lock()  # P-#18
+        self._shutdown_event = threading.Event()  # P-#24
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
-        self._server_pids = []
+        self._server_procs = []
+        self._stderr_logs = []  # P-#22
         atexit.register(self.shutdown)
 
         # Load noxem.json and propagate to env vars if not already set
@@ -114,9 +124,10 @@ class NoxemMemoryProvider:
             "brain2_provider": "BRAIN2_PROVIDER",
             "llm_url": "LLM_URL",
             "llm_model": "LLM_MODEL",
-            "llm_api_key": "LLM_API_KEY",
             "embedding_enabled": "ENABLE_EMBEDDING",
         }
+        # Store API key separately — only pass to child server processes, not global env
+        self._llm_api_key = cfg.get("llm_api_key", "")
         for json_key, env_var in env_map.items():
             val = cfg.get(json_key)
             if val and env_var not in os.environ:
@@ -151,6 +162,9 @@ class NoxemMemoryProvider:
         env.setdefault("ENABLE_MAINTENANCE", "true")
         env.setdefault("ENABLE_RESEARCH", "true")
         env.setdefault("NODE_OPTIONS", "--dns-result-order=ipv4first")
+        # Pass API key only to child server processes, not global env
+        if self._llm_api_key:
+            env["LLM_API_KEY"] = self._llm_api_key
         # Propagate HF mirror setting if configured
         if "HF_ENDPOINT" not in env and os.environ.get("HF_ENDPOINT"):
             env["HF_ENDPOINT"] = os.environ["HF_ENDPOINT"]
@@ -163,15 +177,23 @@ class NoxemMemoryProvider:
         for path in llm_candidates:
             if path.exists():
                 try:
+                    _llm_stderr_log = open(home / "noxem-server-stderr.log", "a")  # P-#22
+                    self._stderr_logs.append(_llm_stderr_log)
+                    popen_kwargs = {
+                        "cwd": str(path.parent),
+                        "env": env,
+                        "stdout": subprocess.DEVNULL,
+                        "stderr": _llm_stderr_log,
+                        "start_new_session": True,
+                    }
+                    if platform.system() == "Windows":
+                        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
                     proc = subprocess.Popen(
                         [node_bin, str(path)],
-                        cwd=str(path.parent),
-                        env=env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
+                        **popen_kwargs,
                     )
-                    self._server_pids.append(proc.pid)
+                    self._server_procs.append(proc)
+                    self._write_pid_file(home / 'noxem-server.pid', proc.pid)  # P-#29
                     logger.info(f"Noxem auto-started LLM server from {path} (PID {proc.pid})")
                     sys.stderr.write(f"[Noxem] Auto-starting LLM server... (PID {proc.pid})\n")
                     break
@@ -187,15 +209,22 @@ class NoxemMemoryProvider:
         for path in memory_candidates:
             if path.exists():
                 try:
+                    _mem_stderr_log = open(home / "noxem-memory-stderr.log", "a")  # P-#22
+                    self._stderr_logs.append(_mem_stderr_log)
+                    popen_kwargs = {
+                        "cwd": str(path.parent),
+                        "env": env,
+                        "stdout": subprocess.DEVNULL,
+                        "stderr": _mem_stderr_log,
+                        "start_new_session": True,
+                    }
+                    if platform.system() == "Windows":
+                        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
                     proc = subprocess.Popen(
                         [node_bin, str(path)],
-                        cwd=str(path.parent),
-                        env=env,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
+                        **popen_kwargs,
                     )
-                    self._server_pids.append(proc.pid)
+                    self._server_procs.append(proc)
                     logger.info(f"Noxem auto-started memory server from {path} (PID {proc.pid})")
                     sys.stderr.write(f"[Noxem] Auto-starting memory server... (PID {proc.pid})\n")
                     started = True
@@ -209,7 +238,9 @@ class NoxemMemoryProvider:
         # Wait up to 90s for memory server to become ready
         # LLM server takes longer but we don't block on it — the advisor gracefully handles it
         for i in range(90):
-            time.sleep(1)
+            if self._shutdown_event.is_set():  # P-#24
+                return False
+            self._shutdown_event.wait(1)  # P-#24
             # Check /ready endpoint first (faster than full /health)
             try:
                 url = f"{self._server_url}/ready"
@@ -218,7 +249,7 @@ class NoxemMemoryProvider:
                     data = json.loads(resp.read().decode())
                     if data.get("ok"):
                         logger.info(f"Noxem memory server ready after {i+1}s")
-                        self._server_reachable = True
+                        self._server_reachable.set()  # P-#19
                         return True
             except Exception:
                 pass
@@ -231,8 +262,9 @@ class NoxemMemoryProvider:
             req = Request(url, headers={"Accept": "application/json"})
             with urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode())
-                self._server_reachable = True
-                self._sync_fail_count = 0
+                self._server_reachable.set()  # P-#19
+                with self._sync_lock:  # P-#19
+                    self._sync_fail_count = 0
                 if log_init:
                     stats = data.get("memory", {})
                     emb = "ON" if data.get("embedding") else "OFF"
@@ -244,7 +276,7 @@ class NoxemMemoryProvider:
                     )
                 return True
         except Exception:
-            self._server_reachable = False
+            self._server_reachable.clear()  # P-#19
             if log_init:
                 logger.warning(
                     f"Noxem server NOT reachable at {self._server_url} — "
@@ -262,7 +294,7 @@ class NoxemMemoryProvider:
             self._pending_queue.clear()
 
         flushed = 0
-        for data in items:
+        for i, data in enumerate(items):
             try:
                 result = self._api_post("/memory/sync", data)
                 if result.get("stored", 0) is not None:
@@ -271,15 +303,49 @@ class NoxemMemoryProvider:
                 # Re-queue remaining items on failure
                 with self._queue_lock:
                     self._pending_queue.appendleft(data)
-                    for remaining in items[items.index(data) + 1:]:
+                    remaining_start = i + 1
+                    for remaining in items[remaining_start:]:
                         self._pending_queue.append(remaining)
                     break
 
         if flushed > 0:
             logger.info(f"Noxem flushed {flushed} buffered turns to memory server")
 
+    # P-#29: PID file helpers for reliable process cleanup on Windows
+    def _write_pid_file(self, path, pid):
+        try:
+            path.write_text(str(pid))
+        except Exception:
+            pass
+
+    def _clean_pid_file(self, path):
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
+
+    def _kill_stale_pid(self, path):
+        """Kill process from stale PID file (crash recovery)."""
+        try:
+            if path.exists():
+                pid = int(path.read_text().strip())
+                if platform.system() == "Windows":
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                   capture_output=True, timeout=5)
+                else:
+                    os.kill(pid, signal.SIGTERM)
+                logger.info(f"Noxem killed stale PID {pid} from {path.name}")
+            self._clean_pid_file(path)
+        except (ProcessLookupError, PermissionError, OSError,
+                subprocess.TimeoutExpired):
+            self._clean_pid_file(path)
+        except Exception:
+            pass
+
     def shutdown(self) -> None:
         """Process exit cleanup. Join daemon threads then kill auto-started server processes."""
+        self._shutdown_event.set()  # P-#24
         if self._server_start_thread and self._server_start_thread.is_alive():
             self._server_start_thread.join(timeout=5.0)
         if self._sync_thread and self._sync_thread.is_alive():
@@ -288,13 +354,27 @@ class NoxemMemoryProvider:
             sys.stdout.flush()
         except Exception:
             pass
-        for pid in self._server_pids:
+        for proc in self._server_procs:
             try:
-                os.kill(pid, 15)  # SIGTERM
-                logger.info(f"Noxem stopped auto-started server PID {pid}")
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                logger.info(f"Noxem stopped auto-started server PID {proc.pid}")
             except (ProcessLookupError, PermissionError, OSError):
                 pass
-        self._server_pids.clear()
+        self._server_procs.clear()
+        # P-#29: Clean up PID files on shutdown
+        home = Path(self._hermes_home).expanduser()
+        self._clean_pid_file(home / 'noxem-server.pid')
+        self._clean_pid_file(home / 'noxem-memory.pid')
+        for log_fh in self._stderr_logs:  # P-#22
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+        self._stderr_logs.clear()
         logger.info("Noxem shutdown complete")
 
     # ── Config ────────────────────────────────────────────────
@@ -463,6 +543,9 @@ class NoxemMemoryProvider:
             })
             return json.dumps(result)
         elif name == "memory_supersede":
+            if "old_id" not in args or "new_id" not in args:  # P-#28
+                missing = [k for k in ("old_id", "new_id") if k not in args]
+                return json.dumps({"error": f"Missing required parameter(s): {', '.join(missing)}"})
             result = self._api_post("/memory/supersede", {
                 "old_id": args["old_id"],
                 "new_id": args["new_id"],
@@ -470,6 +553,8 @@ class NoxemMemoryProvider:
             })
             return json.dumps(result)
         elif name == "memory_lineage":
+            if "id" not in args:  # P-#28
+                return json.dumps({"error": "Missing required parameter: id"})
             result = self._api_get(f"/memory/{args['id']}/lineage")
             return json.dumps(result)
         elif name == "memory_contradiction_check":
@@ -489,7 +574,7 @@ class NoxemMemoryProvider:
     # ── Optional Hooks ────────────────────────────────────────
 
     def system_prompt_block(self):
-        status = "CONNECTED" if self._server_reachable else "OFFLINE — memories will NOT be saved until server starts"
+        status = "CONNECTED" if self._server_reachable.is_set() else "OFFLINE — memories will NOT be saved until server starts"
         return (
             f"[Noxem Memory — {status}]\n"
             "Brain-1 for semantic search + dedup. "
@@ -498,7 +583,11 @@ class NoxemMemoryProvider:
             "Use `memory_search` to look up past info and `memory_store` to save facts."
         )
 
-    MAX_MEMORY_TOKENS = int(os.environ.get("NOXEM_MAX_MEMORY_TOKENS", "2000"))
+    MAX_MEMORY_TOKENS = 2000
+    try:
+        MAX_MEMORY_TOKENS = int(os.environ.get("NOXEM_MAX_MEMORY_TOKENS", "2000"))
+    except (ValueError, TypeError):
+        pass
 
     def prefetch(self, query: str, **kwargs):
         """Curated context injection via /memory/release + research hints, fallback to /memory/search."""
@@ -516,7 +605,7 @@ class NoxemMemoryProvider:
             text = result.get("text", "")
             count = result.get("memories", 0)
             if text and text.strip():
-                self._server_reachable = True
+                self._server_reachable.set()  # P-#19
                 parts.append(f"[Noxem Memory Recall — {count} memories]\n{text}")
         except Exception:
             pass
@@ -569,7 +658,7 @@ class NoxemMemoryProvider:
                 used_chars += len(line) + 1
 
             if lines:
-                self._server_reachable = True
+                self._server_reachable.set()  # P-#19
                 return f"[Noxem Memory Recall]\n" + "\n".join(lines)
         except Exception as e:
             logger.debug(f"prefetch failed: {e}")
@@ -638,7 +727,7 @@ class NoxemMemoryProvider:
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Health-check every 10 turns if server was unreachable. Flush queue on reconnect."""
-        if not self._server_reachable and turn_number % 10 == 1:
+        if not self._server_reachable.is_set() and turn_number % 10 == 1:
             if self._check_server_health():
                 self._flush_pending_queue()
                 logger.info(f"Noxem server reconnected at turn {turn_number}")
@@ -649,7 +738,7 @@ class NoxemMemoryProvider:
 
         def _sync():
             try:
-                self._sync_impl(session_id, user_content, assistant_content)
+                _sync_impl(session_id, user_content, assistant_content)
             except Exception:
                 pass  # Prevent daemon thread exception during interpreter shutdown
 
@@ -662,38 +751,57 @@ class NoxemMemoryProvider:
             # Try once
             try:
                 result = self._api_post("/memory/sync", data)
-                self._server_reachable = True
-                self._sync_fail_count = 0
+                if result.get("error"):  # P-#25
+                    raise Exception(result["error"])
+                self._server_reachable.set()  # P-#19
+                with self._sync_lock:  # P-#19
+                    self._sync_fail_count = 0
                 self._flush_pending_queue()
                 return
             except Exception:
-                self._sync_fail_count += 1
+                with self._sync_lock:  # P-#19
+                    self._sync_fail_count += 1
 
-            # Retry once after 2s (server might be starting up)
-            if self._sync_fail_count <= 3:
-                time.sleep(2.0)
-                try:
-                    result = self._api_post("/memory/sync", data)
-                    self._server_reachable = True
+        # Retry once after 2s (server might be starting up)
+        # Release _sync_lock before sleep to avoid blocking other threads
+        with self._sync_lock: # P-#19
+            _fail_count = self._sync_fail_count
+            _should_retry = _fail_count <= 3
+        if _should_retry:
+            time.sleep(2.0)
+            try:
+                result = self._api_post("/memory/sync", data)
+                if result.get("error"): # P-#25
+                    raise Exception(result["error"])
+                self._server_reachable.set() # P-#19
+                with self._sync_lock: # P-#19
                     self._sync_fail_count = 0
-                    self._flush_pending_queue()
-                    return
-                except Exception:
-                    pass
+                self._flush_pending_queue()
+                return
+            except Exception:
+                pass
 
             # Buffer turn for later replay
             with self._queue_lock:
+                if len(self._pending_queue) >= self._pending_queue.maxlen:  # P-#23
+                    logger.warning(
+                        f"Noxem pending queue at capacity ({self._pending_queue.maxlen}), "
+                        f"oldest items will be dropped"
+                    )
                 self._pending_queue.append(data)
                 queue_len = len(self._pending_queue)
 
-            if self._sync_fail_count == 1:
+            with self._sync_lock:  # P-#19
+                _fail_count = self._sync_fail_count
+            if _fail_count == 1:
                 logger.warning(
                     f"sync_turn failed — server at {self._server_url} not reachable. "
                     f"Turn buffered (queue: {queue_len}). Server will retry on next sync."
                 )
-            elif self._sync_fail_count % 20 == 0:
-                logger.warning(f"sync_turn failed {self._sync_fail_count}x — queue: {queue_len}")
+            elif _fail_count % 20 == 0:  # P-#19
+                logger.warning(f"sync_turn failed {_fail_count}x — queue: {queue_len}")
 
+        # Join previous sync thread if still running, then start new one
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
         self._sync_thread = threading.Thread(target=_sync, daemon=True)
@@ -702,7 +810,7 @@ class NoxemMemoryProvider:
     def on_session_end(self, messages: list) -> None:
         try:
             result = self._api_post("/memory/session/end", {
-                "conversation_history": messages,
+            "conversation_history": messages[-50:],
                 "session_id": self._session_id,
             })
             count = result.get("extracted", 0)
@@ -713,8 +821,11 @@ class NoxemMemoryProvider:
 
     def on_pre_compress(self, messages: list):
         try:
+            # P-#32: Truncate conversation history to prevent oversized payloads
+            max_msgs = 50
+            truncated = messages[-max_msgs:] if len(messages) > max_msgs else messages
             result = self._api_post("/memory/advisor/compress", {
-                "conversation_history": messages,
+                "conversation_history": truncated,  # P-#32
                 "session_id": self._session_id,
             })
             return result.get("analysis", "")
@@ -741,6 +852,9 @@ class NoxemMemoryProvider:
     # ── Internal ──────────────────────────────────────────────
 
     def _api_get(self, path: str) -> dict:
+        # Validate URL scheme
+        if not self._server_url.startswith(("http://", "https://")):
+            return {"error": f"Invalid server URL scheme: {self._server_url}"}
         url = f"{self._server_url}{path}"
         req = Request(url, headers={"Accept": "application/json"})
         try:
@@ -748,20 +862,29 @@ class NoxemMemoryProvider:
                 return json.loads(resp.read().decode())
         except URLError as e:
             logger.debug(f"Noxem API GET {path} failed: {e}")
-            return {"results": []}
+            return {"error": "unreachable"}
         except Exception as e:
             logger.debug(f"Noxem API GET {path} error: {e}")
-            return {"results": []}
+            return {"error": "unreachable"}
 
     def _api_post(self, path: str, data: dict) -> dict:
+        if not self._server_url.startswith(("http://", "https://")):
+            return {"error": f"Invalid server URL scheme: {self._server_url}"}
         url = f"{self._server_url}{path}"
         body = json.dumps(data).encode()
         req = Request(url, data=body, headers={
             "Content-Type": "application/json",
             "Accept": "application/json",
         })
-        with urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode())
+        try:
+            with urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode())
+        except URLError as e:
+            logger.debug(f"Noxem API POST {path} failed: {e}")
+            return {"error": str(e)}
+        except Exception as e:
+            logger.debug(f"Noxem API POST {path} error: {e}")
+            return {"error": str(e)}
 
     @staticmethod
     def _urlencode(s: str) -> str:

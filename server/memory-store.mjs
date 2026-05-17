@@ -195,9 +195,12 @@ const getActiveAll = db.prepare(`SELECT * FROM memories WHERE status = 'active'`
 const getBySession = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`);
 const getByType = db.prepare(`SELECT * FROM memories WHERE type = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`);
 const getBySessionBefore = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?`);
+const getActiveAllNoEmbed = db.prepare(`SELECT id, session_id, type, text, metadata, importance, context_prefix, entity, attribute, valid_from, valid_until, recall_count, created_at FROM memories WHERE status = 'active'`);
 
 const countAll = db.prepare(`SELECT status, type, COUNT(*) as count FROM memories GROUP BY status, type`);
 const countActive = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE status = 'active'`);
+const countBySession = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE session_id = ? AND status = 'active'`);
+const countByType = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE type = ? AND status = 'active'`);
 const getSuperseded = db.prepare(`SELECT * FROM memories WHERE status = 'superseded'`);
 const getByEntityAttr = db.prepare(`SELECT * FROM memories WHERE entity = ? AND attribute = ? AND status = 'active' ORDER BY created_at DESC`);
 const getTopActiveScored = db.prepare(`SELECT id, session_id, type, text, importance, recall_count, created_at FROM memories WHERE status = 'active' ORDER BY importance DESC, recall_count DESC, created_at DESC LIMIT ?`);
@@ -215,7 +218,7 @@ const searchFts = db.prepare(`
 const searchRecent = db.prepare(`
   SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count
   FROM memories
-  WHERE status = 'active' AND text LIKE @query
+  WHERE status = 'active' AND text LIKE @query ESCAPE '\'
   ORDER BY created_at DESC
   LIMIT @limit
 `);
@@ -246,14 +249,14 @@ const getEdgeById = db.prepare('SELECT * FROM memory_edges WHERE id = ?');
 // Recursive graph traversal: multi-hop from a starting memory
 const traverseGraph = db.prepare(`
   WITH RECURSIVE graph_walk(id, from_id, to_id, relation, strength, depth, path) AS (
-    SELECT e.id, e.from_id, e.to_id, e.relation, e.strength, 1, '/' || e.from_id || '-' || e.relation || '->' || e.to_id || '/'
+    SELECT e.id, e.from_id, e.to_id, e.relation, e.strength, 1, '|' || e.from_id || '-' || e.relation || '->' || e.to_id || '|'
     FROM memory_edges e
     WHERE e.from_id = ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now'))
     UNION ALL
-    SELECT e.id, e.from_id, e.to_id, e.relation, gw.strength * e.strength, gw.depth + 1, gw.path || e.from_id || '-' || e.relation || '->' || e.to_id || '/'
+    SELECT e.id, e.from_id, e.to_id, e.relation, gw.strength * e.strength, gw.depth + 1, gw.path || e.from_id || '-' || e.relation || '->' || e.to_id || '|'
     FROM memory_edges e
     JOIN graph_walk gw ON e.from_id = gw.to_id
-    WHERE gw.depth < ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now')) AND gw.path NOT LIKE '%/' || e.to_id || '/%'
+    WHERE gw.depth < ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now')) AND gw.path NOT LIKE '%|' || e.to_id || '|%'
   )
   SELECT * FROM graph_walk ORDER BY depth, strength DESC LIMIT ?
 `);
@@ -281,7 +284,8 @@ const getCitationsBySession = db.prepare('SELECT memory_id, COUNT(*) as count FR
 // Convert SQLite BLOB (Node Buffer) to a regular JS array of float32 values
 function bufferToFloat32(buf) {
   if (!buf) return null;
-  return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / Float32Array.BYTES_PER_ELEMENT));
+  if (buf.byteLength % 4 !== 0) console.warn("[bufferToFloat32] misaligned buffer:", buf.byteLength);  // S-#43
+  return Array.from(new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / Float32Array.BYTES_PER_ELEMENT)));
 }
 
 // Ensure embedding is a Node Buffer for SQLite BLOB binding
@@ -289,9 +293,15 @@ function bufferToFloat32(buf) {
 function ensureEmbeddingBuffer(embedding) {
   if (!embedding) return null;
   if (Buffer.isBuffer(embedding)) return embedding;
-  if (embedding instanceof Float32Array) return Buffer.from(embedding.buffer);
+  if (embedding instanceof Float32Array) return Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
   if (embedding instanceof ArrayBuffer) return Buffer.from(embedding);
-  if (Array.isArray(embedding)) return Buffer.from(new Float32Array(embedding).buffer);
+  if (Array.isArray(embedding)) {
+    if (embedding.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
+      console.warn('[ensureEmbeddingBuffer] Array contains non-finite values, filtering');
+      embedding = embedding.map(v => (typeof v === 'number' && Number.isFinite(v)) ? v : 0);
+    }
+    return Buffer.from(new Float32Array(embedding).buffer);
+  }
   return null;
 }
 
@@ -344,7 +354,6 @@ export function storeMemories(items) {
     }
   }
   return ids;
-  return insertTx(prepared);
 }
 
 export function updateMemoryStatus(id, status, supersededBy = null) {
@@ -397,6 +406,10 @@ export function getAllActiveMemories() {
   return getActiveAll.all().map(m => ({ ...m, embedding: bufferToFloat32(m.embedding) }));
 }
 
+
+export function getAllActiveMemoriesNoEmbed() {
+  return getActiveAllNoEmbed.all();
+}
 export function getSessionMemories(sessionId, limit = 50) {
   return getBySession.all(sessionId, Math.min(limit, 200));
 }
@@ -421,6 +434,14 @@ export function getMemoryStats() {
   const counts = countAll.all();
   const active = countActive.get();
   return { active: active.count, breakdown: counts };
+}
+
+export function getSessionMemoryCount(sessionId) {
+  return countBySession.get(sessionId).count;
+}
+
+export function getTypeMemoryCount(type) {
+  return countByType.get(type).count;
 }
 
 export function getSupersededMemories() {

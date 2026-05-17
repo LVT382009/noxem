@@ -1,5 +1,6 @@
 import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
-import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, findContradictions, categorizeText, estimateImportance, extractEntityAttribute, normalize, cosineSimilarity } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity } from './embedding-engine.mjs';
+import { deleteVec } from './vector-index.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 
@@ -63,9 +64,13 @@ export async function runMaintenance() {
         }
       }
 
-      for (const d of dupes) {
+      const alreadySuperseded = new Set(); // S-#28
+    for (const d of dupes) {
         const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
+        if (alreadySuperseded.has(older.id)) continue;
+        if (alreadySuperseded.has(newer.id)) continue;
         updateMemoryStatus(older.id, 'superseded', newer.id);
+        alreadySuperseded.add(older.id);
         results.duplicates++;
       }
       if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] Marked ${dupes.length} duplicates as superseded`);
@@ -177,7 +182,7 @@ function autoCorrectCategories(memories, maxCorrections = 25) {
     // Goals/intentions
     { pattern: /(?:goal|planning to|want to|intend to|aim to|going to|will build|i need to)/i, correctType: 'goal', wrongTypes: ['fact', 'project'] },
     // Events with temporal markers
-    { pattern: /(?:yesterday|last week|on w+day|at d{1,2}(?:am|pm)|happened|occurred)/i, correctType: 'event', wrongTypes: ['fact'] },
+    { pattern: /(?:yesterday|last week|on \w+day|at \d{1,2}(?:am|pm)|happened|occurred)/i, correctType: 'event', wrongTypes: ['fact'] },
     // Setup/config
     { pattern: /(?:installed|configured|set up|setup|deployed|running on|using version|environment)/i, correctType: 'setup', wrongTypes: ['fact', 'entity'] },
     // Learning/research
@@ -284,31 +289,26 @@ async function consolidateMemories(memories) {
   for (const [entity, entityMems] of byEntity) {
     if (entityMems.length < CONSOLIDATION_MIN_CLUSTER) continue;
 
-    const visited = new Set();
-    const clusters = [];
+    // S-#37: Union-Find for transitive closure (prevents single-link misses)
+    const parent = Array.from({ length: entityMems.length }, (_, i) => i);
+    function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+    function union(a, b) { parent[find(a)] = find(b); }
 
     for (let i = 0; i < entityMems.length; i++) {
-      if (visited.has(i)) continue;
-      const cluster = [entityMems[i]];
-      visited.add(i);
-
-      for (let j = i + 1; j < entityMems.length; j++) {
-        if (visited.has(j)) continue;
-        const sim = cosineSimilarity(
-          entityMems[i].embedding,
-          entityMems[j].embedding
-        );
-        if (sim > CONSOLIDATION_SIM_THRESHOLD) {
-          cluster.push(entityMems[j]);
-          visited.add(j);
+        for (let j = i + 1; j < entityMems.length; j++) {
+            const sim = cosineSimilarity(entityMems[i].embedding, entityMems[j].embedding);
+            if (sim > CONSOLIDATION_SIM_THRESHOLD) union(i, j);
         }
-      }
-
-      if (cluster.length >= CONSOLIDATION_MIN_CLUSTER) {
-        clusters.push(cluster);
-      }
     }
 
+    const groups = new Map();
+    for (let i = 0; i < entityMems.length; i++) {
+        const root = find(i);
+        if (!groups.has(root)) groups.set(root, []);
+        groups.get(root).push(entityMems[i]);
+    }
+
+    const clusters = [...groups.values()].filter(c => c.length >= CONSOLIDATION_MIN_CLUSTER);
     for (const cluster of clusters) {
       try {
         cluster.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
@@ -329,7 +329,7 @@ async function consolidateMemories(memories) {
         let embedding = null;
         try {
           const vec = await embed(summaryText);
-          embedding = new Float32Array(vec);
+          embedding = vec; // S-#53: storeMemory->ensureEmbeddingBuffer converts array to Buffer
         } catch {}
 
         const newId = storeMemory({
@@ -355,6 +355,7 @@ async function consolidateMemories(memories) {
         for (const m of cluster) {
           updateMemoryStatus(m.id, 'superseded', newId);
           setValidUntil.run(new Date().toISOString(), m.id);
+        deleteVec(db, m.id);
         }
 
         consolidatedCount++;

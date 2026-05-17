@@ -1,3 +1,4 @@
+from urllib.parse import urlparse
 """Noxem CLI — hermes noxem status, config, search, advisor."""
 
 import json
@@ -15,12 +16,23 @@ def _get_server():
 
 
 def _api_get(path):
-    url = f"{_get_server()}{path}"
+    base = _get_server()
+    scheme = urlparse(base).scheme
+    if scheme not in ("http", "https"):
+        return {"error": f"Invalid server URL scheme: {scheme}. Must be http or https."}
+    url = f"{base}{path}"
     try:
         with urlopen(Request(url, headers={"Accept": "application/json"}), timeout=5) as r:
             return json.loads(r.read().decode())
     except URLError as e:
         return {"error": str(e)}
+
+
+def _safe_float(v, default=0.0):
+    try:
+        return float(v) if v is not None else default
+    except (ValueError, TypeError):
+        return default
 
 
 def _cmd_status(args):
@@ -51,14 +63,15 @@ def _cmd_search(args):
     if not args.query:
         print("Usage: hermes noxem search <query>")
         return
-    data = _api_get(f"/memory/search?q={urllib.parse.quote(args.query, safe='')}&limit={args.limit}")
+    _truncated_query = args.query[:500]  # P-#34
+    data = _api_get(f"/memory/search?q={urllib.parse.quote(_truncated_query, safe='')}&limit={args.limit}")
     results = data.get("results", [])
     if not results:
         print("No memories found.")
         return
     print(f"Found {len(results)} memories:")
     for i, m in enumerate(results, 1):
-        score = m.get('score') or 0
+        score = _safe_float(m.get('score'))  # P-#33
         print(f"\n  [{i}] ({m.get('type', '?')}) [rel: {score:.2f}]")
         print(f"      {m.get('text', '')[:200]}")
         print(f"      session: {m.get('session_id', '')[:20]}")
@@ -67,6 +80,9 @@ def _cmd_search(args):
 def _cmd_advice(args):
     """Get advisor analysis."""
     data = _api_get("/memory/advisor/analysis")
+    if "error" in data:  # P-#35
+        print(f"Error: {data['error']}")
+        return
     print(data.get("analysis", "No advisor analysis available."))
 
 
@@ -80,15 +96,21 @@ def _cmd_config(args):
 
 
 def _cmd_run(args):
-    """Run maintenance manually."""
+    """Run maintenance manually. The POST endpoint triggers maintenance without requiring a body."""
     result = _api_post("/memory/maintenance/run")
     print(f"Maintenance: {json.dumps(result, indent=2)}")
 
 
-def _api_post(path):
-    url = f"{_get_server()}{path}"
+def _api_post(path, body=None):
+    """POST to the Noxem server. body=None sends empty JSON (for trigger endpoints like maintenance/run)."""
+    base = _get_server()
+    scheme = urlparse(base).scheme
+    if scheme not in ("http", "https"):
+        return {"error": f"Invalid server URL scheme: {scheme}. Must be http or https."}
+    url = f"{base}{path}"
+    data = json.dumps(body or {}).encode()
     try:
-        with urlopen(Request(url, data=b"{}", headers={"Content-Type": "application/json"}), timeout=30) as r:
+        with urlopen(Request(url, data=data, headers={"Content-Type": "application/json"}), timeout=30) as r:
             return json.loads(r.read().decode())
     except URLError as e:
         return {"error": str(e)}

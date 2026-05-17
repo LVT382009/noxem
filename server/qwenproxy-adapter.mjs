@@ -41,7 +41,11 @@ function upstreamHeaders() {
 
 // ── SSE collection (for QwenProxy non-streaming mode) ────────
 
+const MAX_RETRIES = 3;
+const RETRY_BASE_MS = 2000;
+
 async function collectSSE(url, bodyObj, timeoutMs = 60000) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -51,6 +55,12 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    if ((res.status === 429 || res.status === 502) && attempt < MAX_RETRIES) {
+      const delay = RETRY_BASE_MS * Math.pow(2, attempt);
+      console.error(`[Adapter] ${res.status} — retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
     throw new Error(`QwenProxy returned ${res.status}: ${text.substring(0, 500)}`);
   }
 
@@ -84,6 +94,7 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
   if (!content && reasoning) content = reasoning;
 
   return { content, reasoning, model, finishReason, usage };
+  } // end retry loop
 }
 
 // ── SSE streaming passthrough ─────────────────────────────────

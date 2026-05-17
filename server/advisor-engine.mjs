@@ -1,5 +1,5 @@
-/**
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+/**
  * Advisor Engine — Brain 2 advisor for drift detection + context recovery.
  *
  * DDG web search has been moved to research-engine.mjs.

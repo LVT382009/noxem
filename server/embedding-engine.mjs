@@ -27,11 +27,12 @@ function dequeueFetch() {
 async function fetchWithRetry(url, opts, retries = HF_FETCH_RETRIES) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      // Create a fresh AbortSignal for each attempt (signals are single-use)
+      // Always create a fresh timeout signal per attempt (signals are single-use)
       const retryOpts = { ...opts };
-      if (!opts.signal) {
-        retryOpts.signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
-      }
+      const freshSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+      retryOpts.signal = opts.signal && typeof AbortSignal.any === 'function'
+        ? AbortSignal.any([freshSignal, opts.signal])
+        : freshSignal;
       const result = await _origFetch(url, retryOpts);
       return result;
     } catch (err) {
@@ -114,7 +115,24 @@ function withLock(fn) {
   const next = new Promise(r => { release = r; });
   const prev = inferenceLock;
   inferenceLock = next;
-  return prev.then(() => fn()).finally(release);
+  return prev.then(() => {
+    let result;
+    try {
+      result = fn();
+    } catch (syncErr) {
+      release(); // Release lock on synchronous throw to prevent deadlock
+      throw syncErr;
+    }
+    // Timeout returns error to caller but does NOT release the lock —
+    // the inference may still be running in transformers.js (not thread-safe).
+    // Release only when the actual inference completes.
+    let _inferenceTimer; const timeout = new Promise((_, reject) => { _inferenceTimer = setTimeout(() => reject(new Error("Inference timeout")), 60000); });
+    return Promise.race([result, timeout]).catch(err => {
+      // On timeout, caller gets error but lock stays held until inference finishes
+      result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); release(); });
+      throw err;
+    }).then(val => { clearTimeout(_inferenceTimer); release(); return val; });
+  });
 }
 
 
@@ -205,7 +223,8 @@ function validateCacheDir(cacheDir) {
 
 export async function initEmbeddingEngine() {
   if (modelReady) return;
-  if (loadPromise) return loadPromise;
+  // S-#39: Guard against race — if a concurrent caller already started loading, reuse their promise
+  if (loadPromise) { await loadPromise; return; }
   validateCacheDir(EMBED_CACHE_DIR);
 
   loadPromise = (async () => {
@@ -274,6 +293,7 @@ export async function initEmbeddingEngine() {
       }
     }
     LOG_DEBUG && console.error('Brain-1: all load attempts failed. Vector search will be unavailable.');
+	loadPromise = null; // Allow retry on next initEmbeddingEngine() call
   })();
 
   return loadPromise;
@@ -289,7 +309,7 @@ export function getEmbeddingError() {
 
 function normalize(v) {
   const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
-  if (norm < 1e-10) return v;
+  if (norm < 1e-10) return null;
   return v.map(x => x / norm);
 }
 
@@ -311,7 +331,8 @@ export async function embed(text, role = 'document') {
     const inputs = await tokenizer(prefix + text, { padding: true });
     const { sentence_embedding } = await model(inputs);
     const arr = Array.from(sentence_embedding.data);
-    return normalize(arr.slice(0, EMBED_DIM));
+    const result = normalize(arr.slice(0, EMBED_DIM));
+  return result || arr.slice(0, EMBED_DIM); // fallback to unnormalized if zero vector
   });
 }
 
@@ -328,7 +349,8 @@ export async function embedBatch(texts, role = 'document') {
     const vectors = [];
     for (let i = 0; i < texts.length; i++) {
       const start = i * dim;
-      vectors.push(normalize(flat.slice(start, start + truncDim)));
+      const n = normalize(flat.slice(start, start + truncDim));
+    vectors.push(n || flat.slice(start, start + truncDim));
     }
     return vectors;
   });

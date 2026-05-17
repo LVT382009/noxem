@@ -6,7 +6,7 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 import { isVecReady } from './vector-index.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
-  getAllActiveMemories, getSessionMemories, getMemoriesByType,
+  getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
   deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
@@ -48,10 +48,17 @@ function rateLimiter(req, res, next) {
   next();
 }
 // Periodic cleanup of stale rate limit buckets
+const RATE_LIMIT_MAX_BUCKETS = 10_000;
 setInterval(() => {
   const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS * 2;
   for (const [ip, bucket] of rateLimitBuckets) {
     if (bucket.start < cutoff) rateLimitBuckets.delete(ip);
+  }
+  // Evict oldest entries if map exceeds max size
+  if (rateLimitBuckets.size > RATE_LIMIT_MAX_BUCKETS) {
+    const entries = [...rateLimitBuckets.entries()].sort((a, b) => a[1].start - b[1].start);
+    const toRemove = rateLimitBuckets.size - RATE_LIMIT_MAX_BUCKETS;
+    for (let i = 0; i < toRemove; i++) rateLimitBuckets.delete(entries[i][0]);
   }
 }, 120_000);
 
@@ -137,11 +144,19 @@ async function startup() {
 
   // Load embedding engine in background — server already functional with FTS-only
   if (ENABLE_EMBEDDING) {
-    initEmbeddingEngine().then(() => {
-      if (isEmbeddingReady()) {
-        embed('warmup').then(() => { if (LOG_DEBUG) console.log('Brain-1 warmed up'); })
-          .catch(err => LOG_DEBUG && console.error('Brain-1 warm-up failed:', err.message));
-      }
+  initEmbeddingEngine().then(() => {
+    if (isEmbeddingReady()) {
+      embed('warmup').then(() => {
+        if (LOG_DEBUG) console.log('Brain-1 warmed up');
+        // Backfill memories stored before embedding was ready
+        const missing = getMemoriesWithoutEmbedding(500);
+        if (missing.length) {
+          LOG_DEBUG && console.log(`[EmbedQueue] Backfilling ${missing.length} memories with missing embeddings`);
+          for (const m of missing) enqueueEmbedding(m.id, m.text, m.context_prefix);
+        }
+      })
+      .catch(err => LOG_DEBUG && console.error('Brain-1 warm-up failed:', err.message));
+    }
     }).catch(err => {
       LOG_DEBUG && console.error('Brain-1 startup error:', err.message);
     });
@@ -157,43 +172,67 @@ startup().catch(err => {
 // ─── Background Embedding Queue ────────────────────────────────────
 // Queues memories for async embedding — store/sync return instantly
 const _embedQueue = [];
-let _embedProcessing = false;
+const EMBED_QUEUE_MAX = 1000;
+let _embedLock = Promise.resolve(); // C-1: promise-chain mutex replaces boolean flag
 
-async function processEmbedQueue() {
-  if (_embedProcessing) return;
-  _embedProcessing = true;
-  while (_embedQueue.length > 0) {
-    const batch = _embedQueue.splice(0, 10); // Process in batches of 10
-    if (!isEmbeddingReady()) {
-      // Re-queue and retry after delay
-      _embedQueue.unshift(...batch);
-      _embedProcessing = false;
-      setTimeout(processEmbedQueue, 5000);
-      return;
-    }
-    try {
-      const texts = batch.map(item => {
-        const prefix = item.contextPrefix ? item.contextPrefix + ' ' : '';
-        return prefix + item.text;
-      });
-      const embeddings = await embedBatch(texts);
-      for (let i = 0; i < batch.length; i++) {
-        try {
-          const vec = new Float32Array(embeddings[i]);
-          updateMemoryEmbedding(batch[i].id, vec);
-          addVecsToIndex([batch[i].id], [embeddings[i]]);
-        } catch {}
+function processEmbedQueue() {
+  _embedLock = _embedLock.then(async () => {
+    while (_embedQueue.length > 0) {
+      const batch = _embedQueue.splice(0, 10);
+      if (!isEmbeddingReady()) {
+        for (const item of batch) {
+          item._retries = (item._retries || 0) + 1;
+          if (item._retries <= 3) {
+            _embedQueue.unshift(item);
+          } else {
+            LOG_DEBUG && console.warn('[EmbedQueue] Dropping item after 3 retries:', item.id);
+          }
+        }
+        // C-2: keep processing=true (lock held), just wait then retry
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
       }
-    } catch (err) {
-      LOG_DEBUG && console.error('[EmbedQueue] Batch error:', err.message);
+      try {
+        const texts = batch.map(item => {
+          const prefix = item.contextPrefix ? item.contextPrefix + ' ' : '';
+          return prefix + item.text;
+        });
+        const embeddings = await embedBatch(texts);
+        for (let i = 0; i < batch.length; i++) {
+          try {
+            const vec = new Float32Array(embeddings[i]);
+            updateMemoryEmbedding(batch[i].id, vec);
+            addVecsToIndex([batch[i].id], [embeddings[i]]);
+          } catch {}
+        }
+      } catch (err) {
+        LOG_DEBUG && console.error('[EmbedQueue] Batch error:', err.message);
+            // Requeue items on batch failure (max 3 retries)
+            for (const item of batch) {
+                item._retries = (item._retries || 0) + 1;
+                if (item._retries <= 3) {
+                    _embedQueue.unshift(item);
+                } else {
+                    LOG_DEBUG && console.warn('[EmbedQueue] Dropping item after 3 batch failures:', item.id);
+                }
+            }
+            await new Promise(r => setTimeout(r, 2000));
+      }
     }
-  }
-  _embedProcessing = false;
+ invalidateQueryCache();
+  }).catch(err => {
+    LOG_DEBUG && console.error('[EmbedQueue] Queue processor error:', err.message);
+  });
 }
 
 function enqueueEmbedding(id, text, contextPrefix) {
+  if (_embedQueue.length >= EMBED_QUEUE_MAX) {
+    LOG_DEBUG && console.warn('[EmbedQueue] Queue full, dropping embedding for', id);
+    return false;
+  }
   _embedQueue.push({ id, text, contextPrefix });
-  if (!_embedProcessing) processEmbedQueue();
+  processEmbedQueue();
+  return true;
 }
 
 
@@ -204,15 +243,20 @@ const _queryCache = new Map(); // hash -> { queryVec, results, timestamp }
 const QUERY_CACHE_MAX = 100;
 const QUERY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
 let _cacheHits = 0;
+let _cacheCounter = 0;
 let _cacheMisses = 0;
 
 function hashVec(vec) {
-  // Fast hash: sample 8 evenly-spaced elements from the vector
-  if (!vec || vec.length < 8) return 0;
-  const step = Math.floor(vec.length / 8);
-  let h = 0;
-  for (let i = 0; i < 8; i++) h = (h * 31 + Math.round(vec[i * step] * 1000)) | 0;
-  return h;
+  // S-#31: Use FNV-1a across all dimensions for better distribution
+  if (!vec || vec.length === 0) return 0;
+  let h = 0x811c9dc5; // FNV offset basis (32-bit)
+  const step = Math.max(1, Math.floor(vec.length / 32)); // sample ~32 elements
+  for (let i = 0; i < vec.length; i += step) {
+    const q = Math.round(vec[i] * 10000) & 0xFF; // quantize to byte
+    h ^= q;
+    h = Math.imul(h, 0x01000193); // FNV prime
+  }
+  return h >>> 0; // unsigned 32-bit
 }
 
 function findCachedResult(queryVec) {
@@ -273,7 +317,8 @@ function extractAndStoreEdges(fromMemoryId, text, sessionId) {
     for (const pattern of EDGE_PATTERNS) {
       const match = text.match(pattern.re);
       if (match) {
-        const objectText = (match[1] || match[2] || '').trim().replace(/[.!?,;]+$/, '');
+        // S-#46: Use last capture group (for 2-group patterns, match[2] is the object/destination)
+      const objectText = (match[match.length - 1] || '').trim().replace(/[.!?,;]+$/, '');
         if (!objectText || objectText.length < 2) continue;
 
         // Find existing memory matching the object
@@ -406,7 +451,7 @@ function applyRecencyScore(results) {
   const dayMs = 24 * 60 * 60 * 1000;
   return results.map(r => {
     const ts = r.created_at ? new Date(r.created_at).getTime() : now;
-    const createdAt = Number.isFinite(ts) ? ts : now;
+    const createdAt = Number.isFinite(ts) ? ts : 0; // 0 = oldest, not newest, for invalid dates
     const ageMs = Math.max(0, now - createdAt);
     const ageDays = ageMs / dayMs;
     const recallCount = r.recall_count ?? 0;
@@ -516,13 +561,11 @@ app.post('/memory/store', (req, res) => {
       attribute,
     });
 
-    // Queue background embedding
-    if (isEmbeddingReady()) {
-      enqueueEmbedding(id, trimmed, contextPrefix);
-    }
+  // Queue background embedding
+  const enqueued = enqueueEmbedding(id, trimmed, contextPrefix);
 
-    invalidateQueryCache();
-    res.json({ ok: true, id, embedding: 'queued' });
+  invalidateQueryCache();
+  res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -556,14 +599,14 @@ app.post('/memory/store-batch', (req, res) => {
 
     const ids = storeMemories(items);
 
-    // Queue background embedding for all stored memories
-    if (isEmbeddingReady()) {
-      for (let i = 0; i < ids.length; i++) {
-        enqueueEmbedding(ids[i], items[i].text, items[i].context_prefix);
-      }
-    }
+  // Queue background embedding for all stored memories
+  let embedDropped = 0;
+  for (let i = 0; i < ids.length; i++) {
+    if (!enqueueEmbedding(ids[i], items[i].text, items[i].context_prefix)) embedDropped++;
+  }
 
-    res.json({ ok: true, ids, embedding: 'queued' });
+  res.json({ ok: true, ids, embedding: embedDropped ? 'partial' : 'queued', dropped: embedDropped || undefined });
+  invalidateQueryCache();
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -609,13 +652,19 @@ app.get("/memory/search", async (req, res) => {
       try {
         const queryVecs = await Promise.all(queries.map(qq => embed(qq, "query")));
         const qVec = queryVecs[0];
-      queryVecForCache = qVec;
+          if (queryVecs.length === 1) queryVecForCache = qVec;
 
-      // Semantic cache lookup
-      const cached = findCachedResult(qVec);
+      // C-3: Skip cache for multi-query — cached single-query results would discard expansion
+      const cached = queryVecs.length === 1 && findCachedResult(qVec);
       if (cached) {
         searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
         searchMethod = "cache+" + (cached.similarity).toFixed(3);
+            // Cached results are final — skip live search
+  try {
+    const ids = searchResults.map(r => r.id).filter(Boolean);
+    if (ids.length) incrementRecallCounts(ids);
+  } catch {}
+            return res.json({ ok: true, method: searchMethod, results: searchResults });
       }
         let embeddingResults = null;
 
@@ -714,7 +763,7 @@ app.get('/memory/release', async (req, res) => {
     const tokenBudget = Math.min(Math.max(parseInt(req.query.tokens) || 2000, 100), 8000);
     const sessionId = req.query.session_id || '';
 
-    let memories = getAllActiveMemories();
+    let memories = getAllActiveMemoriesNoEmbed();
     if (sessionId) memories = memories.filter(m => m.session_id === sessionId);
 
     // Score and rank by composite: recency × importance
@@ -767,7 +816,7 @@ app.get('/memory/session/:sessionId', (req, res) => {
     const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
     const offsetNum = Math.max(parseInt(offset) || 0, 0);
     const all = getSessionMemories(req.params.sessionId, limitNum + offsetNum);
-    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: all.length });
+    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: getSessionMemoryCount(req.params.sessionId) }); // S-#54
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -777,7 +826,7 @@ app.get('/memory/type/:type', (req, res) => {
     const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
     const offsetNum = Math.max(parseInt(offset) || 0, 0);
     const all = getMemoriesByType(req.params.type, limitNum + offsetNum);
-    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: all.length });
+    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: getTypeMemoryCount(req.params.type) }); // S-#54
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1044,11 +1093,16 @@ app.post('/memory/supersede', (req, res) => {
   const new_id = parseInt(req.body.new_id);
   const { reason } = req.body;
     if (!old_id || !new_id) return res.status(400).json({ error: 'old_id and new_id required' });
+  if (old_id === new_id) return res.status(400).json({ error: 'old_id and new_id must differ' });
 
     const oldMem = getMemory(old_id);
     if (!oldMem) return res.status(404).json({ error: `memory ${old_id} not found` });
 
-    // Mark old as superseded by new
+    // H-4: Validate new_id exists before making mutations
+  let newMem = getMemory(new_id);
+  if (!newMem) return res.status(404).json({ error: `memory ${new_id} not found` });
+
+  // Mark old as superseded by new
 updateMemoryStatus(old_id, 'superseded', new_id);
 
 // Bi-temporal: set valid_until on old, valid_from on new
@@ -1059,7 +1113,7 @@ const setValidFrom = db.prepare('UPDATE memories SET valid_from = ? WHERE id = ?
 setValidFrom.run(now, new_id);
 
 // Add provenance to new memory metadata
-const newMem = getMemory(new_id);
+newMem = getMemory(new_id);
 if (newMem) {
   const oldMeta = JSON.parse(oldMem.metadata || '{}');
   const newMeta = JSON.parse(newMem.metadata || '{}');
@@ -1222,6 +1276,7 @@ app.post('/memory/sync', async (req, res) => {
 
     const ids = memories.length > 0 ? storeMemories(memories) : [];
  res.json({ ok: true, stored: ids.length, ids });
+    invalidateQueryCache();
 
  // Trigger background research pipeline (non-blocking, async)
  if (ENABLE_ADVISOR && user_message?.trim()) {
@@ -1329,7 +1384,7 @@ app.post('/memory/reembed', async (req, res) => {
       return res.json({ ok: true, reembedded: 0, message: 'no memories missing embeddings' });
     }
 
-    const texts = missing.map(m => m.text);
+    const texts = missing.map(m => (m.context_prefix ? m.context_prefix + ' ' : '') + m.text);
     const embeddings = await embedBatch(texts);
     const ids = missing.map(m => m.id);
 
@@ -1447,7 +1502,10 @@ app.post('/memory/maintenance/stop', (_req, res) => {
 
 // Purge low-importance old memories
 const AUTO_PURGE_DAYS = parseInt(process.env.AUTO_PURGE_DAYS || '365');
-app.post('/memory/purge', (_req, res) => {
+app.post('/memory/purge', (req, res) => {
+  if (req.body?.confirm !== true) {
+    return res.status(400).json({ error: 'Purge requires confirm=true in request body' });
+  }
   try {
     const before = getMemoryStats();
     const purgeStmt = db.prepare(
@@ -1524,6 +1582,7 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 // Handle uncaught errors gracefully — debounce non-fatal errors like llm-server
 const _errorCounts = new Map();
+const MAX_ERROR_ENTRIES = 1000;
 let _errorLogInterval = null;
 function _startErrorLogger() {
   if (_errorLogInterval) return;
@@ -1548,7 +1607,11 @@ process.on('uncaughtException', (err) => {
   }
   // Non-fatal: debounce and count
   const count = (_errorCounts.get(msg) || 0) + 1;
-  _errorCounts.set(msg, count);
+  if (_errorCounts.size >= MAX_ERROR_ENTRIES) {
+		const oldest = _errorCounts.keys().next().value;
+		_errorCounts.delete(oldest);
+	}
+	_errorCounts.delete(msg); _errorCounts.set(msg, count); // M-8: re-insert to move to end
   if (count === 1) {
     console.error(`Uncaught exception (non-fatal): ${msg}`);
     _startErrorLogger();
