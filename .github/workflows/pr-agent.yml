@@ -1,7 +1,8 @@
-name: PR Agent
+name: PR Agent (NVIDIA NIM)
+
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
+    types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
 
 jobs:
@@ -12,23 +13,23 @@ jobs:
       issues: write
       pull-requests: write
       contents: write
-      checks: write
-      statuses: write
+
     steps:
-      - name: PR Agent
+      - name: Run PR Agent
         uses: the-pr-agent/pr-agent@main
         env:
-          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
-          OPENAI__KEY: ${{ secrets.OPENAI_KEY }}
-          OPENAI__API_BASE: ${{ secrets.PROXY_URL }}
-          OPENAI__CUSTOM_LLM_PROVIDER: "openai"
+          # NVIDIA NIM Configuration
+          LITELLM_MODEL: "nvidia/z-ai/glm-5.1"
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          
+          # Required
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CONFIG__MODEL: "openai/deepseek-v4-pro-thinking"
-          CONFIG__MODEL_TURBO: "openai/deepseek-v4-pro-thinking"
-          CONFIG__FALLBACK_MODELS: '["openai/deepseek-v4-pro-thinking"]'
-          CONFIG__CUSTOM_MODEL_MAX_TOKENS: "32768"
-          CONFIG__DUPLICATE_EXAMPLES: "true"
+          
+          # Auto actions (recommended)
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
-          github_action_config.auto_improve: "true"
-          github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "synchronize"]'
+          
+          # Model settings
+          config.model: "nvidia/z-ai/glm-5.1"
+          config.temperature: "0.7"
+          config.max_model_tokens: "128000"
