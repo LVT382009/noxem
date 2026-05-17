@@ -40,6 +40,12 @@ set NOXEM_CONFIG=%USERPROFILE%\.hermes\noxem.json
 if not defined ENABLE_EMBEDDING set ENABLE_EMBEDDING=true
 if not defined ENABLE_ADVISOR set ENABLE_ADVISOR=true
 if not defined ENABLE_MAINTENANCE set ENABLE_MAINTENANCE=true
+if not defined ENABLE_QUERY_REWRITE set ENABLE_QUERY_REWRITE=true
+if not defined ENABLE_SMART_EXTRACT set ENABLE_SMART_EXTRACT=true
+if not defined ENABLE_PROACTIVE_ADVISOR set ENABLE_PROACTIVE_ADVISOR=true
+if not defined ADVISOR_INTERVAL set ADVISOR_INTERVAL=10
+if not defined REWRITE_TIMEOUT_MS set REWRITE_TIMEOUT_MS=3000
+if not defined EXTRACT_DEBOUNCE_MS set EXTRACT_DEBOUNCE_MS=2000
 set NODE_OPTIONS=--dns-result-order=ipv4first
 
 REM ── Read saved config from noxem.json ──
