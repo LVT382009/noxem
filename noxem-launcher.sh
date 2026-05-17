@@ -120,6 +120,11 @@ read_noxem_config() {
 
 # ── Prompt for Qwen credentials (email + password) ──
 prompt_qwen_credentials() {
+  # Validate browser name before use in sed/echo
+  case "${QWENPROXY_BROWSER:-chromium}" in
+    chromium|chrome|firefox|webkit|edge) ;;
+    *) QWENPROXY_BROWSER="chromium" ;;
+  esac
   # Check if .env already has credentials
   if [ -f "$QWENPROXY_ENV" ] && grep -q '^QWEN_EMAIL=' "$QWENPROXY_ENV" && grep -q '^QWEN_PASSWORD=' "$QWENPROXY_ENV"; then
     dim " QwenProxy credentials found in $QWENPROXY_ENV"
