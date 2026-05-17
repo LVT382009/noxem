@@ -16,8 +16,9 @@ import {
   logCitation, getRecentCitationCount, getSessionCitations,
   compressMemory, getRawText, getCompressibleMemories,
 } from './memory-store.mjs';
-import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, callLLM } from './advisor-engine.mjs';
+import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, callLLM, PROACTIVE_ADVISOR_PROMPT } from './advisor-engine.mjs';
 import { rewriteQuery, clearRewriteCache } from './query-rewrite.mjs';
+import { initExtractionQueue, enqueueExtraction, getExtractionQueueStatus } from './extraction-queue.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { triggerResearch, getRecentResearch, getResearchStatus } from './research-engine.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
@@ -643,11 +644,22 @@ app.get("/memory/search", async (req, res) => {
     let searchMethod = "fts";
     const isShortQuery = expand === "true" && q.trim().split(/\s+/).length < 6;
 
+    // Brain 2: Query rewriting (before expansion)
+    let rewrittenQuery = null;
+    if (ENABLE_QUERY_REWRITE && q.trim().split(/\s+/).length < 8) {
+      try {
+        const rewriteResult = await rewriteQuery(q.trim(), { timeoutMs: REWRITE_TIMEOUT_MS });
+        if (rewriteResult.rewritten && rewriteResult.rewritten !== q.trim()) {
+          rewrittenQuery = rewriteResult.rewritten;
+        }
+      } catch { /* rewrite is optional, fall back to original */ }
+    }
+
     // Multi-query expansion for vague queries
-    let queries = [q.trim()];
+    let queries = rewrittenQuery ? [q.trim(), rewrittenQuery] : [q.trim()];
     if (isShortQuery && ENABLE_ADVISOR) {
       try {
-        const expQ = q.trim().replace(/"/g, "");
+        const expQ = (rewrittenQuery || q.trim()).replace(/"/g, "");
         const prompt = "Generate 2 alternative ways to phrase this search query for a personal memory store. Return ONLY a JSON array of 2 strings. Query: " + expQ;
         const expandRes = await fetch(process.env.LLM_URL || process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
           method: "POST",
@@ -661,7 +673,7 @@ app.get("/memory/search", async (req, res) => {
           const match = content.match(/\[.*?\]/s);
           if (match) {
             const alternates = JSON.parse(match[0]);
-            if (Array.isArray(alternates)) queries = [q.trim(), ...alternates.slice(0, 2)];
+            if (Array.isArray(alternates)) queries.push(...alternates.slice(0, 2));
           }
         }
       } catch { /* expansion is optional */ }
