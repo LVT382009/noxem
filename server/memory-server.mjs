@@ -16,7 +16,7 @@ import {
   logCitation, getRecentCitationCount, getSessionCitations,
   compressMemory, getRawText, getCompressibleMemories,
 } from './memory-store.mjs';
-import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd } from './advisor-engine.mjs';
+import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, callLLM } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { triggerResearch, getRecentResearch, getResearchStatus } from './research-engine.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
@@ -95,9 +95,18 @@ if (MEMORY_API_KEY) {
 
 const PORT = process.env.MEMORY_PORT || 3001;
 const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
-const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false' && process.env.BRAIN2_ENABLED !== '0';
+const BRAIN2_ENABLED = (process.env.BRAIN2_ENABLED || '0') === '1';
+const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false' && BRAIN2_ENABLED;
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
-const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false' && process.env.BRAIN2_ENABLED !== '0';
+const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false' && BRAIN2_ENABLED;
+
+// Brain 2 feature flags (only effective when BRAIN2_ENABLED=1)
+const ENABLE_QUERY_REWRITE = BRAIN2_ENABLED && process.env.ENABLE_QUERY_REWRITE !== 'false';
+const ENABLE_SMART_EXTRACT = BRAIN2_ENABLED && process.env.ENABLE_SMART_EXTRACT !== 'false';
+const ENABLE_PROACTIVE_ADVISOR = BRAIN2_ENABLED && process.env.ENABLE_PROACTIVE_ADVISOR !== 'false';
+const ADVISOR_INTERVAL = parseInt(process.env.ADVISOR_INTERVAL || '10');
+const REWRITE_TIMEOUT_MS = parseInt(process.env.REWRITE_TIMEOUT_MS || '3000');
+const EXTRACT_DEBOUNCE_MS = parseInt(process.env.EXTRACT_DEBOUNCE_MS || '2000');
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
 
 // Weibull decay: w = exp(-(age/eta)^k) — steeper initial drop then long tail
@@ -405,8 +414,17 @@ app.get('/health', async (_req, res) => {
     embedding: isEmbeddingReady(),
     embedding_error: getEmbeddingError()?.message || null,
     vector_index: isVecReady(),
-    advisor: ENABLE_ADVISOR,
-      core_memory_blocks: getAllCoreBlocks().length,
+advisor: ENABLE_ADVISOR,
+brain2_enabled: BRAIN2_ENABLED,
+brain2_features: {
+  query_rewrite: ENABLE_QUERY_REWRITE,
+  smart_extract: ENABLE_SMART_EXTRACT,
+  proactive_advisor: ENABLE_PROACTIVE_ADVISOR,
+  advisor_interval: ADVISOR_INTERVAL,
+  rewrite_timeout_ms: REWRITE_TIMEOUT_MS,
+  extract_debounce_ms: EXTRACT_DEBOUNCE_MS,
+},
+core_memory_blocks: getAllCoreBlocks().length,
       query_cache: { size: _queryCache.size, hits: _cacheHits, misses: _cacheMisses, hit_rate: _cacheHits + _cacheMisses > 0 ? Math.round(_cacheHits / (_cacheHits + _cacheMisses) * 100) : 0 },
     llm: llmOk,
     maintenance: ENABLE_MAINTENANCE,

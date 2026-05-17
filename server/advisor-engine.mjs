@@ -17,7 +17,7 @@ const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
 
-function callLLM(messages, maxTokens = 1024, temperature = 0.3) {
+export function callLLM(messages, maxTokens = 1024, temperature = 0.3, timeoutMs = 30000) {
   return fetch(LLM_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -27,7 +27,7 @@ function callLLM(messages, maxTokens = 1024, temperature = 0.3) {
       max_tokens: maxTokens,
       temperature,
     }),
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 }
 
