@@ -124,10 +124,10 @@ prompt_qwen_credentials() {
   if [ -f "$QWENPROXY_ENV" ] && grep -q '^QWEN_EMAIL=' "$QWENPROXY_ENV" && grep -q '^QWEN_PASSWORD=' "$QWENPROXY_ENV"; then
     dim " QwenProxy credentials found in $QWENPROXY_ENV"
   # Upsert BROWSER key for existing installs
-  if ! grep -q "^BROWSER=" ""; then
-    echo "BROWSER=${QWENPROXY_BROWSER:-chromium}" >> ""
+  if ! grep -q "^BROWSER=" "$QWENPROXY_ENV"; then
+    echo "BROWSER=${QWENPROXY_BROWSER:-chromium}" >> "$QWENPROXY_ENV"
   else
-    sed -i "s/^BROWSER=.*/BROWSER=${QWENPROXY_BROWSER:-chromium}/" ""
+    sed -i "s/^BROWSER=.*/BROWSER=${QWENPROXY_BROWSER:-chromium}/" "$QWENPROXY_ENV"
   fi
     return 0
   fi

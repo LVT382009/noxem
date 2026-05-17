@@ -646,7 +646,7 @@ app.get("/memory/search", async (req, res) => {
       try {
         const queryVecs = await Promise.all(queries.map(qq => embed(qq, "query")));
         const qVec = queryVecs[0];
-      queryVecForCache = qVec;
+          if (queryVecs.length === 1) queryVecForCache = qVec;
 
       // C-3: Skip cache for multi-query — cached single-query results would discard expansion
       const cached = queryVecs.length === 1 && findCachedResult(qVec);

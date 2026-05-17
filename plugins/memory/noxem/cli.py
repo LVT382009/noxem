@@ -19,7 +19,7 @@ def _api_get(path):
     base = _get_server()
     scheme = urlparse(base).scheme
     if scheme not in ("http", "https"):
-        raise ValueError(f"Invalid server URL scheme: {scheme}. Must be http or https.")
+        return {"error": f"Invalid server URL scheme: {scheme}. Must be http or https."}
     url = f"{base}{path}"
     try:
         with urlopen(Request(url, headers={"Accept": "application/json"}), timeout=5) as r:
@@ -106,7 +106,7 @@ def _api_post(path, body=None):
     base = _get_server()
     scheme = urlparse(base).scheme
     if scheme not in ("http", "https"):
-        raise ValueError(f"Invalid server URL scheme: {scheme}. Must be http or https.")
+        return {"error": f"Invalid server URL scheme: {scheme}. Must be http or https."}
     url = f"{base}{path}"
     data = json.dumps(body or {}).encode()
     try:

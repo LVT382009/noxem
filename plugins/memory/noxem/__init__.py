@@ -738,7 +738,7 @@ class NoxemMemoryProvider:
 
         def _sync():
             try:
-                self._sync_impl(session_id, user_content, assistant_content)
+                _sync_impl(session_id, user_content, assistant_content)
             except Exception:
                 pass  # Prevent daemon thread exception during interpreter shutdown
 
@@ -801,11 +801,11 @@ class NoxemMemoryProvider:
             elif _fail_count % 20 == 0:  # P-#19
                 logger.warning(f"sync_turn failed {_fail_count}x — queue: {queue_len}")
 
-        # Join outside _sync_lock to avoid deadlock
+        # Join previous sync thread if still running, then start new one
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
-            self._sync_thread = threading.Thread(target=_sync, daemon=True)
-            self._sync_thread.start()
+        self._sync_thread = threading.Thread(target=_sync, daemon=True)
+        self._sync_thread.start()
 
     def on_session_end(self, messages: list) -> None:
         try:
