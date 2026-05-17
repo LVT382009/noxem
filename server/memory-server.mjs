@@ -144,11 +144,19 @@ async function startup() {
 
   // Load embedding engine in background — server already functional with FTS-only
   if (ENABLE_EMBEDDING) {
-    initEmbeddingEngine().then(() => {
-      if (isEmbeddingReady()) {
-        embed('warmup').then(() => { if (LOG_DEBUG) console.log('Brain-1 warmed up'); })
-          .catch(err => LOG_DEBUG && console.error('Brain-1 warm-up failed:', err.message));
-      }
+  initEmbeddingEngine().then(() => {
+    if (isEmbeddingReady()) {
+      embed('warmup').then(() => {
+        if (LOG_DEBUG) console.log('Brain-1 warmed up');
+        // Backfill memories stored before embedding was ready
+        const missing = getMemoriesWithoutEmbedding(500);
+        if (missing.length) {
+          LOG_DEBUG && console.log(`[EmbedQueue] Backfilling ${missing.length} memories with missing embeddings`);
+          for (const m of missing) enqueueEmbedding(m.id, m.text, m.context_prefix);
+        }
+      })
+      .catch(err => LOG_DEBUG && console.error('Brain-1 warm-up failed:', err.message));
+    }
     }).catch(err => {
       LOG_DEBUG && console.error('Brain-1 startup error:', err.message);
     });
@@ -220,10 +228,11 @@ function processEmbedQueue() {
 function enqueueEmbedding(id, text, contextPrefix) {
   if (_embedQueue.length >= EMBED_QUEUE_MAX) {
     LOG_DEBUG && console.warn('[EmbedQueue] Queue full, dropping embedding for', id);
-    return;
+    return false;
   }
   _embedQueue.push({ id, text, contextPrefix });
   processEmbedQueue();
+  return true;
 }
 
 
@@ -552,13 +561,11 @@ app.post('/memory/store', (req, res) => {
       attribute,
     });
 
-    // Queue background embedding
-    if (isEmbeddingReady()) {
-      enqueueEmbedding(id, trimmed, contextPrefix);
-    }
+  // Queue background embedding
+  const enqueued = enqueueEmbedding(id, trimmed, contextPrefix);
 
-    invalidateQueryCache();
-    res.json({ ok: true, id, embedding: 'queued' });
+  invalidateQueryCache();
+  res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -592,14 +599,13 @@ app.post('/memory/store-batch', (req, res) => {
 
     const ids = storeMemories(items);
 
-    // Queue background embedding for all stored memories
-    if (isEmbeddingReady()) {
-      for (let i = 0; i < ids.length; i++) {
-        enqueueEmbedding(ids[i], items[i].text, items[i].context_prefix);
-      }
-    }
+  // Queue background embedding for all stored memories
+  let embedDropped = 0;
+  for (let i = 0; i < ids.length; i++) {
+    if (!enqueueEmbedding(ids[i], items[i].text, items[i].context_prefix)) embedDropped++;
+  }
 
-    res.json({ ok: true, ids, embedding: 'queued' });
+  res.json({ ok: true, ids, embedding: embedDropped ? 'partial' : 'queued', dropped: embedDropped || undefined });
   invalidateQueryCache();
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -654,6 +660,10 @@ app.get("/memory/search", async (req, res) => {
         searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
         searchMethod = "cache+" + (cached.similarity).toFixed(3);
             // Cached results are final — skip live search
+  try {
+    const ids = searchResults.map(r => r.id).filter(Boolean);
+    if (ids.length) incrementRecallCounts(ids);
+  } catch {}
             return res.json({ ok: true, method: searchMethod, results: searchResults });
       }
         let embeddingResults = null;
