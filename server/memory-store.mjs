@@ -195,6 +195,7 @@ const getActiveAll = db.prepare(`SELECT * FROM memories WHERE status = 'active'`
 const getBySession = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`);
 const getByType = db.prepare(`SELECT * FROM memories WHERE type = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`);
 const getBySessionBefore = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?`);
+const getActiveAllNoEmbed = db.prepare(`SELECT id, session_id, type, text, metadata, importance, context_prefix, entity, attribute, valid_from, valid_until, recall_count, created_at FROM memories WHERE status = 'active'`);
 
 const countAll = db.prepare(`SELECT status, type, COUNT(*) as count FROM memories GROUP BY status, type`);
 const countActive = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE status = 'active'`);
@@ -405,6 +406,10 @@ export function getAllActiveMemories() {
   return getActiveAll.all().map(m => ({ ...m, embedding: bufferToFloat32(m.embedding) }));
 }
 
+
+export function getAllActiveMemoriesNoEmbed() {
+  return getActiveAllNoEmbed.all();
+}
 export function getSessionMemories(sessionId, limit = 50) {
   return getBySession.all(sessionId, Math.min(limit, 200));
 }

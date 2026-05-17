@@ -6,7 +6,7 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 import { isVecReady } from './vector-index.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
-  getAllActiveMemories, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
+  getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
   deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
@@ -165,45 +165,46 @@ startup().catch(err => {
 // Queues memories for async embedding — store/sync return instantly
 const _embedQueue = [];
 const EMBED_QUEUE_MAX = 1000;
-let _embedProcessing = false;
+let _embedLock = Promise.resolve(); // C-1: promise-chain mutex replaces boolean flag
 
-async function processEmbedQueue() {
-  if (_embedProcessing) return;
-  _embedProcessing = true;
-  while (_embedQueue.length > 0) {
-    const batch = _embedQueue.splice(0, 10); // Process in batches of 10
-    if (!isEmbeddingReady()) {
-      // Re-queue and retry after delay (max 3 retries per batch)
-      for (const item of batch) {
-        item._retries = (item._retries || 0) + 1;
-        if (item._retries <= 3) {
-          _embedQueue.unshift(item);
-        } else {
-          LOG_DEBUG && console.warn('[EmbedQueue] Dropping item after 3 retries:', item.id);
+function processEmbedQueue() {
+  _embedLock = _embedLock.then(async () => {
+    while (_embedQueue.length > 0) {
+      const batch = _embedQueue.splice(0, 10);
+      if (!isEmbeddingReady()) {
+        for (const item of batch) {
+          item._retries = (item._retries || 0) + 1;
+          if (item._retries <= 3) {
+            _embedQueue.unshift(item);
+          } else {
+            LOG_DEBUG && console.warn('[EmbedQueue] Dropping item after 3 retries:', item.id);
+          }
         }
+        // C-2: keep processing=true (lock held), just wait then retry
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
       }
-      _embedProcessing = false;
-      setTimeout(processEmbedQueue, 5000);
-      return;
-    }
-    try {
-      const texts = batch.map(item => {
-        const prefix = item.contextPrefix ? item.contextPrefix + ' ' : '';
-        return prefix + item.text;
-      });
-      const embeddings = await embedBatch(texts);
-      for (let i = 0; i < batch.length; i++) {
-        try {
-          const vec = new Float32Array(embeddings[i]);
-          updateMemoryEmbedding(batch[i].id, vec);
-          addVecsToIndex([batch[i].id], [embeddings[i]]);
-        } catch {}
+      try {
+        const texts = batch.map(item => {
+          const prefix = item.contextPrefix ? item.contextPrefix + ' ' : '';
+          return prefix + item.text;
+        });
+        const embeddings = await embedBatch(texts);
+        for (let i = 0; i < batch.length; i++) {
+          try {
+            const vec = new Float32Array(embeddings[i]);
+            updateMemoryEmbedding(batch[i].id, vec);
+            addVecsToIndex([batch[i].id], [embeddings[i]]);
+          } catch {}
+        }
+      } catch (err) {
+        LOG_DEBUG && console.error('[EmbedQueue] Batch error:', err.message);
       }
-    } catch (err) {
-      LOG_DEBUG && console.error('[EmbedQueue] Batch error:', err.message);
     }
-  }
-  _embedProcessing = false;
+ invalidateQueryCache();
+  }).catch(err => {
+    LOG_DEBUG && console.error('[EmbedQueue] Queue processor error:', err.message);
+  });
 }
 
 function enqueueEmbedding(id, text, contextPrefix) {
@@ -212,7 +213,7 @@ function enqueueEmbedding(id, text, contextPrefix) {
     return;
   }
   _embedQueue.push({ id, text, contextPrefix });
-  if (!_embedProcessing) processEmbedQueue();
+  processEmbedQueue();
 }
 
 
@@ -589,6 +590,7 @@ app.post('/memory/store-batch', (req, res) => {
     }
 
     res.json({ ok: true, ids, embedding: 'queued' });
+  invalidateQueryCache();
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -636,8 +638,8 @@ app.get("/memory/search", async (req, res) => {
         const qVec = queryVecs[0];
       queryVecForCache = qVec;
 
-      // Semantic cache lookup
-      const cached = findCachedResult(qVec);
+      // C-3: Skip cache for multi-query — cached single-query results would discard expansion
+      const cached = queryVecs.length === 1 && findCachedResult(qVec);
       if (cached) {
         searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
         searchMethod = "cache+" + (cached.similarity).toFixed(3);
@@ -739,7 +741,7 @@ app.get('/memory/release', async (req, res) => {
     const tokenBudget = Math.min(Math.max(parseInt(req.query.tokens) || 2000, 100), 8000);
     const sessionId = req.query.session_id || '';
 
-    let memories = getAllActiveMemories();
+    let memories = getAllActiveMemoriesNoEmbed();
     if (sessionId) memories = memories.filter(m => m.session_id === sessionId);
 
     // Score and rank by composite: recency × importance
@@ -1073,7 +1075,11 @@ app.post('/memory/supersede', (req, res) => {
     const oldMem = getMemory(old_id);
     if (!oldMem) return res.status(404).json({ error: `memory ${old_id} not found` });
 
-    // Mark old as superseded by new
+    // H-4: Validate new_id exists before making mutations
+  const newMem = getMemory(new_id);
+  if (!newMem) return res.status(404).json({ error: `memory ${new_id} not found` });
+
+  // Mark old as superseded by new
 updateMemoryStatus(old_id, 'superseded', new_id);
 
 // Bi-temporal: set valid_until on old, valid_from on new
@@ -1084,7 +1090,7 @@ const setValidFrom = db.prepare('UPDATE memories SET valid_from = ? WHERE id = ?
 setValidFrom.run(now, new_id);
 
 // Add provenance to new memory metadata
-const newMem = getMemory(new_id);
+newMem = getMemory(new_id);
 if (newMem) {
   const oldMeta = JSON.parse(oldMem.metadata || '{}');
   const newMeta = JSON.parse(newMem.metadata || '{}');
@@ -1247,6 +1253,7 @@ app.post('/memory/sync', async (req, res) => {
 
     const ids = memories.length > 0 ? storeMemories(memories) : [];
  res.json({ ok: true, stored: ids.length, ids });
+    invalidateQueryCache();
 
  // Trigger background research pipeline (non-blocking, async)
  if (ENABLE_ADVISOR && user_message?.trim()) {
@@ -1581,7 +1588,7 @@ process.on('uncaughtException', (err) => {
 		const oldest = _errorCounts.keys().next().value;
 		_errorCounts.delete(oldest);
 	}
-	_errorCounts.set(msg, count);
+	_errorCounts.delete(msg); _errorCounts.set(msg, count); // M-8: re-insert to move to end
   if (count === 1) {
     console.error(`Uncaught exception (non-fatal): ${msg}`);
     _startErrorLogger();

@@ -67,7 +67,10 @@ export async function runMaintenance() {
       const alreadySuperseded = new Set(); // S-#28
     for (const d of dupes) {
         const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
+        if (alreadySuperseded.has(older.id)) continue;
+        if (alreadySuperseded.has(newer.id)) continue;
         updateMemoryStatus(older.id, 'superseded', newer.id);
+        alreadySuperseded.add(older.id);
         results.duplicates++;
       }
       if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] Marked ${dupes.length} duplicates as superseded`);

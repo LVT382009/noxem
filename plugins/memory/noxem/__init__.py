@@ -330,12 +330,16 @@ class NoxemMemoryProvider:
         try:
             if path.exists():
                 pid = int(path.read_text().strip())
-                try:
+                if platform.system() == "Windows":
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                   capture_output=True, timeout=5)
+                else:
                     os.kill(pid, signal.SIGTERM)
-                    logger.info(f"Noxem killed stale PID {pid} from {path.name}")
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-                self._clean_pid_file(path)
+                logger.info(f"Noxem killed stale PID {pid} from {path.name}")
+            self._clean_pid_file(path)
+        except (ProcessLookupError, PermissionError, OSError,
+                subprocess.TimeoutExpired):
+            self._clean_pid_file(path)
         except Exception:
             pass
 
@@ -758,22 +762,24 @@ class NoxemMemoryProvider:
                 with self._sync_lock:  # P-#19
                     self._sync_fail_count += 1
 
-            # Retry once after 2s (server might be starting up)
-            with self._sync_lock:  # P-#19
-                _fail_count = self._sync_fail_count
-            if _fail_count <= 3:
-                time.sleep(2.0)
-                try:
-                    result = self._api_post("/memory/sync", data)
-                    if result.get("error"):  # P-#25
-                        raise Exception(result["error"])
-                    self._server_reachable.set()  # P-#19
-                    with self._sync_lock:  # P-#19
-                        self._sync_fail_count = 0
-                    self._flush_pending_queue()
-                    return
-                except Exception:
-                    pass
+        # Retry once after 2s (server might be starting up)
+        # Release _sync_lock before sleep to avoid blocking other threads
+        with self._sync_lock: # P-#19
+            _fail_count = self._sync_fail_count
+            _should_retry = _fail_count <= 3
+        if _should_retry:
+            time.sleep(2.0)
+            try:
+                result = self._api_post("/memory/sync", data)
+                if result.get("error"): # P-#25
+                    raise Exception(result["error"])
+                self._server_reachable.set() # P-#19
+                with self._sync_lock: # P-#19
+                    self._sync_fail_count = 0
+                self._flush_pending_queue()
+                return
+            except Exception:
+                pass
 
             # Buffer turn for later replay
             with self._queue_lock:
@@ -795,9 +801,9 @@ class NoxemMemoryProvider:
             elif _fail_count % 20 == 0:  # P-#19
                 logger.warning(f"sync_turn failed {_fail_count}x — queue: {queue_len}")
 
-        with self._sync_lock:  # P-#18
-            if self._sync_thread and self._sync_thread.is_alive():
-                self._sync_thread.join(timeout=5.0)
+        # Join outside _sync_lock to avoid deadlock
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=5.0)
             self._sync_thread = threading.Thread(target=_sync, daemon=True)
             self._sync_thread.start()
 
@@ -853,10 +859,10 @@ class NoxemMemoryProvider:
                 return json.loads(resp.read().decode())
         except URLError as e:
             logger.debug(f"Noxem API GET {path} failed: {e}")
-            return {"results": []}
+            return {"error": "unreachable"}
         except Exception as e:
             logger.debug(f"Noxem API GET {path} error: {e}")
-            return {"results": []}
+            return {"error": "unreachable"}
 
     def _api_post(self, path: str, data: dict) -> dict:
         url = f"{self._server_url}{path}"
