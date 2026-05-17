@@ -39,15 +39,18 @@ export async function rewriteQuery(query, { timeoutMs = 3000 } = {}) {
 
     const result = { rewritten, variants: [], timestamp: Date.now() };
 
-    // Evict oldest if at capacity
-    if (_rewriteCache.size >= REWRITE_CACHE_MAX) {
-      const oldest = _rewriteCache.keys().next().value;
-      _rewriteCache.delete(oldest);
+    // Only cache when the rewrite actually improved the query.
+    // Skip caching no-improvement results so transient LLM issues can retry.
+    if (rewritten !== query.trim()) {
+      if (_rewriteCache.size >= REWRITE_CACHE_MAX) {
+        const oldest = _rewriteCache.keys().next().value;
+        _rewriteCache.delete(oldest);
+      }
+      _rewriteCache.set(cacheKey, result);
     }
-    _rewriteCache.set(cacheKey, result);
     return result;
   } catch {
-    // Graceful fallback — return original query on any failure
+    // Graceful fallback — return original query on any failure (do NOT cache)
     return { rewritten: query, variants: [] };
   }
 }

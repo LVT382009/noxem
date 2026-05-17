@@ -738,7 +738,8 @@ class NoxemMemoryProvider:
             'she', 'her', 'it', 'its', 'they', 'them', 'their',
         })
         # Split on non-alphanumeric, filter stop words and short tokens
-        tokens = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{2,}', text)
+        # Include CJK character runs alongside ASCII identifiers
+        tokens = re.findall(r'[一-鿿㐀-䶿]+|[a-zA-Z_][a-zA-Z0-9_]{2,}', text)
         keywords = [t for t in tokens if t.lower() not in stop_words]
         return keywords[:max_keywords]
 

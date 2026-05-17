@@ -46,17 +46,27 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
   USING fts5(text, content='memories', content_rowid='id');
 
+-- CJK trigram FTS5 table for Chinese/Japanese/Korean substring search
+-- The default unicode61 tokenizer groups CJK glyphs as single giant tokens,
+-- making sub-word matching impossible. Trigram indexes every 3-char sequence.
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts_cjk
+  USING fts5(text, content='memories', content_rowid='id', tokenize='trigram');
+
 CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
   INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+  INSERT INTO memories_fts_cjk(rowid, text) VALUES (new.id, new.text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
   INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO memories_fts_cjk(memories_fts_cjk, rowid, text) VALUES ('delete', old.id, old.text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
   INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
   INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+  INSERT INTO memories_fts_cjk(memories_fts_cjk, rowid, text) VALUES ('delete', old.id, old.text);
+  INSERT INTO memories_fts_cjk(rowid, text) VALUES (new.id, new.text);
 END;
 
 CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
@@ -147,6 +157,18 @@ try { db.exec("CREATE INDEX IF NOT EXISTS idx_memories_active_entity ON memories
 // Initialize sqlite-vec for native KNN (optional — falls back to JS cosine)
 initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
 
+// Rebuild CJK trigram index for existing databases (safe no-op if table is already populated)
+try {
+  const cjkCount = db.prepare("SELECT count(*) as c FROM memories_fts_cjk").get();
+  if (cjkCount.c === 0) {
+    LOG_DEBUG && console.log('[Schema] Rebuilding CJK trigram index from existing memories...');
+    db.exec("INSERT INTO memories_fts_cjk(memories_fts_cjk) VALUES('rebuild')");
+    LOG_DEBUG && console.log('[Schema] CJK trigram index rebuilt');
+  }
+} catch (e) {
+  if (!e.message.includes("no such table")) LOG_DEBUG && console.error('[Schema] CJK rebuild:', e.message);
+}
+
 const insert = db.prepare(
   `INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from)
   VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from)`
@@ -215,10 +237,21 @@ const searchFts = db.prepare(`
   LIMIT @limit
 `);
 
+// CJK trigram search — supports substring matching for Chinese/Japanese/Korean
+const searchFtsCJK = db.prepare(`
+  SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count,
+  rank as score
+  FROM memories_fts_cjk f
+  JOIN memories m ON m.id = f.rowid
+  WHERE memories_fts_cjk MATCH @query AND m.status = 'active'
+  ORDER BY rank
+  LIMIT @limit
+`);
+
 const searchRecent = db.prepare(`
   SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count
   FROM memories
-  WHERE status = 'active' AND text LIKE @query ESCAPE '\'
+  WHERE status = 'active' AND text LIKE @query
   ORDER BY created_at DESC
   LIMIT @limit
 `);
@@ -377,20 +410,31 @@ export function deleteInvalid() {
 export function searchMemories({ query, limit = 10 }) {
   if (!query || !query.trim()) return [];
   const limitNum = Math.min(Math.max(1, limit), 50);
+  // Detect CJK characters for routing to trigram index
+  const hasCJK = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u2e80-\u2eff\u3000-\u303f]/.test(query);
   try {
-    // Strip FTS5 special syntax: column: prefix, operators (AND, OR, NOT, NEAR), quotes
+    // Unicode-aware sanitizer: \p{L} = any letter (including CJK), \p{N} = any number
     let sanitized = query
-      .replace(/(?:\w+:)/g, '')           // strip column: prefixes
+      .replace(/(?:[\p{L}\p{N}_]+:)/gu, '')    // strip column: prefixes (Unicode-aware)
       .replace(/\b(?:AND|OR|NOT|NEAR)\b/gi, '') // strip FTS5 operators
-      .replace(/['"*^$]/g, '')            // strip quotes and FTS5 modifiers
-      .replace(/[^\w\s]/g, ' ')           // strip remaining non-word chars
-      .replace(/\s+/g, ' ')               // collapse whitespace
+      .replace(/['"*^$]/g, '')                    // strip quotes and FTS5 modifiers
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')       // preserve CJK and all Unicode letters
+      .replace(/\s+/g, ' ')                       // collapse whitespace
       .trim();
-    if (!sanitized) return searchRecent.all({ query: `%${query.replace(/[%_]/g, '\\$&')}%`, limit: limitNum });
+
+    // CJK queries: route to trigram index (supports substring matching natively)
+    if (hasCJK) {
+      if (sanitized.length >= 3) {
+        return searchFtsCJK.all({ query: sanitized, limit: limitNum });
+      }
+      // Short CJK (<3 chars): trigram can't match, fall back to LIKE
+      return searchRecent.all({ query: `%${query.replace(/[%_\\]/g, '\\$&')}%`, limit: limitNum });
+    }
+    if (!sanitized) return searchRecent.all({ query: `%${query.replace(/[%_\\]/g, '\\$&')}%`, limit: limitNum });
     return searchFts.all({ query: sanitized, limit: limitNum });
   } catch (e) {
     LOG_DEBUG && console.error('[SearchMemories] FTS error, falling back to LIKE:', e.message);
-    return searchRecent.all({ query: `%${query.replace(/[%_]/g, '\\$&')}%`, limit: limitNum });
+    return searchRecent.all({ query: `%${query.replace(/[%_\\]/g, '\\$&')}%`, limit: limitNum });
   }
 }
 
