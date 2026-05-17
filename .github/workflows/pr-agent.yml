@@ -1,4 +1,4 @@
- name: PR Agent
+name: PR Agent
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -12,10 +12,18 @@ jobs:
       issues: write
       pull-requests: write
       contents: write
+      checks: write
+      statuses: write
     steps:
       - name: PR Agent
         uses: the-pr-agent/pr-agent@main
         env:
-          OPENAI__KEY: ${{ secrets.PROXY_API_KEY }}       # double underscore
-          OPENAI__API_BASE: ${{ secrets.PROXY_URL }}      # double underscore
+          OPENAI__KEY: ${{ secrets.PROXY_API_KEY }}
+          OPENAI__API_BASE: ${{ secrets.PROXY_URL }}
+          OPENAI__CUSTOM_LLM_PROVIDER: "openai"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONFIG__MODEL: "openai/deepseek-v4-pro-thinking"
+          CONFIG__MODEL_TURBO: "openai/deepseek-v4-pro-thinking"
+          CONFIG__FALLBACK_MODELS: '["openai/deepseek-v4-pro-thinking"]'
+          CONFIG__CUSTOM_MODEL_MAX_TOKENS: "32768"
+          CONFIG__DUPLICATE_EXAMPLES: "true"
