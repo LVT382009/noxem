@@ -17,6 +17,7 @@ import {
   compressMemory, getRawText, getCompressibleMemories,
 } from './memory-store.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, callLLM } from './advisor-engine.mjs';
+import { rewriteQuery, clearRewriteCache } from './query-rewrite.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { triggerResearch, getRecentResearch, getResearchStatus } from './research-engine.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
@@ -298,6 +299,7 @@ function addToQueryCache(queryVec, results) {
 
 function invalidateQueryCache() {
   _queryCache.clear();
+  clearRewriteCache();
 }
 
 
