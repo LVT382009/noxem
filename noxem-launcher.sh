@@ -36,6 +36,7 @@ fi
 MEMORY_PORT=${MEMORY_PORT:-3001}
 LLM_PORT=${LLM_PORT:-${GEMMA4_PORT:-8000}}
 QWENPROXY_PORT=${QWENPROXY_PORT:-3000}
+QWENPROXY_BROWSER=${QWENPROXY_BROWSER:-chromium}  # chromium|firefox|chrome|edge (fork feature)
 MEMORY_SERVER="$NOXEM_DIR/server/memory-server.mjs"
 ADAPTER_SERVER="$NOXEM_DIR/server/qwenproxy-adapter.mjs"
 QWENPROXY_DIR="${HOME}/qwenproxy"
@@ -149,6 +150,7 @@ prompt_qwen_credentials() {
 PORT=${QWENPROXY_PORT}
 QWEN_EMAIL=${_qwen_email}
 QWEN_PASSWORD=${_qwen_password}
+BROWSER=${QWENPROXY_BROWSER}
 ENVEOF
   chmod 600 "$QWENPROXY_ENV"
   green " Credentials saved to $QWENPROXY_ENV"
@@ -217,7 +219,7 @@ setup_qwenproxy() {
     # Clone if not present
     if [ ! -d "$QWENPROXY_DIR/.git" ]; then
       dim " Cloning qwenproxy..."
-      git clone https://github.com/pedrofariasx/qwenproxy.git "$QWENPROXY_DIR" 2>/dev/null || {
+      git clone https://github.com/LVT382009/noxem-qwenproxy.git "$QWENPROXY_DIR" 2>/dev/null || {
         red " Failed to clone QwenProxy. Check your internet connection."
         return 1
       }
@@ -235,9 +237,9 @@ setup_qwenproxy() {
       dim " Playwright Chromium already cached (from Hermes) — skipping download"
     else
       dim " Installing Playwright browsers..."
-      (cd "$QWENPROXY_DIR" && npx playwright install chromium 2>/dev/null) || {
+      (cd "$QWENPROXY_DIR" && npx playwright install ${QWENPROXY_BROWSER:-chromium} 2>/dev/null) || {
         red " Playwright browser install failed."
-        dim " Try manually: cd $QWENPROXY_DIR && npx playwright install chromium"
+        dim " Try manually: cd $QWENPROXY_DIR && npx playwright install ${QWENPROXY_BROWSER:-chromium}"
         return 1
       }
     fi

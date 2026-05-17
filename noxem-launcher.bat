@@ -30,6 +30,7 @@ REM Config
 if not defined MEMORY_PORT set MEMORY_PORT=3001
 if not defined LLM_PORT set LLM_PORT=8000
 if not defined QWENPROXY_PORT set QWENPROXY_PORT=3000
+if not defined QWENPROXY_BROWSER set QWENPROXY_BROWSER=chromium
 set MEMORY_SERVER=%~dp0server\memory-server.mjs
 set ADAPTER_SERVER=%~dp0server\qwenproxy-adapter.mjs
 set QWENPROXY_DIR=%USERPROFILE%\qwenproxy
@@ -163,7 +164,7 @@ if not exist "%QWENPROXY_DIR%\node_modules" (
   echo Setting up QwenProxy (first run^)...
   if not exist "%QWENPROXY_DIR%\.git" (
     echo Cloning qwenproxy...
-    git clone https://github.com/pedrofariasx/qwenproxy.git "%QWENPROXY_DIR%"
+    git clone https://github.com/LVT382009/noxem-qwenproxy.git "%QWENPROXY_DIR%"
   )
   echo Installing npm dependencies...
   pushd "%QWENPROXY_DIR%"
@@ -200,6 +201,7 @@ REM Write .env file
 echo PORT=%QWENPROXY_PORT%> "%QWENPROXY_ENV%"
 echo QWEN_EMAIL=%QWEN_EMAIL%>> "%QWENPROXY_ENV%"
 echo QWEN_PASSWORD=%QWEN_PASSWORD%>> "%QWENPROXY_ENV%"
+echo BROWSER=%QWENPROXY_BROWSER%>> "%QWENPROXY_ENV%"
 echo Credentials saved.
 goto :creds_ok
 
