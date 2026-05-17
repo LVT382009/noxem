@@ -1,12 +1,12 @@
 name: PR Agent
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened, ready_for_review, synchronize]
   issue_comment:
-    types: [created]
 
 jobs:
   pr_agent_job:
+    if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-24.04
     permissions:
       issues: write
@@ -28,3 +28,7 @@ jobs:
           CONFIG__FALLBACK_MODELS: '["openai/deepseek-v4-pro-thinking"]'
           CONFIG__CUSTOM_MODEL_MAX_TOKENS: "32768"
           CONFIG__DUPLICATE_EXAMPLES: "true"
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "true"
+          github_action_config.auto_improve: "true"
+          github_action_config.pr_actions: '["opened", "reopened", "ready_for_review", "synchronize"]'
