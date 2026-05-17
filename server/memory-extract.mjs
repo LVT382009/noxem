@@ -119,3 +119,82 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
     return true;
   });
 }
+
+// Tier 2: Smarter LLM extraction with 6-type schema
+// Better suited for small models like qwen3.6-plus-no-thinking
+export async function extractMemoriesLLM({ user_message, assistant_response, session_id, alreadyExtracted = [] }) {
+  const SMART_EXTRACTION_PROMPT = `You are a memory extraction AI. Analyze the conversation and extract facts worth remembering.
+
+EXTRACTION RULES:
+- Extract ONLY from the user's messages — ignore assistant content
+- Each memory: complete sentence, 15-80 words, specific and factual
+- Categorize into exactly one of: preference, profile, project, fact, event, relationship
+- Extract entity (who/what) and attribute (which aspect) when identifiable
+- Omit trivial information, greetings, and acknowledgments${alreadyExtracted.length > 0 ? `
+Already extracted from this turn (do not re-extract):
+${alreadyExtracted.map(t => '- ' + t).join('\n')}` : ''}
+
+Conversation:
+USER: {{userMessage}}
+ASSISTANT: {{assistantResponse}}
+
+Output ONLY a JSON array: [{"text": "...", "type": "preference", "entity": "user", "attribute": "editor"}]
+If no memories worth extracting, output: []`;
+
+  const prompt = SMART_EXTRACTION_PROMPT
+    .split('{{userMessage}}').join((user_message || '').substring(0, 2000))
+    .split('{{assistantResponse}}').join((assistant_response || '').substring(0, 4000));
+
+  const url = LLM_URL;
+  const model = EXTRACTION_MODEL || LLM_MODEL;
+
+  const body = JSON.stringify({
+    model,
+    messages: [{ role: 'user', content: prompt }],
+    max_tokens: 512,
+    temperature: 0.1,
+  });
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!res.ok) {
+      console.error(`LLM extraction API error: ${res.status}`);
+      return [];
+    }
+
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content || '[]';
+
+    const matches = [...content.matchAll(/\[[\s\S]*?\]/g)];
+    if (!matches.length) return [];
+
+    const SMART_TYPES = ['fact', 'preference', 'profile', 'project', 'event', 'relationship'];
+    for (const match of matches) {
+      try {
+        const memories = JSON.parse(match[0]);
+        if (Array.isArray(memories) && memories.length > 0) {
+          return memories.filter(m => m.text && m.type).map(m => ({
+            text: m.text.trim().substring(0, 500),
+            type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
+            entity: (m.entity || '').substring(0, 100) || null,
+            attribute: (m.attribute || '').substring(0, 100) || null,
+          }));
+        }
+      } catch {}
+    }
+    return [];
+  } catch (err) {
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      console.error('LLM extraction timed out');
+    } else {
+      console.error('LLM extraction error:', err.message);
+    }
+    return [];
+  }
+}
