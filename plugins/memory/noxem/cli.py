@@ -28,6 +28,13 @@ def _api_get(path):
         return {"error": str(e)}
 
 
+def _safe_float(v, default=0.0):
+    try:
+        return float(v) if v is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
 def _cmd_status(args):
     """Show Noxem server status and memory stats."""
     health = _api_get("/health")

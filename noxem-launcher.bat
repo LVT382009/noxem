@@ -211,6 +211,17 @@ set BRAIN2_ENABLED=0
 goto :skip_brain2
 
 :creds_ok
+REM Validate browser name to prevent injection
+set _VALID_BROWSER=0
+if /I "%QWENPROXY_BROWSER%"=="chromium" set _VALID_BROWSER=1
+if /I "%QWENPROXY_BROWSER%"=="chrome" set _VALID_BROWSER=1
+if /I "%QWENPROXY_BROWSER%"=="firefox" set _VALID_BROWSER=1
+if /I "%QWENPROXY_BROWSER%"=="edge" set _VALID_BROWSER=1
+if /I "%QWENPROXY_BROWSER%"=="webkit" set _VALID_BROWSER=1
+if %_VALID_BROWSER%==0 (
+    echo Warning: Unsupported browser %QWENPROXY_BROWSER%, defaulting to chromium
+    set QWENPROXY_BROWSER=chromium
+)
 REM Upsert BROWSER key into existing .env (for existing installs)
 findstr /C:"BROWSER=" "%QWENPROXY_ENV%" >nul 2>&1
 if %ERRORLEVEL% neq 0 (

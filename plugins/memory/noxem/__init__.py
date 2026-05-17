@@ -852,6 +852,9 @@ class NoxemMemoryProvider:
     # ── Internal ──────────────────────────────────────────────
 
     def _api_get(self, path: str) -> dict:
+        # Validate URL scheme
+        if not self._server_url.startswith(("http://", "https://")):
+            return {"error": f"Invalid server URL scheme: {self._server_url}"}
         url = f"{self._server_url}{path}"
         req = Request(url, headers={"Accept": "application/json"})
         try:
@@ -865,6 +868,8 @@ class NoxemMemoryProvider:
             return {"error": "unreachable"}
 
     def _api_post(self, path: str, data: dict) -> dict:
+        if not self._server_url.startswith(("http://", "https://")):
+            return {"error": f"Invalid server URL scheme: {self._server_url}"}
         url = f"{self._server_url}{path}"
         body = json.dumps(data).encode()
         req = Request(url, data=body, headers={

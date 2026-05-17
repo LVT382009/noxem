@@ -36,7 +36,7 @@ fi
 MEMORY_PORT=${MEMORY_PORT:-3001}
 LLM_PORT=${LLM_PORT:-${GEMMA4_PORT:-8000}}
 QWENPROXY_PORT=${QWENPROXY_PORT:-3000}
-QWENPROXY_BROWSER=${QWENPROXY_BROWSER:-chromium}  # chromium|firefox|chrome|edge (fork feature)
+QWENPROXY_BROWSER=${QWENPROXY_BROWSER:-chromium} # chromium|firefox|chrome|edge|webkit (fork feature)
 MEMORY_SERVER="$NOXEM_DIR/server/memory-server.mjs"
 ADAPTER_SERVER="$NOXEM_DIR/server/qwenproxy-adapter.mjs"
 QWENPROXY_DIR="${HOME}/qwenproxy"
@@ -247,7 +247,7 @@ setup_qwenproxy() {
       dim " Installing Playwright browsers..."
       (cd "$QWENPROXY_DIR" && # Validate browser selection
 case "${QWENPROXY_BROWSER:-chromium}" in
-  chromium|chrome|firefox|webkit) ;;
+  chromium|chrome|firefox|webkit|edge) ;;
   *) echo "Error: Unsupported QWENPROXY_BROWSER='$QWENPROXY_BROWSER'. Use: chromium, firefox, webkit" >&2; exit 1 ;;
 esac
 npx playwright install "${QWENPROXY_BROWSER:-chromium}" 2>/dev/null) || {

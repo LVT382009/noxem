@@ -199,6 +199,16 @@ function processEmbedQueue() {
         }
       } catch (err) {
         LOG_DEBUG && console.error('[EmbedQueue] Batch error:', err.message);
+            // Requeue items on batch failure (max 3 retries)
+            for (const item of batch) {
+                item._retries = (item._retries || 0) + 1;
+                if (item._retries <= 3) {
+                    _embedQueue.unshift(item);
+                } else {
+                    LOG_DEBUG && console.warn('[EmbedQueue] Dropping item after 3 batch failures:', item.id);
+                }
+            }
+            await new Promise(r => setTimeout(r, 2000));
       }
     }
  invalidateQueryCache();
@@ -643,6 +653,8 @@ app.get("/memory/search", async (req, res) => {
       if (cached) {
         searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
         searchMethod = "cache+" + (cached.similarity).toFixed(3);
+            // Cached results are final — skip live search
+            return res.json({ ok: true, method: searchMethod, results: searchResults });
       }
         let embeddingResults = null;
 
@@ -1071,6 +1083,7 @@ app.post('/memory/supersede', (req, res) => {
   const new_id = parseInt(req.body.new_id);
   const { reason } = req.body;
     if (!old_id || !new_id) return res.status(400).json({ error: 'old_id and new_id required' });
+  if (old_id === new_id) return res.status(400).json({ error: 'old_id and new_id must differ' });
 
     const oldMem = getMemory(old_id);
     if (!oldMem) return res.status(404).json({ error: `memory ${old_id} not found` });
@@ -1480,7 +1493,7 @@ app.post('/memory/maintenance/stop', (_req, res) => {
 // Purge low-importance old memories
 const AUTO_PURGE_DAYS = parseInt(process.env.AUTO_PURGE_DAYS || '365');
 app.post('/memory/purge', (req, res) => {
-  if (!req.body?.confirm) {
+  if (req.body?.confirm !== true) {
     return res.status(400).json({ error: 'Purge requires confirm=true in request body' });
   }
   try {

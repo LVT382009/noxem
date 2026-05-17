@@ -126,12 +126,12 @@ function withLock(fn) {
     // Timeout returns error to caller but does NOT release the lock —
     // the inference may still be running in transformers.js (not thread-safe).
     // Release only when the actual inference completes.
-    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("Inference timeout")), 60000));
+    let _inferenceTimer; const timeout = new Promise((_, reject) => { _inferenceTimer = setTimeout(() => reject(new Error("Inference timeout")), 60000); });
     return Promise.race([result, timeout]).catch(err => {
       // On timeout, caller gets error but lock stays held until inference finishes
-      result.catch(() => {}).then(release);
+      result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); release(); });
       throw err;
-    }).then(val => { release(); return val; });
+    }).then(val => { clearTimeout(_inferenceTimer); release(); return val; });
   });
 }
 
