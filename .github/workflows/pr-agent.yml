@@ -24,6 +24,7 @@ jobs:
           config.model: "nvidia_nim/z-ai/glm-5.1"
           config.custom_model_max_tokens: "200000"
           config.temperature: "0.7"
+          config.reasoning_effort: "xhigh"
 
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           NVIDIA_NIM_API_BASE: "https://integrate.api.nvidia.com/v1"
