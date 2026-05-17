@@ -4,11 +4,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   issue_comment:
+    types: [created, edited]
 
 jobs:
   pr_agent_job:
     if: ${{ github.event.sender.type != 'Bot' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     permissions:
       issues: write
       pull-requests: write
@@ -18,18 +19,14 @@ jobs:
       - name: Run PR Agent
         uses: the-pr-agent/pr-agent@main
         env:
-          # NVIDIA NIM Configuration
-          LITELLM_MODEL: "nvidia/z-ai/glm-5.1"
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          
-          # Required
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
-          # Auto actions (recommended)
+
+          config.model: "nvidia_nim/z-ai/glm-5.1"
+          config.custom_model_max_tokens: "200000"
+          config.temperature: "0.7"
+
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NVIDIA_NIM_API_BASE: "https://integrate.api.nvidia.com/v1"
+
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
-          
-          # Model settings
-          config.model: "nvidia/z-ai/glm-5.1"
-          config.temperature: "0.7"
-          config.max_model_tokens: "128000"
