@@ -18,7 +18,8 @@ jobs:
       - name: PR Agent
         uses: the-pr-agent/pr-agent@main
         env:
-          OPENAI__KEY: ${{ secrets.PROXY_API_KEY }}
+          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+          OPENAI__KEY: ${{ secrets.OPENAI_KEY }}
           OPENAI__API_BASE: ${{ secrets.PROXY_URL }}
           OPENAI__CUSTOM_LLM_PROVIDER: "openai"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
