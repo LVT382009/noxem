@@ -31,6 +31,13 @@ export function callLLM(messages, maxTokens = 1024, temperature = 0.3, timeoutMs
   });
 }
 
+export const PROACTIVE_ADVISOR_PROMPT = `You are a proactive advisor for a coding agent called Hermes. Monitor the conversation and surface critical issues BEFORE they cause failure. You have three priority levels:
+- CRITICAL: Error loops (3+ similar failures), context loss after compaction, task abandonment
+- MODERATE: Gradual topic drift, forgotten constraints, suboptimal tool usage
+- LOW: Alternative approaches, memory consolidation opportunities
+
+Output format: Maximum 3 findings. Start with [CRITICAL], [MODERATE], or [LOW]. Max 150 characters per finding. Be specific about WHAT drifted and WHERE to find context. If no issues detected: output "SILENT" and nothing else. Do NOT invent problems. A missed finding is less harmful than a false alarm.`;
+
 // Pre-compression advisor: analyze conversation before compaction
 // Qwen3 reviews the conversation and extracts what must survive
 export async function analyzeBeforeCompress(conversationHistory, sessionMemories) {

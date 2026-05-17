@@ -82,6 +82,12 @@ class NoxemMemoryProvider:
         self._stderr_logs = []  # P-#22
         atexit.register(self.shutdown)
 
+        # Brain 2: Proactive advisor state
+        self._advisor_cache = None  # Cached advisor output (consumed by prefetch)
+        self._advisor_interval = int(os.environ.get("ADVISOR_INTERVAL", "10"))
+        self._last_advisor_turn = 0
+        self._consecutive_errors = 0  # Track for error-loop detection
+
         # Load noxem.json and propagate to env vars if not already set
         # This bridges the gap: config saved by `hermes memory setup` reaches Node.js servers
         self._load_noxem_config()
@@ -632,6 +638,11 @@ class NoxemMemoryProvider:
         except Exception:
             pass
 
+        # Brain 2: Inject advisor warnings (if any)
+        if self._advisor_cache:
+            parts.append(f"[Noxem Advisor]\n{self._advisor_cache}")
+            self._advisor_cache = None  # consume — only shown once
+
         if parts:
             return "\n\n".join(parts)
 
@@ -726,11 +737,44 @@ class NoxemMemoryProvider:
         return keywords[:max_keywords]
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """Health-check every 10 turns if server was unreachable. Flush queue on reconnect."""
+        """Health-check every 10 turns if server was unreachable. Flush queue on reconnect.
+        Brain 2: Trigger proactive advisor every N turns."""
         if not self._server_reachable.is_set() and turn_number % 10 == 1:
             if self._check_server_health():
                 self._flush_pending_queue()
                 logger.info(f"Noxem server reconnected at turn {turn_number}")
+
+        # Brain 2: Proactive advisor trigger
+        if self._advisor_enabled():
+            should_check = False
+            # Periodic check every N turns
+            if turn_number > 0 and turn_number % self._advisor_interval == 0:
+                should_check = True
+            # Event-based: after session switch (post-compaction)
+            if kwargs.get("reset") or kwargs.get("reason") == "compression":
+                should_check = True
+            if should_check and self._advisor_cache is None:
+                self._request_advisor_analysis(message)
+
+    def _advisor_enabled(self):
+        """Check if proactive advisor is enabled (Brain 2 must be active)."""
+        return (os.environ.get("ENABLE_PROACTIVE_ADVISOR", "true").lower() != "false"
+                and self._server_reachable.is_set())
+
+    def _request_advisor_analysis(self, message):
+        """Fire advisor analysis in background thread. Result cached for next prefetch."""
+        def _run():
+            try:
+                result = self._api_post("/memory/advisor/proactive", {
+                    "user_message": (message or "")[:500],
+                    "session_id": self._session_id or "",
+                })
+                if result and "advice" in result and result["advice"] != "SILENT":
+                    self._advisor_cache = result["advice"][:500]  # Budget cap
+            except Exception:
+                pass  # Non-critical — advisor is best-effort
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, **kwargs) -> None:
         """Persist conversation turn with retry + local buffering. Non-blocking."""
@@ -831,7 +875,14 @@ class NoxemMemoryProvider:
             return result.get("analysis", "")
         except Exception as e:
             logger.debug(f"on_pre_compress failed: {e}")
-            return None
+        return None
+
+    def on_session_switch(self, new_session_id: str, *, parent_session_id: str = "", reset: bool = False, **kwargs) -> None:
+        """Handle session switches — update session ID + request advisor analysis after compaction."""
+        self._session_id = new_session_id
+        # After context compression, request advisor analysis to check for lost context
+        if not reset and parent_session_id and self._advisor_enabled():
+            self._request_advisor_analysis("[Context was just compressed — check for lost context]")
 
     def on_memory_write(self, action: str, target: str, content: str, metadata=None, **kwargs) -> None:
         """Mirror built-in memory writes to Noxem."""
