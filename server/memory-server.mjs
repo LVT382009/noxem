@@ -1076,7 +1076,7 @@ app.post('/memory/supersede', (req, res) => {
     if (!oldMem) return res.status(404).json({ error: `memory ${old_id} not found` });
 
     // H-4: Validate new_id exists before making mutations
-  const newMem = getMemory(new_id);
+  let newMem = getMemory(new_id);
   if (!newMem) return res.status(404).json({ error: `memory ${new_id} not found` });
 
   // Mark old as superseded by new

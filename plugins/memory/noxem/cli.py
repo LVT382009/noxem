@@ -1,3 +1,4 @@
+from urllib.parse import urlparse
 """Noxem CLI — hermes noxem status, config, search, advisor."""
 
 import json
@@ -15,7 +16,11 @@ def _get_server():
 
 
 def _api_get(path):
-    url = f"{_get_server()}{path}"
+    base = _get_server()
+    scheme = urlparse(base).scheme
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Invalid server URL scheme: {scheme}. Must be http or https.")
+    url = f"{base}{path}"
     try:
         with urlopen(Request(url, headers={"Accept": "application/json"}), timeout=5) as r:
             return json.loads(r.read().decode())
@@ -59,7 +64,7 @@ def _cmd_search(args):
         return
     print(f"Found {len(results)} memories:")
     for i, m in enumerate(results, 1):
-        score = float(m.get('score') or 0)  # P-#33
+        score = _safe_float(m.get('score'))  # P-#33
         print(f"\n  [{i}] ({m.get('type', '?')}) [rel: {score:.2f}]")
         print(f"      {m.get('text', '')[:200]}")
         print(f"      session: {m.get('session_id', '')[:20]}")
@@ -91,7 +96,11 @@ def _cmd_run(args):
 
 def _api_post(path, body=None):
     """POST to the Noxem server. body=None sends empty JSON (for trigger endpoints like maintenance/run)."""
-    url = f"{_get_server()}{path}"
+    base = _get_server()
+    scheme = urlparse(base).scheme
+    if scheme not in ("http", "https"):
+        raise ValueError(f"Invalid server URL scheme: {scheme}. Must be http or https.")
+    url = f"{base}{path}"
     data = json.dumps(body or {}).encode()
     try:
         with urlopen(Request(url, data=data, headers={"Content-Type": "application/json"}), timeout=30) as r:

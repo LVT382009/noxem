@@ -116,7 +116,13 @@ function withLock(fn) {
   const prev = inferenceLock;
   inferenceLock = next;
   return prev.then(() => {
-    const result = fn();
+    let result;
+    try {
+      result = fn();
+    } catch (syncErr) {
+      release(); // Release lock on synchronous throw to prevent deadlock
+      throw syncErr;
+    }
     // Timeout returns error to caller but does NOT release the lock —
     // the inference may still be running in transformers.js (not thread-safe).
     // Release only when the actual inference completes.

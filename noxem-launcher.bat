@@ -211,6 +211,16 @@ set BRAIN2_ENABLED=0
 goto :skip_brain2
 
 :creds_ok
+REM Upsert BROWSER key into existing .env (for existing installs)
+findstr /C:"BROWSER=" "%QWENPROXY_ENV%" >nul 2>&1
+if %ERRORLEVEL% neq 0 (
+    echo BROWSER=%QWENPROXY_BROWSER%>> "%QWENPROXY_ENV%"
+) else (
+    REM Replace existing BROWSER line
+    for /f "tokens=1 delims==" %%a in ('findstr /N "BROWSER=" "%QWENPROXY_ENV%"') do (
+        powershell -Command "(Get-Content '%QWENPROXY_ENV%') -replace 'BROWSER=.*', 'BROWSER=%QWENPROXY_BROWSER%' | Set-Content '%QWENPROXY_ENV%'" >nul 2>&1
+    )
+)
 echo Starting QwenProxy server...
 REM Kill any leftover QwenProxy from a previous session
 curl -s -o nul --connect-timeout 1 http://127.0.0.1:%QWENPROXY_PORT%/health >nul 2>&1

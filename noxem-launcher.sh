@@ -123,6 +123,12 @@ prompt_qwen_credentials() {
   # Check if .env already has credentials
   if [ -f "$QWENPROXY_ENV" ] && grep -q '^QWEN_EMAIL=' "$QWENPROXY_ENV" && grep -q '^QWEN_PASSWORD=' "$QWENPROXY_ENV"; then
     dim " QwenProxy credentials found in $QWENPROXY_ENV"
+  # Upsert BROWSER key for existing installs
+  if ! grep -q "^BROWSER=" ""; then
+    echo "BROWSER=${QWENPROXY_BROWSER:-chromium}" >> ""
+  else
+    sed -i "s/^BROWSER=.*/BROWSER=${QWENPROXY_BROWSER:-chromium}/" ""
+  fi
     return 0
   fi
 
@@ -232,12 +238,19 @@ setup_qwenproxy() {
       return 1
     }
 
-    # Install Playwright browsers — skip if Hermes already cached Chromium
-    if ls "$HOME/.cache/ms-playwright/chromium-"*/chrome-linux64/chrome 2>/dev/null | head -1 | grep -q .; then
-      dim " Playwright Chromium already cached (from Hermes) — skipping download"
+  # Install Playwright browsers — skip if already cached
+  _PW_BROWSER_DIR="${QWENPROXY_BROWSER:-chromium}"
+  if [ "$_PW_BROWSER_DIR" = "chrome" ]; then _PW_BROWSER_DIR="chromium"; fi
+  if ls "$HOME/.cache/ms-playwright/$_PW_BROWSER_DIR-"*/chrome-linux64/chrome 2>/dev/null | head -1 | grep -q .; then
+    dim " Playwright $_PW_BROWSER_DIR already cached — skipping download"
     else
       dim " Installing Playwright browsers..."
-      (cd "$QWENPROXY_DIR" && npx playwright install ${QWENPROXY_BROWSER:-chromium} 2>/dev/null) || {
+      (cd "$QWENPROXY_DIR" && # Validate browser selection
+case "${QWENPROXY_BROWSER:-chromium}" in
+  chromium|chrome|firefox|webkit) ;;
+  *) echo "Error: Unsupported QWENPROXY_BROWSER='$QWENPROXY_BROWSER'. Use: chromium, firefox, webkit" >&2; exit 1 ;;
+esac
+npx playwright install "${QWENPROXY_BROWSER:-chromium}" 2>/dev/null) || {
         red " Playwright browser install failed."
         dim " Try manually: cd $QWENPROXY_DIR && npx playwright install ${QWENPROXY_BROWSER:-chromium}"
         return 1

@@ -13,8 +13,11 @@ function isPrivateUrl(urlStr) {
   try {
     const parsed = parseUrl(urlStr);
     if (!['http:', 'https:'].includes(parsed.protocol)) return true;
-    const hostname = parsed.hostname || '';
-    return PRIVATE_IP_RANGES.some(r => r.test(hostname));
+  const hostname = parsed.hostname || '';
+  // Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) and strip brackets
+  const ipv4mapped = hostname.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  const checkHost = ipv4mapped ? ipv4mapped[1] : hostname.replace(/[\[\]]/g, '');
+  return PRIVATE_IP_RANGES.some(r => r.test(checkHost));
   } catch { return true; }
 }
 

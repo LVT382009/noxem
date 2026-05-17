@@ -810,7 +810,7 @@ class NoxemMemoryProvider:
     def on_session_end(self, messages: list) -> None:
         try:
             result = self._api_post("/memory/session/end", {
-                "conversation_history": messages,
+            "conversation_history": messages[-50:],
                 "session_id": self._session_id,
             })
             count = result.get("extracted", 0)
