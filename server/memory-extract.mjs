@@ -86,7 +86,7 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
   const memories = [];
   const msg = (userMessage || '') + ' ' + (assistantResponse || '');
 
-  // Preference patterns
+  // English preference patterns
   const prefPatterns = [
     /I (?:prefer|like|love|enjoy|hate|dislike) (\w+(?: \w+){0,5})/gi,
     /my favorite (\w+(?: \w+){0,5}) is (\w+)/gi,
@@ -99,7 +99,7 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
     }
   }
 
-  // Project patterns
+  // English project patterns
   const projPatterns = [
     /I(?:'m| am) (?:building|working on|creating|making) (\w+(?: \w+){0,5})/gi,
     /my (?:project|app|tool) (\w+(?: \w+){0,3})/gi,
@@ -108,6 +108,35 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
     const matches = msg.matchAll(pat);
     for (const m of matches) {
       memories.push({ text: `User project mention: ${m[0].substring(0, 200)}`, type: 'project' });
+    }
+  }
+
+  // CJK preference patterns
+  const cjkPrefPatterns = [
+    /(?:喜欢|偏好|最[爱喜]|常用|习惯用)(.{1,20}?)(?:[，。、；\s]|$)/gu,
+    /(?:讨厌|不喜欢|不爱)(.{1,20}?)(?:[，。、；\s]|$)/gu,
+  ];
+  for (const pat of cjkPrefPatterns) {
+    const matches = msg.matchAll(pat);
+    for (const m of matches) {
+      const object = m[1]?.trim();
+      if (object && object.length >= 2) {
+        memories.push({ text: m[0].substring(0, 200), type: 'preference' });
+      }
+    }
+  }
+
+  // CJK project patterns
+  const cjkProjPatterns = [
+    /(?:在做|在开发|正在做|开发了?|构建)(.{1,20}?)(?:[，。、；\s]|$)/gu,
+  ];
+  for (const pat of cjkProjPatterns) {
+    const matches = msg.matchAll(pat);
+    for (const m of matches) {
+      const object = m[1]?.trim();
+      if (object && object.length >= 2) {
+        memories.push({ text: m[0].substring(0, 200), type: 'project' });
+      }
     }
   }
 

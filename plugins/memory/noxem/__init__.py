@@ -789,8 +789,12 @@ class NoxemMemoryProvider:
             finally:
                 with self._advisor_lock:
                     self._advisor_request_in_progress = False
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
+        try:
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+        except Exception:
+            with self._advisor_lock:
+                self._advisor_request_in_progress = False
 
     def sync_turn(self, user_content: str, assistant_content: str, **kwargs) -> None:
         """Persist conversation turn with retry + local buffering. Non-blocking."""

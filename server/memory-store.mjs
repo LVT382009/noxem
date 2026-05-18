@@ -169,6 +169,32 @@ try {
   if (!e.message.includes("no such table")) LOG_DEBUG && console.error('[Schema] CJK rebuild:', e.message);
 }
 
+// Migrate FTS triggers: existing DBs have old triggers that don't write to memories_fts_cjk.
+// Drop+recreate to ensure both FTS tables are maintained.
+try {
+  db.exec(`
+    DROP TRIGGER IF EXISTS memories_ai;
+    DROP TRIGGER IF EXISTS memories_ad;
+    DROP TRIGGER IF EXISTS memories_au;
+    CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+      INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+      INSERT INTO memories_fts_cjk(rowid, text) VALUES (new.id, new.text);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+      INSERT INTO memories_fts_cjk(memories_fts_cjk, rowid, text) VALUES ('delete', old.id, old.text);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, text) VALUES ('delete', old.id, old.text);
+      INSERT INTO memories_fts(rowid, text) VALUES (new.id, new.text);
+      INSERT INTO memories_fts_cjk(memories_fts_cjk, rowid, text) VALUES ('delete', old.id, old.text);
+      INSERT INTO memories_fts_cjk(rowid, text) VALUES (new.id, new.text);
+    END;
+  `);
+} catch (e) {
+  LOG_DEBUG && console.error('[Schema] FTS trigger migration:', e.message);
+}
+
 const insert = db.prepare(
   `INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from)
   VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from)`

@@ -135,7 +135,6 @@ function withLock(fn) {
   });
 }
 
-
 // Validate cache directory: check if tokenizer_config.json exists and is non-empty.
 // If missing or empty, the cache is corrupted — clear it before loading.
 function validateCacheDir(cacheDir) {
@@ -428,6 +427,7 @@ export function findContradictions(memories) {
 export function categorizeText(text) {
   const lower = text.toLowerCase();
 
+  // English patterns
   if (/prefer|like |love |hate |dislike|favorite|enjoy|don't like|not a fan/i.test(lower)) return 'preference';
   if (/project|building|working on|creating|app |tool |system |repo|github/i.test(lower)) return 'project';
   if (/name is|my name|called|i am |i'm |works as|role |job /i.test(lower)) return 'profile';
@@ -439,6 +439,28 @@ export function categorizeText(text) {
   if (/workflow|habit|always|usually|typically|every |each /i.test(lower)) return 'pattern';
   if (/entity|person|company|website|product|service/i.test(lower)) return 'entity';
   if (/yesterday|today|tomorrow|last week|meeting|call |event|schedule/i.test(lower)) return 'event';
+
+  // CJK patterns (Chinese/Japanese/Korean)
+  // Preference: 喜欢/偏好/爱/讨厌/不喜欢
+  if (/喜欢|偏好|爱|讨厌|不喜欢|最爱|喜好|倾向于|习惯用|常用/u.test(lower)) return 'preference';
+  // Project: 项目/在做/开发/构建
+  if (/项目|在做|在开发|正在做|在做|开发了|构建|工程|开发中/u.test(lower)) return 'project';
+  // Profile: 我叫/我的名字/我是/工作
+  if (/我叫|我的名字|我是|在.*工作|职位|从事|叫|名为/u.test(lower)) return 'profile';
+  // Request: 需要/想要/请/帮我
+  if (/需要|想要|请|帮我|能不能|可以|帮帮忙/u.test(lower)) return 'request';
+  // Learning: 学习/研究/课程/教程
+  if (/学习|研究|课程|教程|学会了|在读|阅读|了解了|掌握了/u.test(lower)) return 'learning';
+  // Setup: 技术/框架/环境/配置/安装
+  if (/技术栈|框架|环境|配置|安装|部署|搭建|用的是|运行在|基于/u.test(lower)) return 'setup';
+  // Goal: 目标/计划/打算/准备
+  if (/目标|计划|打算|准备|要做|未来|希望|期望|规划/u.test(lower)) return 'goal';
+  // Issue: 错误/问题/报错/崩溃
+  if (/错误|问题|报错|崩溃|出错了|坏了|无法|失败|异常/u.test(lower)) return 'issue';
+  // Pattern: 习惯/通常/一般/总是
+  if (/习惯|通常|一般|总是|每次|经常|惯例|模式/u.test(lower)) return 'pattern';
+  // Event: 昨天/今天/明天/上周/会议
+  if (/昨天|今天|明天|上周|下周|会议|日程|计划|约会|见面/u.test(lower)) return 'event';
 
   return 'fact';
 }
@@ -466,11 +488,16 @@ export function estimateImportance(text, type) {
   if (/critical|essential|important|must|always|never|deadline|urgent/i.test(lower)) importance = Math.min(1.0, importance + 0.15);
   if (/password|secret|api.key|credential|token|auth/i.test(lower)) importance = Math.min(1.0, importance + 0.2); // security-critical
   if (/my name|i am |called |role |job title/i.test(lower)) importance = Math.min(1.0, importance + 0.1); // identity
+  // CJK security/identity boost
+  if (/密码|密钥|凭据|认证/u.test(lower)) importance = Math.min(1.0, importance + 0.2);
+  if (/我的名字|我叫|我是|职位/u.test(lower)) importance = Math.min(1.0, importance + 0.1);
 
   // Reduce for trivial indicators
   if (text.trim().length < 30) importance = Math.max(0.1, importance - 0.15);  // too short to be substantial
   if (/^(ok|okay|sure|yes|no|done|thanks|hi|hello|bye|good)\b/i.test(lower)) importance = 0.1; // trivial
   if (/maybe|might|perhaps|possibly/i.test(lower)) importance = Math.max(0.1, importance - 0.1); // uncertain
+  // CJK trivial indicators
+  if (/^(好的|对|嗯|谢|再见|没事|ok)/i.test(lower)) importance = 0.1;
 
   return Math.round(Math.max(0.1, Math.min(1.0, importance)) * 100) / 100;
 }
@@ -565,6 +592,46 @@ export function extractEntityAttribute(text) {
   const projMatch = lower.match(/(?:building|working on|creating|developing|making)\s+(.+?)(?:\s+(?:with|using|for|called|named|\.|!|\?|,|;|$))/i);
   if (projMatch) {
     return { entity: 'user', attribute: `project_${projMatch[1].trim().replace(/\s+/g, '_')}` };
+  }
+
+  // CJK patterns
+  // Negated preference: "不喜欢X" / "不再用X"
+  const cjkNegMatch = text.match(/(?:不喜[欢迎]|不再|不用|讨厌)(.+?)(?:[，。、；\s]|$)/u);
+  if (cjkNegMatch) {
+    const object = cjkNegMatch[1].trim();
+    if (object) return { entity: 'user', attribute: `dislike_${object}` };
+  }
+
+  // Preference: "喜欢X" / "偏好X" / "常用X"
+  const cjkPrefMatch = text.match(/(?:喜欢|偏好|最[爱喜]|常用|习惯用|倾向[于]?)(.+?)(?:[，。、；\s]|$)/u);
+  if (cjkPrefMatch) {
+    const object = cjkPrefMatch[1].trim();
+    if (object) return { entity: 'user', attribute: `prefer_${object}` };
+  }
+
+  // Identity: "我叫X" / "我的名字是X" / "我在X工作"
+  const cjkIdMatch = text.match(/(?:我叫|我的名字[是为]|我是)(.+?)(?:[，。、；\s]|$)/u);
+  if (cjkIdMatch) {
+    const value = cjkIdMatch[1].trim();
+    if (value) return { entity: 'user', attribute: 'name' };
+  }
+  const cjkWorkMatch = text.match(/我在(.+?)(?:工作|上班)/u);
+  if (cjkWorkMatch) {
+    return { entity: 'user', attribute: 'employer' };
+  }
+
+  // Tech: "用X" / "基于X" / "用的是X"
+  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用)(.+?)(?:[，。、；\s开发构建]|$)/u);
+  if (cjkTechMatch) {
+    const tech = cjkTechMatch[1].trim();
+    if (tech) return { entity: 'user', attribute: `tech_${tech}` };
+  }
+
+  // Project: "在做X" / "开发X" / "构建X"
+  const cjkProjMatch = text.match(/(?:在做|在开发|正在做|开发了?|构建|开发中)(.+?)(?:[，。、；\s]|$)/u);
+  if (cjkProjMatch) {
+    const project = cjkProjMatch[1].trim();
+    if (project) return { entity: 'user', attribute: `project_${project}` };
   }
 
   return { entity: '', attribute: '' };

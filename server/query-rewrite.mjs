@@ -21,6 +21,10 @@ function hashQuery(query) {
 }
 
 export async function rewriteQuery(query, { timeoutMs = 3000 } = {}) {
+  // Validate input — coerce non-strings to prevent hashQuery/callLLM errors
+  if (typeof query !== 'string') query = String(query ?? '');
+  if (!query.trim()) return { rewritten: '', variants: [] };
+
   // Check cache
   const cacheKey = hashQuery(query);
   const cached = _rewriteCache.get(cacheKey);
