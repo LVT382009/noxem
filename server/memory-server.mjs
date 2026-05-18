@@ -1317,13 +1317,7 @@ app.post('/memory/sync', async (req, res) => {
       const userText = user_message.trim().substring(0, 2000);
       const { entity: userEntity, attribute: userAttr } = extractEntityAttribute(userText);
       const userPrefix = generateContextPrefix(userText, type, session_id);
-      let embedding = null;
-      if (isEmbeddingReady()) {
-        try {
-          const embedText = userPrefix ? userPrefix + " " + userText : userText;
-          embedding = null  // Defer to background queue;
-        } catch {}
-      }
+        let embedding = null; // Defer to background queue
       memories.push({ session_id, type, text: userText, embedding, metadata: { source: "user", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr });
     }
 
@@ -1332,13 +1326,7 @@ app.post('/memory/sync', async (req, res) => {
       const asstText = assistant_response.trim().substring(0, 2000);
       const { entity: asstEntity, attribute: asstAttr } = extractEntityAttribute(asstText);
       const asstPrefix = generateContextPrefix(asstText, "fact", session_id);
-      let embedding = null;
-      if (isEmbeddingReady()) {
-        try {
-          const embedText = asstPrefix ? asstPrefix + " " + asstText : asstText;
-                    embedding = null; // Defer to background queue
-                } catch (embedErr) { LOG_DEBUG && console.error("[SyncEmbed] embed error:", embedErr.message); }
-      }
+        let embedding = null; // Defer to background queue
       memories.push({ session_id, type: "fact", text: asstText, embedding, metadata: { source: "assistant", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr });
     }
 

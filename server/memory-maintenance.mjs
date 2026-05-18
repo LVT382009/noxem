@@ -184,25 +184,29 @@ export async function runMaintenance() {
     ).all(SUPERSEDED_GRACE_DAYS);
     let reaped = 0;
     if (candidates.length > 0) {
-      const reapTx = db.transaction((ids) => {
-        let count = 0;
-        for (const { id } of ids) {
-          // Check recent citations — skip if still being cited
-          const recentCites = db.prepare(
-            "SELECT COUNT(*) as c FROM citation_log WHERE memory_id = ? AND cited_at > datetime('now', '-30 days')"
-          ).get(id);
-          if (recentCites.c > 0) continue;
-          // Clean up dependent rows before deleting
-          db.prepare("DELETE FROM citation_log WHERE memory_id = ?").run(id);
-          db.prepare("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?").run(id, id);
-            // Nullify any FK references pointing to this memory before DELETE
-            db.prepare("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?").run(id);
-          // Safe to delete — memory_raw has ON DELETE CASCADE
-          db.prepare("DELETE FROM memories WHERE id = ?").run(id);
-          count++;
-        }
-        return count;
-      });
+const reapTx = db.transaction((ids) => {
+  let count = 0;
+  // Hoist prepared statements outside the loop
+  const stmtCites = db.prepare("SELECT COUNT(*) as c FROM citation_log WHERE memory_id = ? AND cited_at > datetime('now', '-30 days')");
+  const stmtDelCites = db.prepare("DELETE FROM citation_log WHERE memory_id = ?");
+  const stmtDelEdges = db.prepare("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?");
+  const stmtNullifyFK = db.prepare("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?");
+  const stmtDelMem = db.prepare("DELETE FROM memories WHERE id = ?");
+  for (const { id } of ids) {
+    // Check recent citations — skip if still being cited
+    if (stmtCites.get(id).c > 0) continue;
+    // Clean up dependent rows before deleting
+    stmtDelCites.run(id);
+    stmtDelEdges.run(id, id);
+    // Nullify any FK references pointing to this memory before DELETE
+    stmtNullifyFK.run(id);
+    // Remove vector index entry before deleting row
+    deleteVec(db, id);
+    stmtDelMem.run(id);
+    count++;
+  }
+  return count;
+});
       reaped = reapTx(candidates);
     }
     results.reaped_superseded = reaped;
