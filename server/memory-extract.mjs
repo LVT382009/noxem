@@ -88,16 +88,17 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     try {
       const memories = JSON.parse(chunk);
       if (Array.isArray(memories) && memories.length > 0) {
-        return memories.filter(m => m.text && m.type).map(m => {
-        	const ent = (m.entity || '').trim();
-        	const attr = (m.attribute || '').trim();
-        	return {
-        		text: m.text.trim().substring(0, 1000),
-        		type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
-        		entity: ent ? ent.substring(0, 100) : null,
-        		attribute: attr ? attr.substring(0, 100) : null,
-        	};
-        });
+        return memories.map(m => {
+          if (!m.text) return null;
+          const ent = (m.entity || '').trim();
+          const attr = (m.attribute || '').trim();
+          return {
+            text: m.text.trim().substring(0, 1000),
+            type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
+            entity: ent ? ent.substring(0, 100) : null,
+            attribute: attr ? attr.substring(0, 100) : null,
+          };
+        }).filter(m => m !== null);
       }
     } catch (parseErr) { console.error('[Extract] JSON parse failed:', parseErr.message); }
   }
@@ -146,8 +147,6 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
   const cjkPrefPatterns = [
     /(?:喜欢|偏好|最[爱喜]|常用|习惯用)(.{1,20}?)(?:[，。、；\s]|$)/gu,
     /(?:讨厌|不喜欢|不爱)(.{1,20}?)(?:[，。、；\s]|$)/gu,
-    /(?:好き(?:な)?|愛用|좋아(?:하)?|자주 쓰)(.{1,20}?)(?:[，。、；\s]|$)/gu,
-    /(?:嫌い(?:な)?|苦手(?:な)?|싫어(?:하)?|안 좋아)(.{1,20}?)(?:[，。、；\s]|$)/gu,
   /(.{2,20}?)(?=が好き|が愛用|を好|を好き|를 좋아|을 좋아)/gu,
   /(.{2,20}?)(?=が嫌い|が嫌|を嫌|を嫌がる|를 싫어|를 안 좋아|을 싫어)/gu,
   ];
@@ -164,7 +163,6 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
   // CJK project patterns
   const cjkProjPatterns = [
     /(?:在做|在开发|正在做|开发了?|构建)(.{1,20}?)(?:[，。、；\s]|$)/gu,
-    /(?:開発中|개발중|개발하)(.{1,20}?)(?:[，。、；\s]|$)/gu,
   /(.{2,20}?)(?=を開発|を構築|を开発|を開発中|를 개발|을 개발)/gu,
   ];
   for (const pat of cjkProjPatterns) {
@@ -242,18 +240,19 @@ If no memories worth extracting, output: []`;
 
     for (const chunk of jsonChunks) {
       try {
-        const memories = JSON.parse(match[0]);
+        const memories = JSON.parse(chunk);
         if (Array.isArray(memories) && memories.length > 0) {
-          return memories.filter(m => m.text && m.type).map(m => {
-          	const ent = (m.entity || '').trim();
-          	const attr = (m.attribute || '').trim();
-          	return {
-          		text: m.text.trim().substring(0, 1000),
-          		type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
-          		entity: ent ? ent.substring(0, 100) : null,
-          		attribute: attr ? attr.substring(0, 100) : null,
-          	};
-          });
+          return memories.map(m => {
+            if (!m.text) return null;
+            const ent = (m.entity || '').trim();
+            const attr = (m.attribute || '').trim();
+            return {
+              text: m.text.trim().substring(0, 1000),
+              type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
+              entity: ent ? ent.substring(0, 100) : null,
+              attribute: attr ? attr.substring(0, 100) : null,
+            };
+          }).filter(m => m !== null);
         }
       } catch (parseErr) { console.error('[Extract] JSON parse failed:', parseErr.message); }
     }

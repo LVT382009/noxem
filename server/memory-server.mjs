@@ -260,7 +260,7 @@ function enqueueEmbedding(id, text, contextPrefix) {
 
 
 // ─── Semantic Query Cache ─────────────────────────────────────────
-// Caches search results keyed by query embedding; cosine >0.95 = hit
+// Caches search results keyed by query embedding; cosine >0.88 = hit (lowered from 0.95 for paraphrase matching)
 // Invalidated on store/sync/purge; TTL: 5min default
 const _queryCache = new Map(); // hash -> { queryVec, results, timestamp }
 const QUERY_CACHE_MAX = 100;
@@ -289,10 +289,10 @@ function findCachedResult(queryVec) {
   for (const [key, entry] of _queryCache) {
     if (now - entry.timestamp > QUERY_CACHE_TTL_MS) { _queryCache.delete(key); continue; }
     // Quick hash check first, then full cosine
-    if (hashVec(entry.queryVec) !== qHash) continue;
     const sim = cosineSimilarity(queryVec, entry.queryVec);
-    if (sim > 0.95) {
+    if (sim > 0.88) {
       _cacheHits++;
+      _queryCache.set(key, entry); // LRU: re-insert to move to end
       return { results: entry.results, similarity: sim };
     }
   }
@@ -310,7 +310,12 @@ function addToQueryCache(queryVec, results) {
   _queryCache.set(Date.now(), { queryVec: Array.from(queryVec), results, timestamp: Date.now() });
 }
 
+let _lastInvalidate = 0;
 function invalidateQueryCache() {
+  // Debounce: only clear if last invalidation was >30s ago
+  const now = Date.now();
+  if (now - _lastInvalidate < 30000) return; // skip — cache still fresh
+  _lastInvalidate = now;
   _queryCache.clear();
   clearRewriteCache();
 }
@@ -704,8 +709,8 @@ app.get("/memory/search", async (req, res) => {
         const qVec = queryVecs[0];
           if (queryVecs.length === 1) queryVecForCache = qVec;
 
-      // C-3: Skip cache for multi-query — cached single-query results would discard expansion
-      const cached = queryVecs.length === 1 && findCachedResult(qVec);
+      // C-3 fix: Check cache for primary query even with multi-query — expansion results merge in
+      const cached = findCachedResult(qVec);
       if (cached) {
         searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
         searchMethod = "cache+" + (cached.similarity).toFixed(3);
@@ -766,6 +771,22 @@ app.get("/memory/search", async (req, res) => {
 
     // Apply session filter to all search methods
     if (session_id) searchResults = searchResults.filter(r => r.session_id === session_id);
+
+    // Entity-attribute dedup: keep highest-scored memory per entity::attribute key
+    // Prevents contradictory results (e.g., multiple name rules) from confusing the agent
+    const _eaSeen = new Map();
+    searchResults = searchResults.filter(r => {
+      const eaKey = (r.entity && r.attribute) ? `${r.entity}::${r.attribute}` : null;
+      if (!eaKey) return true; // no entity/attribute — keep
+      const existing = _eaSeen.get(eaKey);
+      if (!existing) { _eaSeen.set(eaKey, r); return true; }
+      // Keep the one with higher final score
+      if ((r.final_score || r.score || 0) > (existing.final_score || existing.score || 0)) {
+        _eaSeen.set(eaKey, r);
+        return true;
+      }
+      return false;
+    });
 
     // Store in semantic cache if we got results from embedding search
     if (queryVecForCache && searchResults.length > 0 && !searchMethod.startsWith("cache")) {

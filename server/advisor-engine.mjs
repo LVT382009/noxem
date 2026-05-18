@@ -184,7 +184,7 @@ Rules:
 			if (inStr && ch === quoteChar) { inStr = false; quoteChar = ''; continue; }
 			if (inStr) continue;
 			if (ch === '[') depth++;
-			if (ch === ']') { depth--; if (depth === 0) { const _mem = JSON.parse(content.substring(startIdx, i + 1)); const _allowed = new Set(['fact','preference','profile','project','goal','pattern','entity','event','issue','setup','learning','request','reflection','summary']); return Array.isArray(_mem) ? _mem.filter(m => m.text && m.type).map(m => { m.type = _allowed.has(m.type) ? m.type : 'fact'; return m; }) : []; } }
+			if (ch === ']') { depth--; if (depth === 0) { const _mem = JSON.parse(content.substring(startIdx, i + 1)); const _allowed = new Set(['fact','preference','profile','project','goal','pattern','entity','event','issue','setup','learning','request','reflection','summary']); return Array.isArray(_mem) ? _mem.map(m => { if (m.text) m.type = _allowed.has(m.type) ? m.type : 'fact'; return m; }).filter(m => m.text) : []; } }
 		}
 		return [];
   } catch (err) {

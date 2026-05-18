@@ -442,6 +442,15 @@ export function categorizeText(text) {
   if (/entity|person|company|website|product|service/i.test(lower)) return 'entity';
   if (/yesterday|today|tomorrow|last week|meeting|call |event|schedule/i.test(lower)) return 'event';
 
+
+// Lightweight CJK language detection via Unicode script blocks
+function detectCJKLanguage(text) {
+  if (/[\u3040-\u309F\u30A0-\u30FF]/.test(text)) return 'ja'; // hiragana/katakana
+  if (/[\uAC00-\uD7AF\u1100-\u11FF]/.test(text)) return 'ko'; // hangul
+  if (/[\u4E00-\u9FFF]/.test(text)) return 'zh'; // CJK ideographs only = Chinese
+  return 'unknown';
+}
+
 // CJK patterns (Chinese + Japanese + Korean Hangul + Korean Hangul)
 // Preference: 喜欢/偏好/爱/讨厌/不喜欢 + 好き/嫌い
 if (/喜欢|偏好|最爱|很爱|比较爱|爱用|讨厌|不喜欢|喜好|倾向于|习惯用|常用|好き|嫌い/u.test(lower)) return 'preference';
@@ -597,73 +606,75 @@ export function extractEntityAttribute(text) {
   }
 
   // CJK patterns
-  // Negated preference: "不喜欢X" / "不再用X"
-  const cjkNegMatch = text.match(/(?:不喜[欢迎]|不再|不用|讨厌|嫌い(?:な)?|苦手(?:な)?|싫어(?:하)?|안 좋아)(.+?)(?:[，。、；\s]|$)/u);
+  // Language-routed CJK entity extraction
+  // Step 1: Detect language to route to grammar-correct patterns
+  const cjkLang = detectCJKLanguage(text);
+
+  // Step 2: Try JP/KR lookahead patterns FIRST (object-before-verb grammar)
+  // These capture the entity BEFORE the predicate, which is correct for SOV languages
+  if (cjkLang === 'ja' || cjkLang === 'ko') {
+    // JP/KR: object before negative predicate
+    const negJP = text.match(/(.+?)(?=が嫌い|が嫌|を嫌|を嫌がる|를 싫어|를 안 좋아|을 싫어)/u);
+    if (negJP) { const obj = negJP[1].trim(); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}`, negated: true }; }
+
+    // JP/KR: object before positive predicate
+    const prefJP = text.match(/(.+?)(?=が好き|が愛用|を好|を好き|를 좋아|을 좋아)/u);
+    if (prefJP) { const obj = prefJP[1].trim(); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}` }; }
+
+    // JP/KR: object before tech predicate
+    const techJP = text.match(/(.+?)(?=を使って|を使い|を基づい|를 사용|을 사용)/u);
+    if (techJP) { const tech = techJP[1].trim(); if (tech && tech.length >= 2) return { entity: 'user', attribute: `tech_${tech}` }; }
+
+    // JP/KR: object before project predicate
+    const projJP = text.match(/(.+?)(?=を開発|を構築|を开発|を開発中|를 개발|을 개발)/u);
+    if (projJP) { const proj = projJP[1].trim(); if (proj && proj.length >= 2) return { entity: 'user', attribute: `project_${proj}` }; }
+  }
+
+  // Step 3: Chinese prefix patterns (verb-before-object, SVO grammar)
+  // These only contain Chinese keywords — JP/KR keywords removed to prevent overlap
+  // Negated preference: "不喜欢X" / "不再用X" / "讨厌X"
+  const cjkNegMatch = text.match(/(?:不喜[欢迎]|不再|不用|讨厌)(.+?)(?:[，。、；\s]|$)/u);
   if (cjkNegMatch) {
     const object = cjkNegMatch[1].trim();
     if (object) return { entity: 'user', attribute: `prefer_${object}`, negated: true };
   }
-    // JP/KR: object before negative predicate ("Xが嫌い", "X를 싫어해요")
-    const cjkNegMatchJP = text.match(/(.+?)(?=が嫌い|が嫌|を嫌|を嫌がる|를 싫어|를 안 좋아|을 싫어)/u);
-    if (cjkNegMatchJP) {
-      const object = cjkNegMatchJP[1].trim();
-      if (object && object.length >= 2) return { entity: 'user', attribute: `prefer_${object}`, negated: true };
-    }
 
   // Preference: "喜欢X" / "偏好X" / "常用X"
-  const cjkPrefMatch = text.match(/(?:喜欢|偏好|最[爱喜]|常用|习惯用|倾向[于]?|好き(?:な)?|愛用|좋아(?:하)?|자주 쓰)(.+?)(?:[，。、；\s]|$)/u);
+  const cjkPrefMatch = text.match(/(?:喜欢|偏好|最[爱喜]|常用|习惯用|倾向[于]?)(.+?)(?:[，。、；\s]|$)/u);
   if (cjkPrefMatch) {
     const object = cjkPrefMatch[1].trim();
     if (object) return { entity: 'user', attribute: `prefer_${object}` };
   }
-    // JP/KR: object before predicate ("Xが好き", "X를 좋아해요")
-    const cjkPrefMatchJP = text.match(/(.+?)(?=が好き|が愛用|を好|를 좋아|을 좋아)/u);
-    if (cjkPrefMatchJP) {
-      const object = cjkPrefMatchJP[1].trim();
-      if (object && object.length >= 2) return { entity: 'user', attribute: `prefer_${object}` };
-    }
 
-// Identity: "我叫X" / "我的名字是X" → name; "我是|私は|저는X" → identity
-const cjkNameMatch = text.match(/(?:我叫|我的名字[是为])(.+?)(?:[，。、；\s]|$)/u);
-if (cjkNameMatch) {
-  const value = cjkNameMatch[1].trim();
-  if (value) return { entity: 'user', attribute: 'name' };
-}
-const cjkIdentityMatch = text.match(/(?:我是|私は|저는)(.+?)(?:[，。、；\s]|$)/u);
-if (cjkIdentityMatch) {
-  const value = cjkIdentityMatch[1].trim();
-  if (value) return { entity: 'user', attribute: 'identity' };
-}
+  // Identity: "我叫X" / "我的名字是X" → name; "我是X" → identity
+  const cjkNameMatch = text.match(/(?:我叫|我的名字[是为])(.+?)(?:[，。、；\s]|$)/u);
+  if (cjkNameMatch) {
+    const value = cjkNameMatch[1].trim();
+    if (value) return { entity: 'user', attribute: 'name' };
+  }
+  const cjkIdentityMatch = text.match(/(?:我是|私は|저는)(.+?)(?:[，。、；\s]|$)/u);
+  if (cjkIdentityMatch) {
+    const value = cjkIdentityMatch[1].trim();
+    if (value) return { entity: 'user', attribute: 'identity' };
+  }
   const cjkWorkMatch = text.match(/(?:我在|)(.+?)(?:工作|上班|で働いて|업무|일하)/u);
   if (cjkWorkMatch && cjkWorkMatch[1]?.trim()) {
     return { entity: 'user', attribute: 'employer' };
   }
 
-  // Tech: "用X" / "基于X" / "用的是X"
-  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用|使って|基づいて|기반으로|사용하)(.+?)(?:[，。、；\s]|开发|构建|用来|$)/u);
+  // Tech: "用X" / "基于X" / "用的是X" — Chinese-only keywords
+  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用)(.+?)(?:[，。、；\s]|开发|构建|用来|$)/u);
   if (cjkTechMatch) {
     const tech = cjkTechMatch[1].trim();
     if (tech) return { entity: 'user', attribute: `tech_${tech}` };
   }
-    // JP/KR: object before predicate ("Xを使って", "X를 사용해요")
-    const cjkTechMatchJP = text.match(/(.+?)(?=を使って|を使い|を基づい|를 사용|을 사용)/u);
-    if (cjkTechMatchJP) {
-      const tech = cjkTechMatchJP[1].trim();
-      if (tech && tech.length >= 2) return { entity: 'user', attribute: `tech_${tech}` };
-    }
 
-  // Project: "在做X" / "开发X" / "构建X"
-  const cjkProjMatch = text.match(/(?:在做|在开发|正在做|开发了?|构建|开发中|開発中|開发|개발중|개발하)(.+?)(?:[，。、；\s]|$)/u);
+  // Project: "在做X" / "开发X" / "构建X" — Chinese-only keywords
+  const cjkProjMatch = text.match(/(?:在做|在开发|正在做|开发了?|构建|开发中|開发)(.+?)(?:[，。、；\s]|$)/u);
   if (cjkProjMatch) {
     const project = cjkProjMatch[1].trim();
     if (project) return { entity: 'user', attribute: `project_${project}` };
   }
-    // JP/KR: object before predicate ("Xを開発中", "X를 개발중")
-    const cjkProjMatchJP = text.match(/(.+?)(?=を開発|を構築|を开発|를 개발|을 개발)/u);
-    if (cjkProjMatchJP) {
-      const project = cjkProjMatchJP[1].trim();
-      if (project && project.length >= 2) return { entity: 'user', attribute: `project_${project}` };
-    }
 
   return { entity: '', attribute: '' };
 }
