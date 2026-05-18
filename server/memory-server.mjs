@@ -684,12 +684,7 @@ app.get("/memory/search", async (req, res) => {
       try {
         const expQ = (rewrittenQuery || q.trim()).replace(/"/g, "");
         const prompt = "Generate 2 alternative ways to phrase this search query for a personal memory store. Return ONLY a JSON array of 2 strings. Query: " + expQ;
-        const expandRes = await fetch(process.env.LLM_URL || process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: process.env.LLM_MODEL || process.env.GEMMA_MODEL || "qwen3.6-plus-no-thinking", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
-          signal: AbortSignal.timeout(1500),
-        });
+        const expandRes = await callLLM([{ role: "user", content: prompt }], 100, 0.3, 3000);
         if (expandRes.ok) {
           const expandData = await expandRes.json();
           const content = expandData.choices?.[0]?.message?.content || "";
@@ -699,7 +694,7 @@ app.get("/memory/search", async (req, res) => {
             if (Array.isArray(alternates)) queries.push(...alternates.slice(0, 2));
           }
         }
-      } catch { /* expansion is optional */ }
+      } catch (expandErr) { /* expansion is optional */ }
     }
 
     // Embedding search (primary) - try KNN first, fall back to JS cosine
@@ -1336,8 +1331,8 @@ app.post('/memory/sync', async (req, res) => {
             const mem = memories[i];
             if (mem && mem.text) {
                 try {
-                    const embedText = mem.context_prefix ? mem.context_prefix + " " + mem.text : mem.text;
-                    enqueueEmbedding(ids[i], embedText, mem.context_prefix || null);
+                    // embedText removed — enqueueEmbedding adds context_prefix internally
+                    enqueueEmbedding(ids[i], mem.text, mem.context_prefix || null);
                 } catch (embedErr) { LOG_DEBUG && console.error("[SyncEmbed] queue error:", embedErr.message); }
         }
       }
@@ -1684,7 +1679,8 @@ function shutdown(signal) {
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
 // Drain extraction/embedding queues before closing
-const queueSize = _extractionQueue?.length || 0;
+const qStatus = getExtractionQueueStatus();
+	const queueSize = qStatus.queue_length || 0;
 if (queueSize > 0) console.log();
   server.close(() => {
     close(); // close SQLite

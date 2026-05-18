@@ -441,7 +441,7 @@ export function searchMemories({ query, limit = 10 }) {
   try {
     // Unicode-aware sanitizer: \p{L} = any letter (including CJK), \p{N} = any number
     let sanitized = query
-      .replace(/(?:[\p{L}\p{N}_]+:)/gu, '')    // strip column: prefixes (Unicode-aware)
+      .replace(/\btext:/gi, '') // strip FTS5 column prefix (only valid FTS5 column)
       .replace(/\b(?:AND|OR|NOT|NEAR)\b/gi, '') // strip FTS5 operators
       .replace(/['"*^$]/g, '')                    // strip quotes and FTS5 modifiers
       .replace(/[^\p{L}\p{N}\s]/gu, ' ')       // preserve CJK and all Unicode letters

@@ -410,7 +410,7 @@ export function findContradictions(memories) {
       if (sim > CONTRADICTION_THRESHOLD) {
         // Check if they express opposing views about the same topic
         const texts = [memories[i].text.toLowerCase(), memories[j].text.toLowerCase()];
-        const prefers = [/prefer/, /like/, /love/, /hate/, /dislike/, /favorite/, /use/, /using/];
+        const prefers = [/prefer/, /like/, /love/, /hate/, /dislike/, /favorite/, /\buse\b/, /using/];
         const hasPreference = prefers.some(p => texts.some(t => p.test(t)));
         if (hasPreference) {
           contradictions.push({
@@ -499,7 +499,7 @@ if (/我的名字|我叫|我是|职位|名前|職業/u.test(lower)) importance =
   if (/^(ok|okay|sure|yes|no|done|thanks|hi|hello|bye|good)\b/i.test(lower)) importance = 0.1; // trivial
   if (/maybe|might|perhaps|possibly/i.test(lower)) importance = Math.max(0.1, importance - 0.1); // uncertain
   // CJK trivial indicators
-  if (/^(好的|对|嗯|谢|再见|没事|ok)/i.test(lower)) importance = 0.1;
+  if (/^(好的|对不起|嗯|谢谢|再见|没事|ok)\b/i.test(lower)) importance = 0.1;
 
   return Math.round(Math.max(0.1, Math.min(1.0, importance)) * 100) / 100;
 }
@@ -598,21 +598,21 @@ export function extractEntityAttribute(text) {
 
   // CJK patterns
   // Negated preference: "不喜欢X" / "不再用X"
-  const cjkNegMatch = text.match(/(?:不喜[欢迎]|不再|不用|讨厌)(.+?)(?:[，。、；\s]|$)/u);
+  const cjkNegMatch = text.match(/(?:不喜[欢迎]|不再|不用|讨厌|嫌い(?:な)?|苦手(?:な)?|싫어(?:하)?|안 좋아)(.+?)(?:[，。、；\s]|$)/u);
   if (cjkNegMatch) {
     const object = cjkNegMatch[1].trim();
     if (object) return { entity: 'user', attribute: `prefer_${object}`, negated: true };
   }
 
   // Preference: "喜欢X" / "偏好X" / "常用X"
-  const cjkPrefMatch = text.match(/(?:喜欢|偏好|最[爱喜]|常用|习惯用|倾向[于]?)(.+?)(?:[，。、；\s]|$)/u);
+  const cjkPrefMatch = text.match(/(?:喜欢|偏好|最[爱喜]|常用|习惯用|倾向[于]?|好き(?:な)?|愛用|좋아(?:하)?|자주 쓰)(.+?)(?:[，。、；\s]|$)/u);
   if (cjkPrefMatch) {
     const object = cjkPrefMatch[1].trim();
     if (object) return { entity: 'user', attribute: `prefer_${object}` };
   }
 
-// Identity: "我叫X" / "我的名字是X" → name; "我是X" → identity
-const cjkNameMatch = text.match(/(?:我叫|我的名字[是为])(.+?)(?:[，。、；\s]|$)/u);
+// Identity: "我叫X" / "我的名字是X" → name; "我是|私は|저는X" → identity
+const cjkNameMatch = text.match(/(?:我叫|我的名字[是为]|私は|저는 이름이)(.+?)(?:[，。、；\s]|$)/u);
 if (cjkNameMatch) {
   const value = cjkNameMatch[1].trim();
   if (value) return { entity: 'user', attribute: 'name' };
@@ -622,20 +622,20 @@ if (cjkIdentityMatch) {
   const value = cjkIdentityMatch[1].trim();
   if (value) return { entity: 'user', attribute: 'identity' };
 }
-  const cjkWorkMatch = text.match(/我在(.+?)(?:工作|上班)/u);
-  if (cjkWorkMatch) {
+  const cjkWorkMatch = text.match(/(?:我在|)(.+?)(?:工作|上班|で働いて|업무|일하)/u);
+  if (cjkWorkMatch && cjkWorkMatch[1]?.trim()) {
     return { entity: 'user', attribute: 'employer' };
   }
 
   // Tech: "用X" / "基于X" / "用的是X"
-  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用)(.+?)(?:[，。、；\s]|开发|构建|用来|$)/u);
+  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用|使って|基づいて|기반으로|사용하)(.+?)(?:[，。、；\s]|开发|构建|用来|$)/u);
   if (cjkTechMatch) {
     const tech = cjkTechMatch[1].trim();
     if (tech) return { entity: 'user', attribute: `tech_${tech}` };
   }
 
   // Project: "在做X" / "开发X" / "构建X"
-  const cjkProjMatch = text.match(/(?:在做|在开发|正在做|开发了?|构建|开发中)(.+?)(?:[，。、；\s]|$)/u);
+  const cjkProjMatch = text.match(/(?:在做|在开发|正在做|开发了?|构建|开发中|開発中|開发|개발중|개발하)(.+?)(?:[，。、；\s]|$)/u);
   if (cjkProjMatch) {
     const project = cjkProjMatch[1].trim();
     if (project) return { entity: 'user', attribute: `project_${project}` };

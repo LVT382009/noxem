@@ -116,6 +116,8 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
   const cjkPrefPatterns = [
     /(?:喜欢|偏好|最[爱喜]|常用|习惯用)(.{1,20}?)(?:[，。、；\s]|$)/gu,
     /(?:讨厌|不喜欢|不爱)(.{1,20}?)(?:[，。、；\s]|$)/gu,
+    /(?:好き(?:な)?|愛用|좋아(?:하)?|자주 쓰)(.{1,20}?)(?:[，。、；\s]|$)/gu,
+    /(?:嫌い(?:な)?|苦手(?:な)?|싫어(?:하)?|안 좋아)(.{1,20}?)(?:[，。、；\s]|$)/gu,
   ];
   for (const pat of cjkPrefPatterns) {
     const matches = msg.matchAll(pat);
@@ -130,6 +132,7 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
   // CJK project patterns
   const cjkProjPatterns = [
     /(?:在做|在开发|正在做|开发了?|构建)(.{1,20}?)(?:[，。、；\s]|$)/gu,
+    /(?:開発中|개발중|개발하)(.{1,20}?)(?:[，。、；\s]|$)/gu,
   ];
   for (const pat of cjkProjPatterns) {
     const matches = msg.matchAll(pat);

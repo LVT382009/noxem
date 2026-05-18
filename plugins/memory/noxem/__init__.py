@@ -791,10 +791,13 @@ class NoxemMemoryProvider:
                 if not result or "error" in result:
                     logger.debug(f"Advisor API returned error: {result}")
                     self._consecutive_errors += 1
-                elif "advice" in result and result["advice"] != "SILENT":
+                else:
+                    # Any non-error response (including SILENT) resets the circuit breaker
                     with self._advisor_lock:
-                        self._advisor_cache = result["advice"][:500]  # Budget cap
-                        self._consecutive_errors = 0  # Reset on success
+                        self._consecutive_errors = 0
+                    if "advice" in result and result["advice"] != "SILENT":
+                        with self._advisor_lock:
+                            self._advisor_cache = result["advice"][:500] # Budget cap
             except Exception as e:
                 logger.debug(f"Advisor analysis failed: {e}")
                 self._consecutive_errors += 1

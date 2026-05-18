@@ -143,14 +143,14 @@ export async function analyzeSessionEnd(conversationHistory, allSessionMemories)
 
         const MAX_CONVO = 30000;
         let convoText = [];
-        for (const t of (conversationHistory || []).slice(-50)) {
+        for (const t of [...(conversationHistory || [])].reverse().slice(0, 50)) {
             const e = t.role?.toUpperCase() || "USER";
             const c = (t.content || "").substring(0, 2000);
             const entry = e + ": " + c;
             if (convoText.join("").length + entry.length > MAX_CONVO) break;
             convoText.push(entry);
         }
-        convoText = convoText.join(String.fromCharCode(10) + String.fromCharCode(10));
+        convoText = convoText.reverse().join(String.fromCharCode(10) + String.fromCharCode(10));
 
   const messages = [
     {
