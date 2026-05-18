@@ -603,6 +603,12 @@ export function extractEntityAttribute(text) {
     const object = cjkNegMatch[1].trim();
     if (object) return { entity: 'user', attribute: `prefer_${object}`, negated: true };
   }
+    // JP/KR: object before negative predicate ("Xが嫌い", "X를 싫어해요")
+    const cjkNegMatchJP = text.match(/(.+?)(?=が嫌い|が嫌|を嫌|を嫌がる|를 싫어|를 안 좋아|을 싫어)/u);
+    if (cjkNegMatchJP) {
+      const object = cjkNegMatchJP[1].trim();
+      if (object && object.length >= 2) return { entity: 'user', attribute: `prefer_${object}`, negated: true };
+    }
 
   // Preference: "喜欢X" / "偏好X" / "常用X"
   const cjkPrefMatch = text.match(/(?:喜欢|偏好|最[爱喜]|常用|习惯用|倾向[于]?|好き(?:な)?|愛用|좋아(?:하)?|자주 쓰)(.+?)(?:[，。、；\s]|$)/u);

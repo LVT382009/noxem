@@ -676,7 +676,8 @@ class NoxemMemoryProvider:
 
             if lines:
                 self._server_reachable.set()  # P-#19
-                parts.append("[Noxem Memory Recall]" + "\n" + "\n".join(lines))
+                if not any(p.lstrip().startswith("[Noxem Memory Recall") for p in parts):
+                    parts.append("[Noxem Memory Recall]" + "\n" + "\n".join(lines))
 
 
         except Exception as e:
@@ -779,7 +780,9 @@ class NoxemMemoryProvider:
             if self._consecutive_errors > 5:
                 return  # Circuit-break: too many consecutive advisor errors
             if self._advisor_request_in_progress:
-                return  # Already running — skip
+                if self._pending_post_compression is None:
+                    self._pending_post_compression = ((message or "")[:500], session_id or self._session_id or "")
+                return  # Already running — request queued for replay
             self._advisor_request_in_progress = True
         effective_session = session_id or self._session_id or ""
         def _run():

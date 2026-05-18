@@ -1339,21 +1339,22 @@ app.post('/memory/sync', async (req, res) => {
       }
     }
  res.json({ ok: true, stored: ids.length, ids });
-    invalidateQueryCache();
+    try { invalidateQueryCache(); } catch(e) { LOG_DEBUG && console.error('[SyncHook] cache:', e.message); }
 
     // Brain 2: Enqueue for async LLM extraction (Tier 2)
     if (ENABLE_SMART_EXTRACT && memories.length > 0) {
-      enqueueExtraction({
+      try { enqueueExtraction({
         user_message: (user_message || "").substring(0, 20000),
         assistant_response: (assistant_response || "").substring(0, 40000),
         session_id: session_id || "",
         alreadyExtracted: memories.map(m => m.text),
       });
+    } catch(e) { LOG_DEBUG && console.error('[SyncHook] extraction:', e.message); }
     }
 
  // Trigger background research pipeline (non-blocking, async)
  if (ENABLE_ADVISOR && user_message?.trim()) {
-   triggerResearch({
+   try { triggerResearch({
      sessionId: session_id || '',
      userMessage: user_message,
      assistantResponse: assistant_response || '',
@@ -1361,6 +1362,7 @@ app.post('/memory/sync', async (req, res) => {
      embedFn: embed,
      isEmbeddingReadyFn: isEmbeddingReady,
    });
+ } catch(e) { LOG_DEBUG && console.error('[SyncHook] research:', e.message); }
  }
 } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1677,25 +1679,26 @@ const server = app.listen(PORT, '127.0.0.1', () => {
 });
 
 // Graceful shutdown
-function shutdown(signal) {
+async function shutdown(signal) {
   console.log(`\n${signal} received — shutting down gracefully...`);
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
 // Drain extraction/embedding queues before closing
 const qStatus = getExtractionQueueStatus();
 	const queueSize = qStatus.queue_length || 0;
-if (queueSize > 0) console.log(`Draining ${queueSize} extraction/embedding items...`);
-// Poll until queue drains (max 3s)
 if (queueSize > 0) {
-  const drainStart = Date.now();
-  const drainInterval = setInterval(() => {
-    const current = getExtractionQueueStatus().queue_length || 0;
-    if (current === 0 || Date.now() - drainStart > 3000) {
-      clearInterval(drainInterval);
-      if (current > 0) console.log(`Drain timeout \u2014 ${current} items remaining`);
-      else console.log('Drain complete');
-    }
-  }, 200);
+  await new Promise(resolve => {
+    const drainStart = Date.now();
+    const iv = setInterval(() => {
+      const current = getExtractionQueueStatus().queue_length || 0;
+      if (current === 0 || Date.now() - drainStart > 3000) {
+        clearInterval(iv);
+        if (current > 0) console.log(`Drain timeout — ${current} items remaining`);
+        else console.log('Drain complete');
+        resolve();
+      }
+    }, 200);
+  });
 }
   server.close(() => {
     close(); // close SQLite

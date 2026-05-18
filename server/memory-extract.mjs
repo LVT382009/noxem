@@ -3,6 +3,30 @@ const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-p
 const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use LLM
 const LLM_API_KEY = process.env.LLM_API_KEY || "";
 const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary'];
+const SMART_TYPES = ['fact', 'preference', 'profile', 'project', 'event', 'relationship'];
+
+// Bracket-aware JSON array extractor: handles ] inside strings
+function extractJSONArray(content) {
+  const chunks = [];
+  let i = 0;
+  while (i < content.length) {
+    const startIdx = content.indexOf('[', i);
+    if (startIdx === -1) break;
+    let depth = 0, inStr = false, escape = false, quoteChar = '';
+    for (let j = startIdx; j < content.length; j++) {
+      const ch = content[j];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\' && inStr) { escape = true; continue; }
+      if ((ch === '"' || ch === "'") && !inStr) { inStr = true; quoteChar = ch; continue; }
+      if (inStr && ch === quoteChar) { inStr = false; quoteChar = ''; continue; }
+      if (inStr) continue;
+      if (ch === '[') depth++;
+      if (ch === ']') { depth--; if (depth === 0) { chunks.push(content.substring(startIdx, j + 1)); i = j + 1; break; } }
+    }
+    if (depth !== 0) i = startIdx + 1; // malformed, skip past this [
+  }
+  return chunks;
+}
 
 const EXTRACTION_PROMPT = `You are a memory extraction AI. Analyze the conversation below and extract factual memories that the AI agent should remember for future conversations.
 
@@ -58,11 +82,11 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     const content = data?.choices?.[0]?.message?.content || '[]';
 
   // Extract JSON array from response (non-greedy to handle multiple arrays)
-  const matches = [...content.matchAll(/\[[\s\S]*?\]/g)];
-  if (!matches.length) return [];
-  for (const match of matches) {
+  const jsonChunks = extractJSONArray(content);
+  if (!jsonChunks.length) return [];
+  for (const chunk of jsonChunks) {
     try {
-      const memories = JSON.parse(match[0]);
+      const memories = JSON.parse(chunk);
       if (Array.isArray(memories) && memories.length > 0) {
         return memories.filter(m => m.text && m.type).map(m => {
         	const ent = (m.entity || '').trim();
@@ -124,6 +148,8 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
     /(?:讨厌|不喜欢|不爱)(.{1,20}?)(?:[，。、；\s]|$)/gu,
     /(?:好き(?:な)?|愛用|좋아(?:하)?|자주 쓰)(.{1,20}?)(?:[，。、；\s]|$)/gu,
     /(?:嫌い(?:な)?|苦手(?:な)?|싫어(?:하)?|안 좋아)(.{1,20}?)(?:[，。、；\s]|$)/gu,
+  /(.{2,20}?)(?=が好き|が愛用|を好|を好き|를 좋아|을 좋아)/gu,
+  /(.{2,20}?)(?=が嫌い|が嫌|を嫌|を嫌がる|를 싫어|를 안 좋아|을 싫어)/gu,
   ];
   for (const pat of cjkPrefPatterns) {
     const matches = msg.matchAll(pat);
@@ -139,6 +165,7 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
   const cjkProjPatterns = [
     /(?:在做|在开发|正在做|开发了?|构建)(.{1,20}?)(?:[，。、；\s]|$)/gu,
     /(?:開発中|개발중|개발하)(.{1,20}?)(?:[，。、；\s]|$)/gu,
+  /(.{2,20}?)(?=を開発|を構築|を开発|を開発中|를 개발|을 개발)/gu,
   ];
   for (const pat of cjkProjPatterns) {
     const matches = msg.matchAll(pat);
@@ -210,11 +237,10 @@ If no memories worth extracting, output: []`;
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '[]';
 
-    const matches = [...content.matchAll(/\[[\s\S]*?\]/g)];
-    if (!matches.length) return [];
+    const jsonChunks = extractJSONArray(content);
+    if (!jsonChunks.length) return [];
 
-    const SMART_TYPES = ['fact', 'preference', 'profile', 'project', 'event', 'relationship'];
-    for (const match of matches) {
+    for (const chunk of jsonChunks) {
       try {
         const memories = JSON.parse(match[0]);
         if (Array.isArray(memories) && memories.length > 0) {
