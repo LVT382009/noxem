@@ -141,9 +141,16 @@ Respond concisely. If everything looks fine, say "All good — no issues detecte
 export async function analyzeSessionEnd(conversationHistory, allSessionMemories) {
   if (!ADVISOR_ENABLED) return [];
 
-  const convoText = (conversationHistory || []).slice(-50).map(t =>
-    `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 2000)}`
-  ).join('\n\n');
+        const MAX_CONVO = 30000;
+        let convoText = [];
+        for (const t of (conversationHistory || []).slice(-50)) {
+            const e = t.role?.toUpperCase() || "USER";
+            const c = (t.content || "").substring(0, 2000);
+            const entry = e + ": " + c;
+            if (convoText.join("").length + entry.length > MAX_CONVO) break;
+            convoText.push(entry);
+        }
+        convoText = convoText.join(String.fromCharCode(10) + String.fromCharCode(10));
 
   const messages = [
     {
@@ -165,7 +172,7 @@ Rules:
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '';
     if (!content || content.startsWith('[LLM un')) return [];
-        const jsonMatch = content.match(/\[[\s\S]*\]/);
+        const jsonMatch = content.match(/\[[\s\S]*?\]/);
     if (!jsonMatch) return [];
     const memories = JSON.parse(jsonMatch[0]);
     return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];

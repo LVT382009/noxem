@@ -313,16 +313,18 @@ function normalize(v) {
 }
 
 function cosineSimilarity(a, b) {
+  if (a.length !== b.length) return 0;
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
+    const ai = a[i], bi = b[i];
+    if (!Number.isFinite(ai) || !Number.isFinite(bi)) return 0;
+    dot += ai * bi;
+    na += ai * ai;
+    nb += bi * bi;
   }
   const denom = Math.sqrt(na) * Math.sqrt(nb);
   return denom < 1e-10 ? 0 : dot / denom;
 }
-
 export async function embed(text, role = 'document') {
   if (!modelReady) throw new Error('Embedding engine not initialized');
   return withLock(async () => {
@@ -408,7 +410,7 @@ export function findContradictions(memories) {
       if (sim > CONTRADICTION_THRESHOLD) {
         // Check if they express opposing views about the same topic
         const texts = [memories[i].text.toLowerCase(), memories[j].text.toLowerCase()];
-        const prefers = [/prefer/, /like/, /love/, /hate/, /dislike/, /favorite/, /use /, /using /];
+        const prefers = [/prefer/, /like/, /love/, /hate/, /dislike/, /favorite/, /use/, /using/];
         const hasPreference = prefers.some(p => texts.some(t => p.test(t)));
         if (hasPreference) {
           contradictions.push({
@@ -442,11 +444,11 @@ export function categorizeText(text) {
 
 // CJK patterns (Chinese + Japanese + Korean Hangul + Korean Hangul)
 // Preference: 喜欢/偏好/爱/讨厌/不喜欢 + 好き/嫌い
-if (/喜欢|偏好|最爱|很爱|比较爱|爱用|讨厌|不喜欢|最爱|喜好|倾向于|习惯用|常用|好き|嫌い/u.test(lower)) return 'preference';
+if (/喜欢|偏好|最爱|很爱|比较爱|爱用|讨厌|不喜欢|喜好|倾向于|习惯用|常用|好き|嫌い/u.test(lower)) return 'preference';
 // Project: 项目/在做/开发/构建 + プロジェクト/開発
 if (/项目|在做|在开发|正在做|开发了|构建|工程|开发中|プロジェクト|開発/u.test(lower)) return 'project';
 // Profile: 我叫/我的名字/我是/工作 + 名前/職業
-if (/我叫|我的名字|我是|在.*工作|职位|从事|名为|名前|職業|仕事/u.test(lower)) return 'profile';
+if (/我叫|我的名字|我是|在.+?工作|职位|从事|名为|名前|職業|仕事/u.test(lower)) return 'profile';
 // Request: 需要/想要/请/帮我 + お願い/欲しい
 if (/需要|想要|请|帮我|能不能|可以|帮帮忙|お願い|欲しい|ください/u.test(lower)) return 'request';
 // Learning: 学习/研究/课程/教程 + 学習/勉強/研究
@@ -626,7 +628,7 @@ if (cjkIdentityMatch) {
   }
 
   // Tech: "用X" / "基于X" / "用的是X"
-  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用)(.+?)(?:[，。、；\s开发构建]|$)/u);
+  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用)(.+?)(?:[，。、；\s]|开发|构建|用来|$)/u);
   if (cjkTechMatch) {
     const tech = cjkTechMatch[1].trim();
     if (tech) return { entity: 'user', attribute: `tech_${tech}` };

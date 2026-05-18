@@ -1323,8 +1323,8 @@ app.post('/memory/sync', async (req, res) => {
       if (isEmbeddingReady()) {
         try {
           const embedText = asstPrefix ? asstPrefix + " " + asstText : asstText;
-          embedding = new Float32Array(await embed(embedText));
-        } catch {}
+                    embedding = null; // Defer to background queue
+                } catch (embedErr) { LOG_DEBUG && console.error("[SyncEmbed] embed error:", embedErr.message); }
       }
       memories.push({ session_id, type: "fact", text: asstText, embedding, metadata: { source: "assistant", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr });
     }
@@ -1332,13 +1332,13 @@ app.post('/memory/sync', async (req, res) => {
     const ids = memories.length > 0 ? storeMemories(memories) : [];
     // Background: queue embeddings for stored memories
     if (isEmbeddingReady() && ids.length > 0) {
-      for (const mid of ids) {
-        const mem = memories.find(m => !m.embedding);
-        if (mem && mem.text) {
-          try {
-            const embedText = mem.context_prefix ? mem.context_prefix + " " + mem.text : mem.text;
-            enqueueEmbedding(mid, embedText, mem.context_prefix || null);
-          } catch {}
+        for (let i = 0; i < ids.length; i++) {
+            const mem = memories[i];
+            if (mem && mem.text) {
+                try {
+                    const embedText = mem.context_prefix ? mem.context_prefix + " " + mem.text : mem.text;
+                    enqueueEmbedding(ids[i], embedText, mem.context_prefix || null);
+                } catch (embedErr) { LOG_DEBUG && console.error("[SyncEmbed] queue error:", embedErr.message); }
         }
       }
     }

@@ -94,6 +94,7 @@ class NoxemMemoryProvider:
         self._consecutive_errors = 0  # Track for error-loop detection
         self._pending_post_compression = None  # Post-compression advisor queued when in-progress
         self._memory_api_key = os.environ.get("MEMORY_API_KEY", "")
+        self._llm_api_key = ""  # Set by _load_noxem_config, empty if no config
 
         # Load noxem.json and propagate to env vars if not already set
         # This bridges the gap: config saved by `hermes memory setup` reaches Node.js servers
@@ -201,7 +202,7 @@ class NoxemMemoryProvider:
                         "start_new_session": True,
                     }
                     if platform.system() == "Windows":
-                        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
                     proc = subprocess.Popen(
                         [node_bin, str(path)],
                         **popen_kwargs,
@@ -233,7 +234,7 @@ class NoxemMemoryProvider:
                         "start_new_session": True,
                     }
                     if platform.system() == "Windows":
-                        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
                     proc = subprocess.Popen(
                         [node_bin, str(path)],
                         **popen_kwargs,
@@ -680,7 +681,7 @@ class NoxemMemoryProvider:
 
         except Exception as e:
             logger.debug(f"prefetch failed: {e}")
-            return None
+            pass  # Don't discard already-collected parts
 
         if parts:
             return "\n\n".join(parts)
@@ -847,7 +848,7 @@ class NoxemMemoryProvider:
         # Release _sync_lock before sleep to avoid blocking other threads
         with self._sync_lock: # P-#19
             _fail_count = self._sync_fail_count
-            _should_retry = _fail_count <= 3
+        _should_retry = _fail_count <= 3
         if _should_retry:
             time.sleep(2.0)
             try:

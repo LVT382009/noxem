@@ -238,7 +238,7 @@ const boostUsedMemoriesTx = db.transaction((ids) => {
 
 const getById = db.prepare(`SELECT * FROM memories WHERE id = ?`);
 
-const getActive = db.prepare(`SELECT * FROM memories WHERE status = 'active' ORDER BY created_at DESC LIMIT ?`);
+const getActive = db.prepare(`SELECT * FROM memories WHERE status = 'active' ORDER BY COALESCE(importance, 0) DESC, created_at DESC LIMIT ?`);
 const getActiveAll = db.prepare(`SELECT * FROM memories WHERE status = 'active'`);
 const getBySession = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`);
 const getByType = db.prepare(`SELECT * FROM memories WHERE type = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`);
@@ -251,7 +251,7 @@ const countBySession = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE 
 const countByType = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE type = ? AND status = 'active'`);
 const getSuperseded = db.prepare(`SELECT * FROM memories WHERE status = 'superseded'`);
 const getByEntityAttr = db.prepare(`SELECT * FROM memories WHERE entity = ? AND attribute = ? AND status = 'active' ORDER BY created_at DESC`);
-const getTopActiveScored = db.prepare(`SELECT id, session_id, type, text, importance, recall_count, created_at FROM memories WHERE status = 'active' ORDER BY importance DESC, recall_count DESC, created_at DESC LIMIT ?`);
+const getTopActiveScored = db.prepare(`SELECT id, session_id, type, text, importance, recall_count, created_at FROM memories WHERE status = 'active' ORDER BY COALESCE(importance, 0) DESC, recall_count DESC, created_at DESC LIMIT ?`);
 
 const searchFts = db.prepare(`
   SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count,
@@ -277,7 +277,7 @@ const searchFtsCJK = db.prepare(`
 const searchRecent = db.prepare(`
   SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count
   FROM memories
-  WHERE status = 'active' AND text LIKE @query
+  WHERE status = 'active' AND text LIKE @query ESCAPE '\'
   ORDER BY created_at DESC
   LIMIT @limit
 `);

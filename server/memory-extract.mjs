@@ -69,7 +69,7 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
           type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
         }));
       }
-    } catch {}
+    } catch (parseErr) { console.error('[Extract] JSON parse failed:', parseErr.message); }
   }
   return [];
   } catch (err) {
@@ -85,7 +85,7 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
 // Lightweight extraction without LLM (rule-based fallback)
 export function extractMemoriesSimple({ userMessage, assistantResponse }) {
   const memories = [];
-  const msg = (userMessage || '') + ' ' + (assistantResponse || '');
+  const msg = (userMessage || '');
 
   // English preference patterns
   const prefPatterns = [
@@ -216,7 +216,7 @@ If no memories worth extracting, output: []`;
             attribute: (m.attribute || '').substring(0, 100) || null,
           }));
         }
-      } catch {}
+      } catch (parseErr) { console.error('[Extract] JSON parse failed:', parseErr.message); }
     }
     return [];
   } catch (err) {
