@@ -649,8 +649,6 @@ class NoxemMemoryProvider:
                 parts.append("[Noxem Advisor]\n" + self._advisor_cache)
                 self._advisor_cache = None  # consume — only shown once
 
-        if parts:
-            return "\n\n".join(parts)
 
         # 3) Fallback: direct search if /memory/release returned nothing
         try:
@@ -658,8 +656,6 @@ class NoxemMemoryProvider:
                 f"/memory/search?q={self._urlencode(query)}&limit=10&method=hybrid"
             )
             memories = result.get("results", [])
-            if not memories:
-                return None
 
             max_chars = self.MAX_MEMORY_TOKENS * 4
             lines = []
@@ -676,7 +672,7 @@ class NoxemMemoryProvider:
 
             if lines:
                 self._server_reachable.set()  # P-#19
-                return f"[Noxem Memory Recall]\n" + "\n".join(lines)
+                parts.append("[Noxem Memory Recall]" + "\n" + "\n".join(lines))
         except Exception as e:
             logger.debug(f"prefetch failed: {e}")
         return None
@@ -789,6 +785,11 @@ class NoxemMemoryProvider:
             finally:
                 with self._advisor_lock:
                     self._advisor_request_in_progress = False
+                    # Re-dispatch queued post-compression check
+                    if self._pending_post_compression is not None:
+                        pending_msg, pending_sid = self._pending_post_compression
+                        self._pending_post_compression = None
+                        self._request_advisor_analysis(pending_msg, session_id=pending_sid)
         try:
             thread = threading.Thread(target=_run, daemon=True)
             thread.start()

@@ -151,7 +151,7 @@ export function extractMemoriesSimple({ userMessage, assistantResponse }) {
 
 // Tier 2: Smarter LLM extraction with 6-type schema
 // Better suited for small models like qwen3.6-plus-no-thinking
-export async function extractMemoriesLLM({ user_message, assistant_response, session_id, alreadyExtracted = [] }) {
+export async function extractMemoriesLLM({ user_message, assistant_response, alreadyExtracted = [] }) {
   const SMART_EXTRACTION_PROMPT = `You are a memory extraction AI. Analyze the conversation and extract facts worth remembering.
 
 EXTRACTION RULES:

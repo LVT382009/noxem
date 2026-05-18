@@ -440,27 +440,27 @@ export function categorizeText(text) {
   if (/entity|person|company|website|product|service/i.test(lower)) return 'entity';
   if (/yesterday|today|tomorrow|last week|meeting|call |event|schedule/i.test(lower)) return 'event';
 
-  // CJK patterns (Chinese/Japanese/Korean)
-  // Preference: 喜欢/偏好/爱/讨厌/不喜欢
-  if (/喜欢|偏好|爱|讨厌|不喜欢|最爱|喜好|倾向于|习惯用|常用/u.test(lower)) return 'preference';
-  // Project: 项目/在做/开发/构建
-  if (/项目|在做|在开发|正在做|在做|开发了|构建|工程|开发中/u.test(lower)) return 'project';
-  // Profile: 我叫/我的名字/我是/工作
-  if (/我叫|我的名字|我是|在.*工作|职位|从事|叫|名为/u.test(lower)) return 'profile';
-  // Request: 需要/想要/请/帮我
-  if (/需要|想要|请|帮我|能不能|可以|帮帮忙/u.test(lower)) return 'request';
-  // Learning: 学习/研究/课程/教程
-  if (/学习|研究|课程|教程|学会了|在读|阅读|了解了|掌握了/u.test(lower)) return 'learning';
-  // Setup: 技术/框架/环境/配置/安装
-  if (/技术栈|框架|环境|配置|安装|部署|搭建|用的是|运行在|基于/u.test(lower)) return 'setup';
-  // Goal: 目标/计划/打算/准备
-  if (/目标|计划|打算|准备|要做|未来|希望|期望|规划/u.test(lower)) return 'goal';
-  // Issue: 错误/问题/报错/崩溃
-  if (/错误|问题|报错|崩溃|出错了|坏了|无法|失败|异常/u.test(lower)) return 'issue';
-  // Pattern: 习惯/通常/一般/总是
-  if (/习惯|通常|一般|总是|每次|经常|惯例|模式/u.test(lower)) return 'pattern';
-  // Event: 昨天/今天/明天/上周/会议
-  if (/昨天|今天|明天|上周|下周|会议|日程|计划|约会|见面/u.test(lower)) return 'event';
+// CJK patterns (Chinese + Japanese Hiragana/Katakana + Korean Hangul)
+// Preference: 喜欢/偏好/爱/讨厌/不喜欢 + 好き/嫌い
+if (/喜欢|偏好|爱|讨厌|不喜欢|最爱|喜好|倾向于|习惯用|常用|好き|嫌い/u.test(lower)) return 'preference';
+// Project: 项目/在做/开发/构建 + プロジェクト/開発
+if (/项目|在做|在开发|正在做|开发了|构建|工程|开发中|プロジェクト|開発/u.test(lower)) return 'project';
+// Profile: 我叫/我的名字/我是/工作 + 名前/職業
+if (/我叫|我的名字|我是|在.*工作|职位|从事|叫|名为|名前|職業|仕事/u.test(lower)) return 'profile';
+// Request: 需要/想要/请/帮我 + お願い/欲しい
+if (/需要|想要|请|帮我|能不能|可以|帮帮忙|お願い|欲しい|ください/u.test(lower)) return 'request';
+// Learning: 学习/研究/课程/教程 + 学習/勉強/研究
+if (/学习|研究|课程|教程|学会了|在读|阅读|了解了|掌握了|学習|勉強|研究|授業/u.test(lower)) return 'learning';
+// Setup: 技术/框架/环境/配置/安装 + 技術/環境/設定
+if (/技术栈|框架|环境|配置|安装|部署|搭建|用的是|运行在|基于|技術|環境|設定|インストール/u.test(lower)) return 'setup';
+// Goal: 目标/计划/打算/准备 + 目標/計画
+if (/目标|计划|打算|准备|要做|未来|希望|期望|规划|目標|計画|予定/u.test(lower)) return 'goal';
+// Issue: 错误/问题/报错/崩溃 + エラー/問題
+if (/错误|问题|报错|崩溃|出错了|坏了|无法|失败|异常|エラー|問題|バグ|不具合/u.test(lower)) return 'issue';
+// Pattern: 习惯/通常/一般/总是 + 習慣/通常
+if (/习惯|通常|一般|总是|每次|经常|惯例|模式|習慣|通常|いつも|毎回|次々|慈恶/u.test(lower)) return 'pattern';
+// Event: 昨天/今天/明天/上周/会议 + 昨日/今日/会議
+if (/昨天|今天|明天|上周|下周|会议|日程|计划|约会|见面|昨日|今日|明日|会議|ミーティング/u.test(lower)) return 'event';
 
   return 'fact';
 }
@@ -488,9 +488,9 @@ export function estimateImportance(text, type) {
   if (/critical|essential|important|must|always|never|deadline|urgent/i.test(lower)) importance = Math.min(1.0, importance + 0.15);
   if (/password|secret|api.key|credential|token|auth/i.test(lower)) importance = Math.min(1.0, importance + 0.2); // security-critical
   if (/my name|i am |called |role |job title/i.test(lower)) importance = Math.min(1.0, importance + 0.1); // identity
-  // CJK security/identity boost
-  if (/密码|密钥|凭据|认证/u.test(lower)) importance = Math.min(1.0, importance + 0.2);
-  if (/我的名字|我叫|我是|职位/u.test(lower)) importance = Math.min(1.0, importance + 0.1);
+// CJK+J security/identity boost
+if (/密码|密钥|凭据|认证|パスワード|認証/u.test(lower)) importance = Math.min(1.0, importance + 0.2);
+if (/我的名字|我叫|我是|职位|名前|職業/u.test(lower)) importance = Math.min(1.0, importance + 0.1);
 
   // Reduce for trivial indicators
   if (text.trim().length < 30) importance = Math.max(0.1, importance - 0.15);  // too short to be substantial
@@ -609,12 +609,17 @@ export function extractEntityAttribute(text) {
     if (object) return { entity: 'user', attribute: `prefer_${object}` };
   }
 
-  // Identity: "我叫X" / "我的名字是X" / "我在X工作"
-  const cjkIdMatch = text.match(/(?:我叫|我的名字[是为]|我是)(.+?)(?:[，。、；\s]|$)/u);
-  if (cjkIdMatch) {
-    const value = cjkIdMatch[1].trim();
-    if (value) return { entity: 'user', attribute: 'name' };
-  }
+// Identity: "我叫X" / "我的名字是X" → name; "我是X" → identity
+const cjkNameMatch = text.match(/(?:我叫|我的名字[是为])(.+?)(?:[，。、；\s]|$)/u);
+if (cjkNameMatch) {
+  const value = cjkNameMatch[1].trim();
+  if (value) return { entity: 'user', attribute: 'name' };
+}
+const cjkIdentityMatch = text.match(/我是(.+?)(?:[，。、；\s]|$)/u);
+if (cjkIdentityMatch) {
+  const value = cjkIdentityMatch[1].trim();
+  if (value) return { entity: 'user', attribute: 'identity' };
+}
   const cjkWorkMatch = text.match(/我在(.+?)(?:工作|上班)/u);
   if (cjkWorkMatch) {
     return { entity: 'user', attribute: 'employer' };

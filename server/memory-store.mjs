@@ -437,7 +437,7 @@ export function searchMemories({ query, limit = 10 }) {
   if (!query || !query.trim()) return [];
   const limitNum = Math.min(Math.max(1, limit), 50);
   // Detect CJK characters for routing to trigram index
-  const hasCJK = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u2e80-\u2eff\u3000-\u303f]/.test(query);
+  const hasCJK = /\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}/u.test(query);
   try {
     // Unicode-aware sanitizer: \p{L} = any letter (including CJK), \p{N} = any number
     let sanitized = query
