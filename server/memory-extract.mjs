@@ -30,13 +30,13 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
   const model = llmModel || LLM_MODEL;
 
   const prompt = EXTRACTION_PROMPT
-    .split('{{userMessage}}').join((userMessage || '').substring(0, 2000))
-    .split('{{assistantResponse}}').join((assistantResponse || '').substring(0, 4000));
+    .split('{{userMessage}}').join((userMessage || '').substring(0, 20000))
+    .split('{{assistantResponse}}').join((assistantResponse || '').substring(0, 40000));
 
   const body = JSON.stringify({
     model,
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 512,
+    max_tokens: 2048,
     temperature: 0.1,
   });
 
@@ -64,7 +64,7 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
       const memories = JSON.parse(match[0]);
       if (Array.isArray(memories) && memories.length > 0) {
         return memories.filter(m => m.text && m.type).map(m => ({
-          text: m.text.trim().substring(0, 500),
+          text: m.text.trim().substring(0, 1000),
           type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
         }));
       }
@@ -171,8 +171,8 @@ Output ONLY a JSON array: [{"text": "...", "type": "preference", "entity": "user
 If no memories worth extracting, output: []`;
 
   const prompt = SMART_EXTRACTION_PROMPT
-    .split('{{userMessage}}').join((user_message || '').substring(0, 2000))
-    .split('{{assistantResponse}}').join((assistant_response || '').substring(0, 4000));
+    .split('{{userMessage}}').join((user_message || '').substring(0, 20000))
+    .split('{{assistantResponse}}').join((assistant_response || '').substring(0, 40000));
 
   const url = LLM_URL;
   const model = EXTRACTION_MODEL || LLM_MODEL;
@@ -180,7 +180,7 @@ If no memories worth extracting, output: []`;
   const body = JSON.stringify({
     model,
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 512,
+    max_tokens: 2048,
     temperature: 0.1,
   });
 
@@ -209,7 +209,7 @@ If no memories worth extracting, output: []`;
         const memories = JSON.parse(match[0]);
         if (Array.isArray(memories) && memories.length > 0) {
           return memories.filter(m => m.text && m.type).map(m => ({
-            text: m.text.trim().substring(0, 500),
+            text: m.text.trim().substring(0, 1000),
             type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
             entity: (m.entity || '').substring(0, 100) || null,
             attribute: (m.attribute || '').substring(0, 100) || null,

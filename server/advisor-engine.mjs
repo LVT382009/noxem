@@ -80,6 +80,7 @@ Stay factual and concise. Only flag real issues, not hypothetical ones.`,
 
   try {
     const res = await callLLM(messages, 1024, 0.2);
+    if (!res.ok) throw new Error("LLM API error: " + res.status + " " + res.statusText);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || fallbackCompressAnalysis(conversationHistory, sessionMemories);
   } catch (err) {
@@ -126,6 +127,7 @@ Respond concisely. If everything looks fine, say "All good — no issues detecte
 
   try {
     const res = await callLLM(messages, 800, 0.2);
+    if (!res.ok) throw new Error("LLM API error: " + res.status + " " + res.statusText);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || fallbackAdvice();
   } catch (err) {
@@ -138,8 +140,8 @@ Respond concisely. If everything looks fine, say "All good — no issues detecte
 export async function analyzeSessionEnd(conversationHistory, allSessionMemories) {
   if (!ADVISOR_ENABLED) return [];
 
-  const convoText = (conversationHistory || []).slice(-20).map(t =>
-    `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 300)}`
+  const convoText = (conversationHistory || []).slice(-50).map(t =>
+    `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 2000)}`
   ).join('\n\n');
 
   const messages = [
@@ -158,6 +160,7 @@ Rules:
 
   try {
     const res = await callLLM(messages, 1024, 0.1);
+    if (!res.ok) throw new Error("LLM API error: " + res.status + " " + res.statusText);
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '';
     if (!content || content.startsWith('[LLM un')) return [];

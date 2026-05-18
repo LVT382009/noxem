@@ -1301,14 +1301,14 @@ app.post('/memory/sync', async (req, res) => {
     // Store user message — skip trivial/greeting messages
     if (user_message?.trim() && !shouldSkipMessage(user_message)) {
       const type = categorizeText(user_message);
-      const userText = user_message.trim().substring(0, 500);
+      const userText = user_message.trim().substring(0, 2000);
       const { entity: userEntity, attribute: userAttr } = extractEntityAttribute(userText);
       const userPrefix = generateContextPrefix(userText, type, session_id);
       let embedding = null;
       if (isEmbeddingReady()) {
         try {
           const embedText = userPrefix ? userPrefix + " " + userText : userText;
-          embedding = new Float32Array(await embed(embedText));
+          embedding = null  // Defer to background queue;
         } catch {}
       }
       memories.push({ session_id, type, text: userText, embedding, metadata: { source: "user", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr });
@@ -1316,7 +1316,7 @@ app.post('/memory/sync', async (req, res) => {
 
     // Store assistant response — skip very short responses
       if (assistant_response?.trim() && !shouldSkipMessage(assistant_response)) {
-      const asstText = assistant_response.trim().substring(0, 500);
+      const asstText = assistant_response.trim().substring(0, 2000);
       const { entity: asstEntity, attribute: asstAttr } = extractEntityAttribute(asstText);
       const asstPrefix = generateContextPrefix(asstText, "fact", session_id);
       let embedding = null;
@@ -1330,14 +1330,26 @@ app.post('/memory/sync', async (req, res) => {
     }
 
     const ids = memories.length > 0 ? storeMemories(memories) : [];
+    // Background: queue embeddings for stored memories
+    if (isEmbeddingReady() && ids.length > 0) {
+      for (const mid of ids) {
+        const mem = memories.find(m => !m.embedding);
+        if (mem && mem.text) {
+          try {
+            const embedText = mem.context_prefix ? mem.context_prefix + " " + mem.text : mem.text;
+            enqueueEmbedding({ id: mid, text: embedText });
+          } catch {}
+        }
+      }
+    }
  res.json({ ok: true, stored: ids.length, ids });
     invalidateQueryCache();
 
     // Brain 2: Enqueue for async LLM extraction (Tier 2)
     if (ENABLE_SMART_EXTRACT && memories.length > 0) {
       enqueueExtraction({
-        user_message: (user_message || "").substring(0, 2000),
-        assistant_response: (assistant_response || "").substring(0, 4000),
+        user_message: (user_message || "").substring(0, 20000),
+        assistant_response: (assistant_response || "").substring(0, 40000),
         session_id: session_id || "",
         alreadyExtracted: memories.map(m => m.text),
       });
@@ -1671,6 +1683,9 @@ function shutdown(signal) {
   console.log(`\n${signal} received — shutting down gracefully...`);
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
+// Drain extraction/embedding queues before closing
+const queueSize = _extractionQueue?.length || 0;
+if (queueSize > 0) console.log();
   server.close(() => {
     close(); // close SQLite
     console.log('Memory server stopped.');

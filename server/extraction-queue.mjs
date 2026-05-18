@@ -26,6 +26,7 @@ export function initExtractionQueue({ embedFn, storeMemoryFn, addVecsToIndexFn, 
 
 export function enqueueExtraction(item) {
   if (_extractionQueue.length >= EXTRACT_QUEUE_MAX) {
+    console.warn("[ExtractQueue] Queue full, dropping oldest item");
     _extractionQueue.shift();
   }
   _extractionQueue.push(item);

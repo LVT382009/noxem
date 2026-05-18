@@ -56,7 +56,7 @@ class NoxemMemoryProvider:
         """Check if memory server is reachable."""
         try:
             url = f"{os.environ.get('NOXEM_SERVER', MEMORY_SERVER_DEFAULT)}/health"
-            req = Request(url, headers={"Accept": "application/json"})
+            req = Request(url, headers=self._auth_headers())
             with urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode())
                 return data.get("ok", False)
@@ -92,6 +92,8 @@ class NoxemMemoryProvider:
             self._advisor_interval = 10
         self._last_advisor_turn = 0
         self._consecutive_errors = 0  # Track for error-loop detection
+        self._pending_post_compression = None  # Post-compression advisor queued when in-progress
+        self._memory_api_key = os.environ.get("MEMORY_API_KEY", "")
 
         # Load noxem.json and propagate to env vars if not already set
         # This bridges the gap: config saved by `hermes memory setup` reaches Node.js servers
@@ -169,6 +171,7 @@ class NoxemMemoryProvider:
         home = Path(self._hermes_home).expanduser()
         env = os.environ.copy()
         env.setdefault("ENABLE_EMBEDDING", "true")
+        env.setdefault("BRAIN2_ENABLED", "1")
         env.setdefault("ENABLE_ADVISOR", "true")
         env.setdefault("ENABLE_MAINTENANCE", "true")
         env.setdefault("ENABLE_RESEARCH", "true")
@@ -772,6 +775,8 @@ class NoxemMemoryProvider:
     def _request_advisor_analysis(self, message, session_id=None):
         """Fire advisor analysis in background thread. Result cached for next prefetch."""
         with self._advisor_lock:
+            if self._consecutive_errors > 5:
+                return  # Circuit-break: too many consecutive advisor errors
             if self._advisor_request_in_progress:
                 return  # Already running — skip
             self._advisor_request_in_progress = True
@@ -785,8 +790,10 @@ class NoxemMemoryProvider:
                 if result and "advice" in result and result["advice"] != "SILENT":
                     with self._advisor_lock:
                         self._advisor_cache = result["advice"][:500]  # Budget cap
+                        self._consecutive_errors = 0  # Reset on success
             except Exception as e:
                 logger.debug(f"Advisor analysis failed: {e}")
+                self._consecutive_errors += 1
             finally:
                 with self._advisor_lock:
                     self._advisor_request_in_progress = False
@@ -815,8 +822,8 @@ class NoxemMemoryProvider:
 
         def _sync_impl(session_id, user_content, assistant_content):
             data = {
-                "user_message": (user_content or "")[:2000],
-                "assistant_response": (assistant_content or "")[:4000],
+                "user_message": (user_content or "")[:20000],
+                "assistant_response": (assistant_content or "")[:40000],
                 "session_id": session_id,
             }
             # Try once
@@ -930,6 +937,12 @@ class NoxemMemoryProvider:
 
     # ── Internal ──────────────────────────────────────────────
 
+    def _auth_headers(self) -> dict:
+        headers = {"Accept": "application/json"}
+        if self._memory_api_key:
+            headers["Authorization"] = f"Bearer {self._memory_api_key}"
+        return headers
+
     def _api_get(self, path: str) -> dict:
         # Validate URL scheme
         if not self._server_url.startswith(("http://", "https://")):
@@ -937,7 +950,7 @@ class NoxemMemoryProvider:
         url = f"{self._server_url}{path}"
         req = Request(url, headers={"Accept": "application/json"})
         try:
-            with urlopen(req, timeout=10) as resp:
+            with urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode())
         except URLError as e:
             logger.debug(f"Noxem API GET {path} failed: {e}")
@@ -951,12 +964,9 @@ class NoxemMemoryProvider:
             return {"error": f"Invalid server URL scheme: {self._server_url}"}
         url = f"{self._server_url}{path}"
         body = json.dumps(data).encode()
-        req = Request(url, data=body, headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        })
+        req = Request(url, data=body, headers=self._auth_headers())
         try:
-            with urlopen(req, timeout=10) as resp:
+            with urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode())
         except URLError as e:
             logger.debug(f"Noxem API POST {path} failed: {e}")
