@@ -143,7 +143,7 @@ export async function analyzeSessionEnd(conversationHistory, allSessionMemories)
 
         const MAX_CONVO = 30000;
         let convoText = [];
-        for (const t of [...(conversationHistory || [])].reverse().slice(0, 50)) {
+        for (const t of (conversationHistory || []).slice(-50).reverse()) {
             const e = t.role?.toUpperCase() || "USER";
             const c = (t.content || "").substring(0, 2000);
             const entry = e + ": " + c;
@@ -172,10 +172,21 @@ Rules:
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '';
     if (!content || content.startsWith('[LLM un')) return [];
-        const jsonMatch = content.match(/\[[\s\S]*?\]/);
-    if (!jsonMatch) return [];
-    const memories = JSON.parse(jsonMatch[0]);
-    return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];
+		// Bracket-aware JSON extraction: handles ] inside strings like "use [x] syntax"
+		const startIdx = content.indexOf('[');
+		if (startIdx === -1) return [];
+		let depth = 0, inStr = false, escape = false, quoteChar = '';
+		for (let i = startIdx; i < content.length; i++) {
+			const ch = content[i];
+			if (escape) { escape = false; continue; }
+			if (ch === '\\' && inStr) { escape = true; continue; }
+			if ((ch === '"' || ch === "'") && !inStr) { inStr = true; quoteChar = ch; continue; }
+			if (inStr && ch === quoteChar) { inStr = false; quoteChar = ''; continue; }
+			if (inStr) continue;
+			if (ch === '[') depth++;
+			if (ch === ']') { depth--; if (depth === 0) { const memories = JSON.parse(content.substring(startIdx, i + 1)); return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : []; } }
+		}
+		return [];
   } catch (err) {
     LOG_DEBUG && console.error('Session end analysis error:', err.message);
     return [];

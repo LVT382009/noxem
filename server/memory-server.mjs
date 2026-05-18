@@ -1285,7 +1285,8 @@ function shouldSkipMessage(text) {
 
 app.post('/memory/sync', async (req, res) => {
   try {
-    const { user_message, assistant_response, session_id } = req.body;
+    const { user_message, assistant_response, session_id: rawSession } = req.body;
+    const session_id = rawSession ?? '';
     if (!user_message && !assistant_response) {
       return res.status(400).json({ error: 'user_message or assistant_response required' });
     }
@@ -1406,7 +1407,8 @@ app.post('/memory/advisor/proactive', async (req, res) => {
     return res.json({ ok: true, advice: 'SILENT' });
   }
 
-  const { user_message, session_id } = req.body || {};
+  const { user_message, session_id: rawSession } = req.body || {};
+  const session_id = rawSession ?? '';
 
   try {
     const sessionMems = getSessionMemories(session_id).slice(-15);
@@ -1517,7 +1519,8 @@ app.post('/memory/reembed', async (req, res) => {
 
 app.post('/memory/extract', async (req, res) => {
   try {
-    const { user_message, assistant_response, session_id } = req.body;
+    const { user_message, assistant_response, session_id: rawSession } = req.body;
+    const session_id = rawSession ?? '';
     if (!user_message && !assistant_response) {
       return res.status(400).json({ error: 'user_message or assistant_response required' });
     }
@@ -1681,7 +1684,19 @@ function shutdown(signal) {
 // Drain extraction/embedding queues before closing
 const qStatus = getExtractionQueueStatus();
 	const queueSize = qStatus.queue_length || 0;
-if (queueSize > 0) console.log();
+if (queueSize > 0) console.log(`Draining ${queueSize} extraction/embedding items...`);
+// Poll until queue drains (max 3s)
+if (queueSize > 0) {
+  const drainStart = Date.now();
+  const drainInterval = setInterval(() => {
+    const current = getExtractionQueueStatus().queue_length || 0;
+    if (current === 0 || Date.now() - drainStart > 3000) {
+      clearInterval(drainInterval);
+      if (current > 0) console.log(`Drain timeout \u2014 ${current} items remaining`);
+      else console.log('Drain complete');
+    }
+  }, 200);
+}
   server.close(() => {
     close(); // close SQLite
     console.log('Memory server stopped.');

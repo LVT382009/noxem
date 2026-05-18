@@ -610,14 +610,20 @@ export function extractEntityAttribute(text) {
     const object = cjkPrefMatch[1].trim();
     if (object) return { entity: 'user', attribute: `prefer_${object}` };
   }
+    // JP/KR: object before predicate ("Xが好き", "X를 좋아해요")
+    const cjkPrefMatchJP = text.match(/(.+?)(?=が好き|が愛用|を好|를 좋아|을 좋아)/u);
+    if (cjkPrefMatchJP) {
+      const object = cjkPrefMatchJP[1].trim();
+      if (object && object.length >= 2) return { entity: 'user', attribute: `prefer_${object}` };
+    }
 
 // Identity: "我叫X" / "我的名字是X" → name; "我是|私は|저는X" → identity
-const cjkNameMatch = text.match(/(?:我叫|我的名字[是为]|私は|저는 이름이)(.+?)(?:[，。、；\s]|$)/u);
+const cjkNameMatch = text.match(/(?:我叫|我的名字[是为])(.+?)(?:[，。、；\s]|$)/u);
 if (cjkNameMatch) {
   const value = cjkNameMatch[1].trim();
   if (value) return { entity: 'user', attribute: 'name' };
 }
-const cjkIdentityMatch = text.match(/我是(.+?)(?:[，。、；\s]|$)/u);
+const cjkIdentityMatch = text.match(/(?:我是|私は|저는)(.+?)(?:[，。、；\s]|$)/u);
 if (cjkIdentityMatch) {
   const value = cjkIdentityMatch[1].trim();
   if (value) return { entity: 'user', attribute: 'identity' };
@@ -633,6 +639,12 @@ if (cjkIdentityMatch) {
     const tech = cjkTechMatch[1].trim();
     if (tech) return { entity: 'user', attribute: `tech_${tech}` };
   }
+    // JP/KR: object before predicate ("Xを使って", "X를 사용해요")
+    const cjkTechMatchJP = text.match(/(.+?)(?=を使って|を使い|を基づい|를 사용|을 사용)/u);
+    if (cjkTechMatchJP) {
+      const tech = cjkTechMatchJP[1].trim();
+      if (tech && tech.length >= 2) return { entity: 'user', attribute: `tech_${tech}` };
+    }
 
   // Project: "在做X" / "开发X" / "构建X"
   const cjkProjMatch = text.match(/(?:在做|在开发|正在做|开发了?|构建|开发中|開発中|開发|개발중|개발하)(.+?)(?:[，。、；\s]|$)/u);
@@ -640,6 +652,12 @@ if (cjkIdentityMatch) {
     const project = cjkProjMatch[1].trim();
     if (project) return { entity: 'user', attribute: `project_${project}` };
   }
+    // JP/KR: object before predicate ("Xを開発中", "X를 개발중")
+    const cjkProjMatchJP = text.match(/(.+?)(?=を開発|を構築|を开発|를 개발|을 개발)/u);
+    if (cjkProjMatchJP) {
+      const project = cjkProjMatchJP[1].trim();
+      if (project && project.length >= 2) return { entity: 'user', attribute: `project_${project}` };
+    }
 
   return { entity: '', attribute: '' };
 }

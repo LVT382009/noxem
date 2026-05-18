@@ -64,10 +64,16 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     try {
       const memories = JSON.parse(match[0]);
       if (Array.isArray(memories) && memories.length > 0) {
-        return memories.filter(m => m.text && m.type).map(m => ({
-          text: m.text.trim().substring(0, 1000),
-          type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
-        }));
+        return memories.filter(m => m.text && m.type).map(m => {
+        	const ent = (m.entity || '').trim();
+        	const attr = (m.attribute || '').trim();
+        	return {
+        		text: m.text.trim().substring(0, 1000),
+        		type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
+        		entity: ent ? ent.substring(0, 100) : null,
+        		attribute: attr ? attr.substring(0, 100) : null,
+        	};
+        });
       }
     } catch (parseErr) { console.error('[Extract] JSON parse failed:', parseErr.message); }
   }
@@ -212,12 +218,16 @@ If no memories worth extracting, output: []`;
       try {
         const memories = JSON.parse(match[0]);
         if (Array.isArray(memories) && memories.length > 0) {
-          return memories.filter(m => m.text && m.type).map(m => ({
-            text: m.text.trim().substring(0, 1000),
-            type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
-            entity: (m.entity || '').substring(0, 100) || null,
-            attribute: (m.attribute || '').substring(0, 100) || null,
-          }));
+          return memories.filter(m => m.text && m.type).map(m => {
+          	const ent = (m.entity || '').trim();
+          	const attr = (m.attribute || '').trim();
+          	return {
+          		text: m.text.trim().substring(0, 1000),
+          		type: SMART_TYPES.includes(m.type) ? m.type : 'fact',
+          		entity: ent ? ent.substring(0, 100) : null,
+          		attribute: attr ? attr.substring(0, 100) : null,
+          	};
+          });
         }
       } catch (parseErr) { console.error('[Extract] JSON parse failed:', parseErr.message); }
     }
