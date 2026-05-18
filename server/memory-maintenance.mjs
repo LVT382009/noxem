@@ -16,25 +16,97 @@ export async function runMaintenance() {
   }
   maintenanceRunning = true;
 
+
+  const results = { duplicates: 0, contradictions: 0, invalid: 0, categorized: 0 };
+
+  // 7. Collapse supersession chains: walk each chain to terminal successor
   try {
-    if (!isEmbeddingReady()) {
-      LOG_DEBUG && console.log('Maintenance skipped: Brain-1 not ready');
-      return { skipped: true, reason: 'embedding not ready' };
+    const intermediates = db.prepare(
+      "SELECT id, superseded_by FROM memories WHERE status = 'superseded' AND superseded_by IS NOT NULL"
+    ).all();
+    let chainsCollapsed = 0;
+    const stmtUpdate = db.prepare('UPDATE memories SET superseded_by = ? WHERE id = ?');
+    for (const row of intermediates) {
+      const visited = new Set();
+      let currentId = row.superseded_by;
+      let tipId = currentId;
+      while (currentId) {
+        if (visited.has(currentId)) break; // cycle protection
+        visited.add(currentId);
+        const next = db.prepare('SELECT superseded_by, status FROM memories WHERE id = ?').get(currentId);
+        if (!next || next.status !== 'superseded' || !next.superseded_by) { tipId = currentId; break; }
+        currentId = next.superseded_by;
+        tipId = currentId;
+      }
+      if (tipId !== row.superseded_by) {
+        stmtUpdate.run(tipId, row.id);
+        chainsCollapsed++;
+      }
     }
+    results.chains_collapsed = chainsCollapsed;
+    if (chainsCollapsed > 0) LOG_DEBUG && console.log('[Maintenance] Collapsed ' + chainsCollapsed + ' supersession chain links (multi-hop)');
+  } catch (err) { LOG_DEBUG && console.error('[Maintenance] Chain collapse error:', err.message); }
 
-    LOG_DEBUG && console.log('[Maintenance] Starting memory maintenance...');
-    const start = Date.now();
-    const results = { duplicates: 0, contradictions: 0, invalid: 0, categorized: 0 };
-
-    const memories = getActiveWithEmbedding();
-
-    if (memories.length < 2) {
-      LOG_DEBUG && console.log(`[Maintenance] Only ${memories.length} memories - skipping dedup/contradiction`);
-      results.message = 'too few memories';
-      return results;
+  // 8. Reap superseded memories older than grace period with no recent citations
+  try {
+    const SUPERSEDED_GRACE_DAYS = parseInt(process.env.SUPERSEDED_GRACE_DAYS || '14');
+    const candidates = db.prepare(
+      "SELECT id FROM memories WHERE status = 'superseded' AND updated_at < datetime('now', '-' || ? || ' days') ORDER BY updated_at ASC LIMIT 100"
+    ).all(SUPERSEDED_GRACE_DAYS);
+    let reaped = 0;
+    if (candidates.length > 0) {
+      const reapTx = db.transaction((ids) => {
+        let count = 0;
+        const stmtCites = db.prepare("SELECT COUNT(*) as c FROM citation_log WHERE memory_id = ? AND cited_at > datetime('now', '-30 days')");
+        const stmtDelCites = db.prepare("DELETE FROM citation_log WHERE memory_id = ?");
+        const stmtDelEdges = db.prepare("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?");
+        const stmtNullifyFK = db.prepare("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?");
+        const stmtDelMem = db.prepare("DELETE FROM memories WHERE id = ?");
+        for (const { id } of ids) {
+          if (stmtCites.get(id).c > 0) continue;
+          stmtDelCites.run(id);
+          stmtDelEdges.run(id, id);
+          stmtNullifyFK.run(id);
+          deleteVec(db, id);
+          stmtDelMem.run(id);
+          count++;
+        }
+        return count;
+      });
+      reaped = reapTx(candidates);
     }
+    results.reaped_superseded = reaped;
+    if (reaped > 0) LOG_DEBUG && console.log("[Maintenance] Reaped " + reaped + " superseded memories older than " + SUPERSEDED_GRACE_DAYS + " days");
+  } catch (err) { LOG_DEBUG && console.error('[Maintenance] Superseded reap error:', err.message); }
 
-    // 1. Deduplication
+  // 9. FTS5 optimize after reaping
+  try {
+    if (results.reaped_superseded > 0) {
+      db.prepare("INSERT INTO memories_fts(memories_fts) VALUES('optimize')").run();
+      try { db.prepare("INSERT INTO memories_fts_cjk(memories_fts_cjk) VALUES('optimize')").run(); } catch {}
+      LOG_DEBUG && console.log('[Maintenance] FTS5 indexes optimized after reaping');
+    }
+  } catch (err) { LOG_DEBUG && console.error('[Maintenance] FTS optimize error:', err.message); }
+
+  // Steps 1-6 require embeddings and sufficient volume
+  if (!isEmbeddingReady()) {
+    LOG_DEBUG && console.log('Maintenance dedup skipped: Brain-1 not ready');
+    return results; // collapse/reap/optimize already done above
+  }
+
+  LOG_DEBUG && console.log('[Maintenance] Starting memory dedup/contradiction...');
+  const start = Date.now();
+
+  const memories = getActiveWithEmbedding();
+
+  if (memories.length < 2) {
+    LOG_DEBUG && console.log(`[Maintenance] Only ${memories.length} memories - skipping dedup/contradiction`);
+    results.message = 'too few memories';
+    return results; // collapse/reap/optimize already done above
+  }
+
+    try {
+  // 1. Deduplication
     // For small sets (<500): brute-force O(n²) pairwise cosine
     // For large sets (>=500): KNN-based — find nearest neighbors per memory via index
     try {
@@ -159,68 +231,6 @@ export async function runMaintenance() {
 
     const elapsed = Date.now() - start;
 
-  // 7. Collapse supersession chains: rewrite intermediate superseded_by to chain tip
-  // When A->B->C (both A and B superseded), rewrite B.superseded_by = C so A can be safely deleted
-  try {
-    const chainRows = db.prepare(
-      "SELECT m1.id AS intermediate_id, m1.superseded_by AS current_ref, m2.superseded_by AS chain_tip " +
-      "FROM memories m1 JOIN memories m2 ON m2.id = m1.superseded_by AND m2.status = 'superseded' " +
-      "WHERE m1.status = 'superseded' AND m2.superseded_by IS NOT NULL"
-    ).all();
-    let chainsCollapsed = 0;
-    for (const row of chainRows) {
-      db.prepare('UPDATE memories SET superseded_by = ? WHERE id = ?').run(row.chain_tip, row.intermediate_id);
-      chainsCollapsed++;
-    }
-    results.chains_collapsed = chainsCollapsed;
-    if (chainsCollapsed > 0) LOG_DEBUG && console.log("[Maintenance] Collapsed " + chainsCollapsed + " supersession chain links");
-  } catch (err) { LOG_DEBUG && console.error('[Maintenance] Chain collapse error:', err.message); }
-
-  // 8. Reap superseded memories older than grace period with no recent citations
-  try {
-    const SUPERSEDED_GRACE_DAYS = parseInt(process.env.SUPERSEDED_GRACE_DAYS || '14');
-    const candidates = db.prepare(
-      "SELECT id FROM memories WHERE status = 'superseded' AND updated_at < datetime('now', '-' || ? || ' days') ORDER BY updated_at ASC LIMIT 100"
-    ).all(SUPERSEDED_GRACE_DAYS);
-    let reaped = 0;
-    if (candidates.length > 0) {
-const reapTx = db.transaction((ids) => {
-  let count = 0;
-  // Hoist prepared statements outside the loop
-  const stmtCites = db.prepare("SELECT COUNT(*) as c FROM citation_log WHERE memory_id = ? AND cited_at > datetime('now', '-30 days')");
-  const stmtDelCites = db.prepare("DELETE FROM citation_log WHERE memory_id = ?");
-  const stmtDelEdges = db.prepare("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?");
-  const stmtNullifyFK = db.prepare("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?");
-  const stmtDelMem = db.prepare("DELETE FROM memories WHERE id = ?");
-  for (const { id } of ids) {
-    // Check recent citations — skip if still being cited
-    if (stmtCites.get(id).c > 0) continue;
-    // Clean up dependent rows before deleting
-    stmtDelCites.run(id);
-    stmtDelEdges.run(id, id);
-    // Nullify any FK references pointing to this memory before DELETE
-    stmtNullifyFK.run(id);
-    // Remove vector index entry before deleting row
-    deleteVec(db, id);
-    stmtDelMem.run(id);
-    count++;
-  }
-  return count;
-});
-      reaped = reapTx(candidates);
-    }
-    results.reaped_superseded = reaped;
-    if (reaped > 0) LOG_DEBUG && console.log("[Maintenance] Reaped " + reaped + " superseded memories older than " + SUPERSEDED_GRACE_DAYS + " days");
-  } catch (err) { LOG_DEBUG && console.error('[Maintenance] Superseded reap error:', err.message); }
-
-  // 9. FTS5 optimize after reaping (merge segments for better performance)
-  try {
-    if (results.reaped_superseded > 0) {
-      db.prepare("INSERT INTO memories_fts(memories_fts) VALUES('optimize')").run();
-      try { db.prepare("INSERT INTO memories_fts_cjk(memories_fts_cjk) VALUES('optimize')").run(); } catch {}
-      LOG_DEBUG && console.log('[Maintenance] FTS5 indexes optimized after reaping');
-    }
-  } catch (err) { LOG_DEBUG && console.error('[Maintenance] FTS optimize error:', err.message); }
 
     LOG_DEBUG && console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
     return results;

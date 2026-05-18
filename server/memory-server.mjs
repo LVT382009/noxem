@@ -702,7 +702,7 @@ app.get("/memory/search", async (req, res) => {
       try {
         const queryVecs = await Promise.all(queries.map(qq => embed(qq, "query")));
         const qVec = queryVecs[0];
-          if (queryVecs.length === 1) queryVecForCache = qVec;
+          if (queryVecs.length > 0) queryVecForCache = qVec;
 
       // C-3 fix: Check cache for primary query even with multi-query — expansion results merge in
       const cached = findCachedResult(qVec);
@@ -1331,8 +1331,8 @@ app.post('/memory/sync', async (req, res) => {
     }
 
     const ids = memories.length > 0 ? storeMemories(memories) : [];
-    // Background: queue embeddings for stored memories
-    if (isEmbeddingReady() && ids.length > 0) {
+    // Background: queue embeddings for stored memories (enqueueEmbedding handles retries when engine not ready)
+    if (ids.length > 0) {
         for (let i = 0; i < ids.length; i++) {
             const mem = memories[i];
             if (mem && mem.text) {
@@ -1719,6 +1719,9 @@ if (_embedQueue.length > 0) {
     }, 200);
   });
 }
+  // Wait for in-flight embedBatch/SQLite writes to finish
+  try { await _embedLock; } catch {}
+
   server.close(() => {
     close(); // close SQLite
     console.log('Memory server stopped.');
