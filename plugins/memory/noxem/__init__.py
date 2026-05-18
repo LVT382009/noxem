@@ -673,10 +673,15 @@ class NoxemMemoryProvider:
             if lines:
                 self._server_reachable.set()  # P-#19
                 parts.append("[Noxem Memory Recall]" + "\n" + "\n".join(lines))
+
+
         except Exception as e:
             logger.debug(f"prefetch failed: {e}")
-        return None
+            return None
 
+        if parts:
+            return "\n\n".join(parts)
+        return None
     def queue_prefetch(self, query: str, **kwargs) -> None:
         """Smarter prefetch: warm release endpoint + keyword-based search + research hints."""
         session_id = kwargs.get("session_id", self._session_id or "")
@@ -780,16 +785,17 @@ class NoxemMemoryProvider:
                 if result and "advice" in result and result["advice"] != "SILENT":
                     with self._advisor_lock:
                         self._advisor_cache = result["advice"][:500]  # Budget cap
-            except Exception:
-                pass  # Non-critical — advisor is best-effort
+            except Exception as e:
+                logger.debug(f"Advisor analysis failed: {e}")
             finally:
                 with self._advisor_lock:
                     self._advisor_request_in_progress = False
-                    # Re-dispatch queued post-compression check
-                    if self._pending_post_compression is not None:
-                        pending_msg, pending_sid = self._pending_post_compression
-                        self._pending_post_compression = None
-                        self._request_advisor_analysis(pending_msg, session_id=pending_sid)
+                    pending = self._pending_post_compression
+                    self._pending_post_compression = None
+            # Re-dispatch OUTSIDE the lock to avoid re-entrant deadlock
+            if pending is not None:
+                pending_msg, pending_sid = pending
+                self._request_advisor_analysis(pending_msg, session_id=pending_sid)
         try:
             thread = threading.Thread(target=_run, daemon=True)
             thread.start()
