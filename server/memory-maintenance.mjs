@@ -195,6 +195,8 @@ export async function runMaintenance() {
           // Clean up dependent rows before deleting
           db.prepare("DELETE FROM citation_log WHERE memory_id = ?").run(id);
           db.prepare("DELETE FROM memory_edges WHERE from_id = ? OR to_id = ?").run(id, id);
+            // Nullify any FK references pointing to this memory before DELETE
+            db.prepare("UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?").run(id);
           // Safe to delete — memory_raw has ON DELETE CASCADE
           db.prepare("DELETE FROM memories WHERE id = ?").run(id);
           count++;

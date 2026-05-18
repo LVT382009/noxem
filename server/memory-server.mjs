@@ -292,7 +292,7 @@ function findCachedResult(queryVec) {
     const sim = cosineSimilarity(queryVec, entry.queryVec);
     if (sim > 0.88) {
       _cacheHits++;
-      _queryCache.set(key, entry); // LRU: re-insert to move to end
+      _queryCache.delete(key); _queryCache.set(key, entry); // LRU: delete+set to move to end
       return { results: entry.results, similarity: sim };
     }
   }
@@ -310,12 +310,7 @@ function addToQueryCache(queryVec, results) {
   _queryCache.set(Date.now(), { queryVec: Array.from(queryVec), results, timestamp: Date.now() });
 }
 
-let _lastInvalidate = 0;
 function invalidateQueryCache() {
-  // Debounce: only clear if last invalidation was >30s ago
-  const now = Date.now();
-  if (now - _lastInvalidate < 30000) return; // skip — cache still fresh
-  _lastInvalidate = now;
   _queryCache.clear();
   clearRewriteCache();
 }
@@ -772,21 +767,22 @@ app.get("/memory/search", async (req, res) => {
     // Apply session filter to all search methods
     if (session_id) searchResults = searchResults.filter(r => r.session_id === session_id);
 
-    // Entity-attribute dedup: keep highest-scored memory per entity::attribute key
-    // Prevents contradictory results (e.g., multiple name rules) from confusing the agent
-    const _eaSeen = new Map();
-    searchResults = searchResults.filter(r => {
-      const eaKey = (r.entity && r.attribute) ? `${r.entity}::${r.attribute}` : null;
-      if (!eaKey) return true; // no entity/attribute — keep
-      const existing = _eaSeen.get(eaKey);
-      if (!existing) { _eaSeen.set(eaKey, r); return true; }
-      // Keep the one with higher final score
-      if ((r.final_score || r.score || 0) > (existing.final_score || existing.score || 0)) {
-        _eaSeen.set(eaKey, r);
-        return true;
-      }
-      return false;
-    });
+// Entity-attribute dedup: keep highest-scored memory per entity::attribute key
+// Two-pass: (1) find winner per key, (2) filter to only winners
+const _eaBest = new Map();
+for (const r of searchResults) {
+  const eaKey = (r.entity && r.attribute) ? r.entity + "::" + r.attribute : null;
+  if (!eaKey) continue;
+  const existing = _eaBest.get(eaKey);
+  if (!existing || (r.final_score || r.score || 0) > (existing.final_score || existing.score || 0)) {
+    _eaBest.set(eaKey, r);
+  }
+}
+searchResults = searchResults.filter(r => {
+  const eaKey = (r.entity && r.attribute) ? r.entity + "::" + r.attribute : null;
+  if (!eaKey) return true;
+  return _eaBest.get(eaKey) === r;
+});
 
     // Store in semantic cache if we got results from embedding search
     if (queryVecForCache && searchResults.length > 0 && !searchMethod.startsWith("cache")) {
@@ -1704,9 +1700,9 @@ async function shutdown(signal) {
   console.log(`\n${signal} received — shutting down gracefully...`);
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
-// Drain extraction/embedding queues before closing
+// Drain extraction queue before closing
 const qStatus = getExtractionQueueStatus();
-	const queueSize = qStatus.queue_length || 0;
+const queueSize = qStatus.queue_length || 0;
 if (queueSize > 0) {
   await new Promise(resolve => {
     const drainStart = Date.now();
@@ -1714,8 +1710,22 @@ if (queueSize > 0) {
       const current = getExtractionQueueStatus().queue_length || 0;
       if (current === 0 || Date.now() - drainStart > 3000) {
         clearInterval(iv);
-        if (current > 0) console.log(`Drain timeout — ${current} items remaining`);
-        else console.log('Drain complete');
+        if (current > 0) console.log('Extraction drain timeout - ' + current + ' items remaining');
+        else console.log('Extraction drain complete');
+        resolve();
+      }
+    }, 200);
+  });
+}
+// Drain embedding queue before closing
+if (_embedQueue.length > 0) {
+  await new Promise(resolve => {
+    const drainStart = Date.now();
+    const iv = setInterval(() => {
+      if (_embedQueue.length === 0 || Date.now() - drainStart > 5000) {
+        clearInterval(iv);
+        if (_embedQueue.length > 0) console.log('Embed drain timeout - ' + _embedQueue.length + ' items remaining');
+        else console.log('Embed drain complete');
         resolve();
       }
     }, 200);

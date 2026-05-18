@@ -2,8 +2,8 @@ const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use LLM
 const LLM_API_KEY = process.env.LLM_API_KEY || "";
-const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary'];
-const SMART_TYPES = ['fact', 'preference', 'profile', 'project', 'event', 'relationship'];
+const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary', 'relationship'];
+const SMART_TYPES = ['fact', 'preference', 'profile', 'project', 'event', 'relationship', 'goal', 'pattern', 'entity', 'issue', 'setup', 'learning', 'request'];
 
 // Bracket-aware JSON array extractor: handles ] inside strings
 function extractJSONArray(content) {
@@ -192,7 +192,7 @@ export async function extractMemoriesLLM({ user_message, assistant_response, alr
 EXTRACTION RULES:
 - Extract ONLY from the user's messages — ignore assistant content
 - Each memory: complete sentence, 15-80 words, specific and factual
-- Categorize into exactly one of: preference, profile, project, fact, event, relationship
+- Categorize into exactly one of: preference, profile, project, fact, event, relationship, goal, pattern, entity, issue, setup, learning, request
 - Extract entity (who/what) and attribute (which aspect) when identifiable
 - Omit trivial information, greetings, and acknowledgments${alreadyExtracted.length > 0 ? `
 Already extracted from this turn (do not re-extract):
@@ -202,7 +202,7 @@ Conversation:
 USER: {{userMessage}}
 ASSISTANT: {{assistantResponse}}
 
-Output ONLY a JSON array: [{"text": "...", "type": "preference", "entity": "user", "attribute": "editor"}]
+Output ONLY a JSON array: [{"text": "...", "type": "preference|profile|project|fact|event|relationship|goal|pattern|entity|issue|setup|learning|request", "entity": "user", "attribute": "editor"}]
 If no memories worth extracting, output: []`;
 
   const prompt = SMART_EXTRACTION_PROMPT

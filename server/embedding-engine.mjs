@@ -426,6 +426,13 @@ export function findContradictions(memories) {
 }
 
 // Categorize a memory based on its text content
+
+function detectCJKLanguage(text) {
+  if (/[\u3040-\u309F\u30A0-\u30FF]/.test(text)) return 'ja'; // hiragana/katakana
+  if (/[\uAC00-\uD7AF\u1100-\u11FF]/.test(text)) return 'ko'; // hangul
+  if (/[\u4E00-\u9FFF]/.test(text)) return 'zh'; // CJK ideographs only = Chinese
+  return 'unknown';
+}
 export function categorizeText(text) {
   const lower = text.toLowerCase();
 
@@ -444,34 +451,28 @@ export function categorizeText(text) {
 
 
 // Lightweight CJK language detection via Unicode script blocks
-function detectCJKLanguage(text) {
-  if (/[\u3040-\u309F\u30A0-\u30FF]/.test(text)) return 'ja'; // hiragana/katakana
-  if (/[\uAC00-\uD7AF\u1100-\u11FF]/.test(text)) return 'ko'; // hangul
-  if (/[\u4E00-\u9FFF]/.test(text)) return 'zh'; // CJK ideographs only = Chinese
-  return 'unknown';
-}
 
-// CJK patterns (Chinese + Japanese + Korean Hangul + Korean Hangul)
+// CJK patterns (Chinese + Japanese + Korean Hangul)
 // Preference: 喜欢/偏好/爱/讨厌/不喜欢 + 好き/嫌い
-if (/喜欢|偏好|最爱|很爱|比较爱|爱用|讨厌|不喜欢|喜好|倾向于|习惯用|常用|好き|嫌い/u.test(lower)) return 'preference';
+if (/喜欢|偏好|最爱|很爱|比较爱|爱用|讨厌|不喜欢|喜好|倾向于|习惯用|常用|好き|嫌い|취향|선호|좋아|싫어|즐겨/u.test(lower)) return 'preference';
 // Project: 项目/在做/开发/构建 + プロジェクト/開発
-if (/项目|在做|在开发|正在做|开发了|构建|工程|开发中|プロジェクト|開発/u.test(lower)) return 'project';
+if (/项目|在做|在开发|正在做|开发了|构建|工程|开发中|プロジェクト|開発|프로젝트|개발/u.test(lower)) return 'project';
 // Profile: 我叫/我的名字/我是/工作 + 名前/職業
-if (/我叫|我的名字|我是|在.+?工作|职位|从事|名为|名前|職業|仕事/u.test(lower)) return 'profile';
+if (/我叫|我的名字|我是|在.+?工作|职位|从事|名为|名前|職業|仕事|이름|직업|일/u.test(lower)) return 'profile';
 // Request: 需要/想要/请/帮我 + お願い/欲しい
-if (/需要|想要|请|帮我|能不能|可以|帮帮忙|お願い|欲しい|ください/u.test(lower)) return 'request';
+if (/需要|想要|请|帮我|能不能|可以|帮帮忙|お願い|欲しい|ください|필요|원함|주세요/u.test(lower)) return 'request';
 // Learning: 学习/研究/课程/教程 + 学習/勉強/研究
-if (/学习|研究|课程|教程|学会了|在读|阅读|了解了|掌握了|学習|勉強|研究|授業/u.test(lower)) return 'learning';
+if (/学习|研究|课程|教程|学会了|在读|阅读|了解了|掌握了|学習|勉強|研究|授業|학습|연구|과정/u.test(lower)) return 'learning';
 // Setup: 技术/框架/环境/配置/安装 + 技術/環境/設定
-if (/技术栈|框架|环境|配置|安装|部署|搭建|用的是|运行在|基于|技術|環境|設定|インストール/u.test(lower)) return 'setup';
+if (/技术栈|框架|环境|配置|安装|部署|搭建|用的是|运行在|基于|技術|環境|設定|インストール|기술|환경|설정|설치/u.test(lower)) return 'setup';
 // Goal: 目标/计划/打算/准备 + 目標/計画
-if (/目标|计划|打算|准备|要做|未来|希望|期望|规划|目標|計画|予定/u.test(lower)) return 'goal';
+if (/目标|计划|打算|准备|要做|未来|希望|期望|规划|目標|計画|予定|목표|계획|예정/u.test(lower)) return 'goal';
 // Issue: 错误/问题/报错/崩溃 + エラー/問題
-if (/错误|问题|报错|崩溃|出错了|坏了|无法|失败|异常|エラー|問題|バグ|不具合/u.test(lower)) return 'issue';
+if (/错误|问题|报错|崩溃|出错了|坏了|无法|失败|异常|エラー|問題|バグ|不具合|오류|문제|버그/u.test(lower)) return 'issue';
 // Pattern: 习惯/通常/一般/总是 + 習慣/通常
 if (/习惯|通常|一般|总是|每次|经常|惯例|模式|習慣|通常|いつも|毎回|습관|보통|항상|次々|喜恶/u.test(lower)) return 'pattern';
 // Event: 昨天/今天/明天/上周/会议 + 昨日/今日/会議
-if (/昨天|今天|明天|上周|下周|会议|日程|计划|约会|见面|昨日|今日|明日|会議|ミーティング/u.test(lower)) return 'event';
+if (/昨天|今天|明天|上周|下周|会议|日程|计划|约会|见面|昨日|今日|明日|会議|ミーティング|어제|오늘|내일|회의|일정/u.test(lower)) return 'event';
 
   return 'fact';
 }
@@ -615,19 +616,19 @@ export function extractEntityAttribute(text) {
   if (cjkLang === 'ja' || cjkLang === 'ko') {
     // JP/KR: object before negative predicate
     const negJP = text.match(/(.+?)(?=が嫌い|が嫌|を嫌|を嫌がる|를 싫어|를 안 좋아|을 싫어)/u);
-    if (negJP) { const obj = negJP[1].trim(); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}`, negated: true }; }
+    if (negJP) { const obj = negJP[1].trim().replace(/^(\u79C1\u306F|\u50F9\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}`, negated: true }; }
 
     // JP/KR: object before positive predicate
     const prefJP = text.match(/(.+?)(?=が好き|が愛用|を好|を好き|를 좋아|을 좋아)/u);
-    if (prefJP) { const obj = prefJP[1].trim(); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}` }; }
+    if (prefJP) { const obj = prefJP[1].trim().replace(/^(\u79C1\u306F|\u50F9\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}` }; }
 
     // JP/KR: object before tech predicate
     const techJP = text.match(/(.+?)(?=を使って|を使い|を基づい|를 사용|을 사용)/u);
-    if (techJP) { const tech = techJP[1].trim(); if (tech && tech.length >= 2) return { entity: 'user', attribute: `tech_${tech}` }; }
+    if (techJP) { const tech = techJP[1].trim().replace(/^(\u79C1\u306F|\u50F9\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (tech && tech.length >= 2) return { entity: 'user', attribute: `tech_${tech}` }; }
 
     // JP/KR: object before project predicate
     const projJP = text.match(/(.+?)(?=を開発|を構築|を开発|を開発中|를 개발|을 개발)/u);
-    if (projJP) { const proj = projJP[1].trim(); if (proj && proj.length >= 2) return { entity: 'user', attribute: `project_${proj}` }; }
+    if (projJP) { const proj = projJP[1].trim().replace(/^(\u79C1\u306F|\u50F9\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (proj && proj.length >= 2) return { entity: 'user', attribute: `project_${proj}` }; }
   }
 
   // Step 3: Chinese prefix patterns (verb-before-object, SVO grammar)
