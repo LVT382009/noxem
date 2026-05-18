@@ -88,6 +88,8 @@ export async function runMaintenance() {
     }
   } catch (err) { LOG_DEBUG && console.error('[Maintenance] FTS optimize error:', err.message); }
 
+  try {
+
   // Steps 1-6 require embeddings and sufficient volume
   if (!isEmbeddingReady()) {
     LOG_DEBUG && console.log('Maintenance dedup skipped: Brain-1 not ready');
@@ -105,7 +107,6 @@ export async function runMaintenance() {
     return results; // collapse/reap/optimize already done above
   }
 
-    try {
   // 1. Deduplication
     // For small sets (<500): brute-force O(n²) pairwise cosine
     // For large sets (>=500): KNN-based — find nearest neighbors per memory via index

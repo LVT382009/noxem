@@ -602,12 +602,16 @@ app.post('/memory/store', (req, res) => {
   invalidateQueryCache();
     // Brain 2: Smart extraction for /memory/store?smart=true
     if (ENABLE_SMART_EXTRACT && smart && trimmed) {
-      enqueueExtraction({
-        user_message: trimmed,
-        assistant_response: '',
-        session_id: session_id || '',
-        alreadyExtracted: [trimmed],
-      });
+      try {
+        enqueueExtraction({
+          user_message: trimmed,
+          assistant_response: '',
+          session_id: session_id || '',
+          alreadyExtracted: [trimmed],
+        });
+      } catch (extractErr) {
+        LOG_DEBUG && console.error("[StoreHook] Smart extraction error:", extractErr.message);
+      }
     }
   res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped', extraction: ENABLE_SMART_EXTRACT && smart ? 'tier1_immediate_tier2_async' : undefined });
   } catch (err) {
@@ -708,13 +712,19 @@ app.get("/memory/search", async (req, res) => {
       const cached = findCachedResult(qVec);
       if (cached) {
         searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
-        searchMethod = "cache+" + (cached.similarity).toFixed(3);
-            // Cached results are final — skip live search
-  try {
-    const ids = searchResults.map(r => r.id).filter(Boolean);
-    if (ids.length) incrementRecallCounts(ids);
-  } catch {}
-            return res.json({ ok: true, method: searchMethod, results: searchResults });
+        // Session filter: skip cache if results are from a different session
+        if (session_id) {
+          searchResults = searchResults.filter(r => r.session_id === session_id);
+          if (searchResults.length === 0) { searchResults = []; } // cache miss for this session
+        }
+        if (searchResults.length > 0) {
+          searchMethod = "cache+" + (cached.similarity).toFixed(3);
+          try {
+            const ids = searchResults.map(r => r.id).filter(Boolean);
+            if (ids.length) incrementRecallCounts(ids);
+          } catch {}
+          return res.json({ ok: true, method: searchMethod, results: searchResults });
+        }
       }
         let embeddingResults = null;
 
@@ -1719,8 +1729,8 @@ if (_embedQueue.length > 0) {
     }, 200);
   });
 }
-  // Wait for in-flight embedBatch/SQLite writes to finish
-  try { await _embedLock; } catch {}
+  // Wait for in-flight embedBatch/SQLite writes to finish (bounded)
+  try { await Promise.race([_embedLock, new Promise(r => setTimeout(r, 3000))]); } catch {}
 
   server.close(() => {
     close(); // close SQLite
