@@ -599,7 +599,7 @@ export function extractEntityAttribute(text) {
   const cjkNegMatch = text.match(/(?:不喜[欢迎]|不再|不用|讨厌)(.+?)(?:[，。、；\s]|$)/u);
   if (cjkNegMatch) {
     const object = cjkNegMatch[1].trim();
-    if (object) return { entity: 'user', attribute: `dislike_${object}` };
+    if (object) return { entity: 'user', attribute: `prefer_${object}`, negated: true };
   }
 
   // Preference: "喜欢X" / "偏好X" / "常用X"

@@ -273,7 +273,7 @@ class NoxemMemoryProvider:
         """Probe /health and update server_reachable state."""
         try:
             url = f"{self._server_url}/health"
-            req = Request(url, headers={"Accept": "application/json"})
+            req = Request(url, headers=self._auth_headers())
             with urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode())
                 self._server_reachable.set()  # P-#19
@@ -787,7 +787,10 @@ class NoxemMemoryProvider:
                     "user_message": (message or "")[:500],
                     "session_id": effective_session,
                 })
-                if result and "advice" in result and result["advice"] != "SILENT":
+                if not result or "error" in result:
+                    logger.debug(f"Advisor API returned error: {result}")
+                    self._consecutive_errors += 1
+                elif "advice" in result and result["advice"] != "SILENT":
                     with self._advisor_lock:
                         self._advisor_cache = result["advice"][:500]  # Budget cap
                         self._consecutive_errors = 0  # Reset on success
@@ -948,7 +951,7 @@ class NoxemMemoryProvider:
         if not self._server_url.startswith(("http://", "https://")):
             return {"error": f"Invalid server URL scheme: {self._server_url}"}
         url = f"{self._server_url}{path}"
-        req = Request(url, headers={"Accept": "application/json"})
+        req = Request(url, headers=self._auth_headers())
         try:
             with urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode())
@@ -964,7 +967,9 @@ class NoxemMemoryProvider:
             return {"error": f"Invalid server URL scheme: {self._server_url}"}
         url = f"{self._server_url}{path}"
         body = json.dumps(data).encode()
-        req = Request(url, data=body, headers=self._auth_headers())
+        headers = self._auth_headers()
+        headers["Content-Type"] = "application/json"
+        req = Request(url, data=body, headers=headers)
         try:
             with urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read().decode())

@@ -1337,7 +1337,7 @@ app.post('/memory/sync', async (req, res) => {
         if (mem && mem.text) {
           try {
             const embedText = mem.context_prefix ? mem.context_prefix + " " + mem.text : mem.text;
-            enqueueEmbedding({ id: mid, text: embedText });
+            enqueueEmbedding(mid, embedText, mem.context_prefix || null);
           } catch {}
         }
       }

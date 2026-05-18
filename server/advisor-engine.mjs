@@ -16,11 +16,12 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
+const LLM_API_KEY = process.env.LLM_API_KEY || "";
 
 export function callLLM(messages, maxTokens = 1024, temperature = 0.3, timeoutMs = 30000) {
   return fetch(LLM_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { "Content-Type": "application/json", ...(LLM_API_KEY ? { "Authorization": "Bearer " + LLM_API_KEY } : {}) },
     body: JSON.stringify({
       model: LLM_MODEL,
       messages,

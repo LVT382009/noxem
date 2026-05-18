@@ -1,6 +1,7 @@
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use LLM
+const LLM_API_KEY = process.env.LLM_API_KEY || "";
 const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary'];
 
 const EXTRACTION_PROMPT = `You are a memory extraction AI. Analyze the conversation below and extract factual memories that the AI agent should remember for future conversations.
@@ -43,7 +44,7 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { "Content-Type": "application/json", ...(LLM_API_KEY ? { "Authorization": "Bearer " + LLM_API_KEY } : {}) },
       body,
       signal: AbortSignal.timeout(15000),
     });
@@ -187,7 +188,7 @@ If no memories worth extracting, output: []`;
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { "Content-Type": "application/json", ...(LLM_API_KEY ? { "Authorization": "Bearer " + LLM_API_KEY } : {}) },
       body,
       signal: AbortSignal.timeout(15000),
     });
