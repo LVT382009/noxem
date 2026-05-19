@@ -1663,7 +1663,6 @@ app.post('/memory/purge', (req, res) => {
         });
         purgeMany(idsToPurge);
       }
-
       const result = { changes: idsToPurge.length };
     const after = getMemoryStats();
     invalidateQueryCache();
