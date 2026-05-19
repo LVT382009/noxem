@@ -4,6 +4,8 @@
  * Used by research-engine.mjs to read pages found by DDG search.
  */
 
+import { isPrivateUrl } from './ddg-search.mjs';
+
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MiB — abort if response exceeds this
 const MAX_TEXT_LENGTH = 2000; // Truncate extracted text to this many chars
@@ -47,6 +49,10 @@ export function isFetchableUrl(url) {
 export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX_TEXT_LENGTH } = {}) {
   if (!isFetchableUrl(url)) {
     return { url, title: '', text: '', error: 'non-html-url' };
+  }
+
+  if (isPrivateUrl(url)) {
+    return { url, title: '', text: '', error: 'blocked-private-url' };
   }
 
   if (!canFetch()) {

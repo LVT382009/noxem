@@ -7,9 +7,9 @@ import { search as ddgScrapeSearch, SafeSearchType } from 'duck-duck-scrape';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 // S-#49: Private IP ranges for SSRF protection
-const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?fc00:/i];
+const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^255\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?fc00:/i, /^\[?ff[0-9a-f]{2}:/i];
 
-function isPrivateUrl(urlStr) {
+export function isPrivateUrl(urlStr) {
   try {
     const parsed = parseUrl(urlStr);
     if (!['http:', 'https:'].includes(parsed.protocol)) return true;

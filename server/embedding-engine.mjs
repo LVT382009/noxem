@@ -616,19 +616,19 @@ export function extractEntityAttribute(text) {
   if (cjkLang === 'ja' || cjkLang === 'ko') {
     // JP/KR: object before negative predicate
     const negJP = text.match(/(.+?)(?=が嫌い|が嫌|を嫌|を嫌がる|를 싫어|를 안 좋아|을 싫어)/u);
-    if (negJP) { const obj = negJP[1].trim().replace(/^(\u79C1\u306F|\u50F9\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}`, negated: true }; }
+    if (negJP) { const obj = negJP[1].trim().replace(/^(\u79C1\u306F|\u50D5\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}`, negated: true }; }
 
     // JP/KR: object before positive predicate
     const prefJP = text.match(/(.+?)(?=が好き|が愛用|を好|を好き|를 좋아|을 좋아)/u);
-    if (prefJP) { const obj = prefJP[1].trim().replace(/^(\u79C1\u306F|\u50F9\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}` }; }
+    if (prefJP) { const obj = prefJP[1].trim().replace(/^(\u79C1\u306F|\u50D5\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (obj && obj.length >= 2) return { entity: 'user', attribute: `prefer_${obj}` }; }
 
     // JP/KR: object before tech predicate
     const techJP = text.match(/(.+?)(?=を使って|を使い|を基づい|를 사용|을 사용)/u);
-    if (techJP) { const tech = techJP[1].trim().replace(/^(\u79C1\u306F|\u50F9\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (tech && tech.length >= 2) return { entity: 'user', attribute: `tech_${tech}` }; }
+    if (techJP) { const tech = techJP[1].trim().replace(/^(\u79C1\u306F|\u50D5\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (tech && tech.length >= 2) return { entity: 'user', attribute: `tech_${tech}` }; }
 
     // JP/KR: object before project predicate
     const projJP = text.match(/(.+?)(?=を開発|を構築|を开発|を開発中|를 개발|을 개발)/u);
-    if (projJP) { const proj = projJP[1].trim().replace(/^(\u79C1\u306F|\u50F9\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (proj && proj.length >= 2) return { entity: 'user', attribute: `project_${proj}` }; }
+    if (projJP) { const proj = projJP[1].trim().replace(/^(\u79C1\u306F|\u50D5\u306F|\u4FFA\u306F|\uC800\uB294|\uB098\uB294)\s*/, ''); if (proj && proj.length >= 2) return { entity: 'user', attribute: `project_${proj}` }; }
   }
 
   // Step 3: Chinese prefix patterns (verb-before-object, SVO grammar)

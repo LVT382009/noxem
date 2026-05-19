@@ -97,7 +97,7 @@ if (MEMORY_API_KEY) {
 
 const PORT = process.env.MEMORY_PORT || 3001;
 const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
-const BRAIN2_ENABLED = (process.env.BRAIN2_ENABLED || '0') === '1';
+const BRAIN2_ENABLED = process.env.BRAIN2_ENABLED !== '0';
 const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false' && BRAIN2_ENABLED;
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
 const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false' && BRAIN2_ENABLED;
@@ -568,7 +568,7 @@ function reciprocalRankFusion(lists, k = 60, weights = null) {
 
 // ─── Memory CRUD ─────────────────────────────────────────────────
 
-const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary'];
+const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary', 'relationship'];
 
 app.post('/memory/store', (req, res) => {
   try {
@@ -623,6 +623,7 @@ app.post('/memory/store-batch', (req, res) => {
   try {
     const { memories } = req.body;
     if (!memories?.length) return res.status(400).json({ error: 'memories array required' });
+    if (memories.length > 1000) return res.status(400).json({ error: 'batch too large (max 1000)' });
 
     const enrichedMemories = memories.map(m => {
       const catType = m.type || categorizeText(m.text);
