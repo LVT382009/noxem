@@ -23,6 +23,9 @@ import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { triggerResearch, getRecentResearch, getResearchStatus } from './research-engine.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
 
+// Route param ID validation helper
+function parseId(val) { const n = parseInt(val); return Number.isInteger(n) && n > 0 ? n : null; }
+
 const app = express();
 app.use(cors({
   origin: process.env.CORS_ORIGIN || true, // Allow all origins in dev; set CORS_ORIGIN for prod
@@ -62,7 +65,7 @@ setInterval(() => {
     const toRemove = rateLimitBuckets.size - RATE_LIMIT_MAX_BUCKETS;
     for (let i = 0; i < toRemove; i++) rateLimitBuckets.delete(entries[i][0]);
   }
-}, 120_000);
+}, 120_000).unref();
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -969,7 +972,8 @@ app.post('/memory/graph/edge', (req, res) => {
 // Get edges from a memory (outgoing relationships)
 app.get('/memory/graph/neighbors/:id', (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'id must be a positive integer' });
     const outgoing = getEdgesFromMemory(id);
     const incoming = getEdgesToMemory(id);
     res.json({ ok: true, id, outgoing, incoming });
@@ -1021,7 +1025,8 @@ res.json({ ok: true, edges });
 // Invalidate an edge (set valid_until = now)
 app.post('/memory/graph/edge/:id/invalidate', (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'id must be a positive integer' });
     const edge = getEdge(id);
     if (!edge) return res.status(404).json({ error: 'edge not found' });
     const changes = invalidateEdgeById(id);
@@ -1074,7 +1079,8 @@ app.delete('/memory/core/:key', (req, res) => {
 // Get citation stats for a memory
 app.get('/memory/:id/citations', (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'id must be a positive integer' });
     const count = getRecentCitationCount(id);
     res.json({ ok: true, memory_id: id, citations_last_30d: count });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1095,7 +1101,8 @@ app.get('/memory/citations/session/:sessionId', (req, res) => {
 // Get raw text for a compressed memory (drill-down)
 app.get('/memory/:id/raw', (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'id must be a positive integer' });
     const mem = getMemory(id);
     if (!mem) return res.status(404).json({ error: 'not found' });
     if (mem.compression_level === 0) {
@@ -1145,7 +1152,7 @@ res.json({ ok: true, candidates: candidates.length, compressed });
 
 app.get('/memory/:id', (req, res) => {
   try {
-  const mem = getMemory(parseInt(req.params.id));
+  const mem = getMemory(parseId(req.params.id));
   if (!mem) return res.status(404).json({ error: 'not found' });
   res.json(mem);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1153,7 +1160,8 @@ app.get('/memory/:id', (req, res) => {
 
 app.delete('/memory/:id', (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'id must be a positive integer' });
     const mem = getMemory(id);
     if (!mem) return res.status(404).json({ error: 'not found' });
     deleteMemory(id);
@@ -1214,7 +1222,8 @@ res.json({ ok: true, old_id, new_id, status: 'superseded' });
 
 app.get('/memory/:id/lineage', (req, res) => {
   try {
-    const id = parseInt(req.params.id);
+    const id = parseId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'id must be a positive integer' });
     const lineage = [];
     const MAX_LINEAGE_DEPTH = 50;
     let depth = 0;
@@ -1642,10 +1651,20 @@ app.post('/memory/purge', (req, res) => {
   }
   try {
     const before = getMemoryStats();
-    const purgeStmt = db.prepare(
-      `DELETE FROM memories WHERE importance < 0.3 AND recall_count = 0 AND created_at < datetime('now', '-' || ? || ' days') AND status = 'active'`
-    );
-    const result = purgeStmt.run(AUTO_PURGE_DAYS);
+
+      const idsToPurge = db.prepare(
+        `SELECT id FROM memories WHERE importance < 0.3 AND recall_count = 0 AND created_at < datetime('now', '-' || ? || ' days') AND status = 'active'`
+      ).all(AUTO_PURGE_DAYS).map(r => r.id);
+      if (idsToPurge.length > 0) {
+        const purgeMany = db.transaction(ids => {
+          db.prepare(`DELETE FROM memories WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+          const delVec = db.prepare('DELETE FROM memory_vecs WHERE rowid = ?');
+          for (const id of ids) delVec.run(id);
+        });
+        purgeMany(idsToPurge);
+      }
+
+      const result = { changes: idsToPurge.length };
     const after = getMemoryStats();
     invalidateQueryCache();
     res.json({ ok: true, purged: result.changes, before: before.active, after: after.active });
@@ -1704,7 +1723,7 @@ async function shutdown(signal) {
   const forceExitTimer = setTimeout(() => {
     console.log("Forcing exit after timeout.");
     process.exit(1);
-  }, 5000);
+  }, 15_000);
   forceExitTimer.unref();
 const qStatus = getExtractionQueueStatus();
 const queueSize = qStatus.queue_length || 0;
