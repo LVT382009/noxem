@@ -81,11 +81,11 @@ try {
 
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
-      if (!location) return { url, title: "", text: "", error: "redirect-no-location" };
+      if (!location) { await response.body.cancel(); return { url, title: "", text: "", error: "redirect-no-location" }; }
       const nextUrl = new URL(location, currentUrl).href;
-      if (!isFetchableUrl(nextUrl) || isPrivateUrl(nextUrl)) {
-        return { url, title: "", text: "", error: "blocked-private-url" };
-      }
+      if (!isFetchableUrl(nextUrl)) { await response.body.cancel(); return { url, title: "", text: "", error: "redirect-not-fetchable" }; }
+        if (isPrivateUrl(nextUrl)) { await response.body.cancel(); return { url, title: "", text: "", error: "blocked-private-url" }; }
+
       currentUrl = nextUrl;
       hops++;
       continue;
@@ -94,16 +94,16 @@ try {
   }
 
   if (hops > MAX_REDIRECTS) {
-    return { url, title: "", text: "", error: "too-many-redirects" };
+    await response.body.cancel(); return { url, title: "", text: "", error: "too-many-redirects" };
   }
 
     if (!response.ok) {
-      return { url, title: '', text: '', error: `http-${response.status}` };
+      await response.body.cancel(); return { url, title: '', text: '', error: `http-${response.status}` };
     }
 
     const contentType = response.headers.get('content-type') || '';
     if (!/text\/html|application\/xhtml/i.test(contentType)) {
-      return { url, title: '', text: '', error: `wrong-content-type:${contentType.split(';')[0]}` };
+      await response.body.cancel(); return { url, title: '', text: '', error: `wrong-content-type:${contentType.split(';')[0]}` };
     }
 
     // Read body with size limit
