@@ -285,11 +285,11 @@ function hashVec(vec) {
 function findCachedResult(queryVec) {
   if (!queryVec || !isEmbeddingReady()) return null;
   const now = Date.now();
-  const qHash = hashVec(queryVec);
+  // No hash pre-filter: cache capped at 100 entries, iterating all is cheap.
+  // A hash gate would block paraphrase matches that cosine 0.88 would catch.
   for (const [key, entry] of _queryCache) {
     if (now - entry.timestamp > QUERY_CACHE_TTL_MS) { _queryCache.delete(key); continue; }
-      if (hashVec(entry.queryVec) !== qHash) continue;
-    const sim = cosineSimilarity(queryVec, entry.queryVec);
+      const sim = cosineSimilarity(queryVec, entry.queryVec);
     if (sim > 0.88) {
       _cacheHits++;
       _queryCache.delete(key); _queryCache.set(key, entry); // LRU: delete+set to move to end

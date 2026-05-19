@@ -302,6 +302,10 @@ function extractValue(text) {
   const posMatch = lower.match(/(?:prefer|like|love|hate|dislike|use|using|favor|choose|chose)\s+(\S+)/i);
   if (posMatch) return { value: posMatch[1], negated: false };
 
+  // Negated identity: "never X", "never called X", "not X", "don't call me X"
+  const negIdMatch = lower.match(/(?:never|not|don'?t|do not)\s+(?:called|call me|name(?:d|s)?|referred to as|known as)\s+(.+?)(?:\s*[.!?,;]|\s*$)/i)
+    || lower.match(/(?:never|not)\s+(.+?)(?:\s*[.!?,;]|\s*$)/i);
+  if (negIdMatch) return { value: negIdMatch[1].trim(), negated: true };
   // Identity attribute: "My name is X"
   const idMatch = lower.match(/(?:my name is|i'?m |i am |call me)\s+(.+?)(?:\s*[.!?,;]|\s*$)/i);
   if (idMatch) return { value: idMatch[1].trim(), negated: false };
