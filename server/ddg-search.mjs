@@ -7,7 +7,7 @@ import { search as ddgScrapeSearch, SafeSearchType } from 'duck-duck-scrape';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 // S-#49: Private IP ranges for SSRF protection
-const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^255\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?fc00:/i, /^\[?ff[0-9a-f]{2}:/i];
+const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^22[4-9]\./, /^23[0-9]\./, /^255\./, /^localhost(?:\.|$)/i, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?f[cd][0-9a-f]{2}:/i, /^\[?ff[0-9a-f]{2}:/i];
 
 export function isPrivateUrl(urlStr) {
   try {
@@ -74,8 +74,8 @@ function decodeHtmlEntities(text) {
   return text
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => { try { return String.fromCodePoint(parseInt(hex, 16)); } catch { return '�'; } })
+    .replace(/&#(\d+);/g, (_, dec) => { try { return String.fromCodePoint(parseInt(dec, 10)); } catch { return '�'; } })
 }
 
 // Search DDG using duck-duck-scrape npm package, fall back to HTML scraping

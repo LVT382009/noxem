@@ -9,6 +9,7 @@ import { isPrivateUrl } from './ddg-search.mjs';
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MiB — abort if response exceeds this
 const MAX_TEXT_LENGTH = 2000; // Truncate extracted text to this many chars
+const MAX_REDIRECTS = 5;
 
 // Skip these URL extensions (non-HTML content)
 const SKIP_EXTENSIONS = /\.(pdf|png|jpg|jpeg|gif|svg|webp|ico|zip|tar|gz|bz2|7z|exe|dmg|mp3|mp4|avi|mov|wav|ogg|flac|doc|docx|xls|xlsx|ppt|pptx|apk|iso|bin|dat)$/i;
@@ -59,21 +60,45 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
     return { url, title: '', text: '', error: 'rate-limited' };
   }
 
-  try {
+try {
+  let currentUrl = url;
+  let hops = 0;
+  let response;
+
+  // Manual redirect loop - validate each hop against SSRF
+  while (hops <= MAX_REDIRECTS) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    const response = await fetch(url, {
+    response = await fetch(currentUrl, {
       signal: controller.signal,
-      redirect: 'follow',
+      redirect: "manual",
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; NoxemResearch/1.0)',
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.5',
+        "User-Agent": "Mozilla/5.0 (compatible; NoxemResearch/1.0)",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.5",
       },
     });
 
     clearTimeout(timeoutId);
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) return { url, title: "", text: "", error: "redirect-no-location" };
+      const nextUrl = new URL(location, currentUrl).href;
+      if (!isFetchableUrl(nextUrl) || isPrivateUrl(nextUrl)) {
+        return { url, title: "", text: "", error: "blocked-private-url" };
+      }
+      currentUrl = nextUrl;
+      hops++;
+      continue;
+    }
+    break;
+  }
+
+  if (hops > MAX_REDIRECTS) {
+    return { url, title: "", text: "", error: "too-many-redirects" };
+  }
 
     if (!response.ok) {
       return { url, title: '', text: '', error: `http-${response.status}` };
@@ -171,8 +196,8 @@ function decodeHtmlEntities(str) {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, ' ')
-    .replace(/&#x?([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
+    .replace(/&#x?([0-9a-fA-F]+);/g, (_, hex) => { try { return String.fromCodePoint(parseInt(hex, 16)); } catch { return '�'; } })
+    .replace(/&#(\d+);/g, (_, dec) => { try { return String.fromCodePoint(parseInt(dec, 10)); } catch { return '�'; } });
 }
 
 /**

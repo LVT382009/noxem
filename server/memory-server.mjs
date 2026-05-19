@@ -288,7 +288,7 @@ function findCachedResult(queryVec) {
   const qHash = hashVec(queryVec);
   for (const [key, entry] of _queryCache) {
     if (now - entry.timestamp > QUERY_CACHE_TTL_MS) { _queryCache.delete(key); continue; }
-    // Quick hash check first, then full cosine
+      if (hashVec(entry.queryVec) !== qHash) continue;
     const sim = cosineSimilarity(queryVec, entry.queryVec);
     if (sim > 0.88) {
       _cacheHits++;
@@ -1699,6 +1699,7 @@ async function shutdown(signal) {
   console.log(`\n${signal} received — shutting down gracefully...`);
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
+  server.close();
 // Drain extraction queue before closing
 const qStatus = getExtractionQueueStatus();
 const queueSize = qStatus.queue_length || 0;
@@ -1733,11 +1734,9 @@ if (_embedQueue.length > 0) {
   // Wait for in-flight embedBatch/SQLite writes to finish (bounded)
   try { await Promise.race([_embedLock, new Promise(r => setTimeout(r, 3000))]); } catch {}
 
-  server.close(() => {
-    close(); // close SQLite
-    console.log('Memory server stopped.');
-    process.exit(0);
-  });
+  close(); // close SQLite
+  console.log("Memory server stopped.");
+  process.exit(0);
   // Force exit after 5s if connections don't close
   setTimeout(() => {
     console.log('Forcing exit after timeout.');

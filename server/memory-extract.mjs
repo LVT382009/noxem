@@ -70,7 +70,7 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
       method: 'POST',
       headers: { "Content-Type": "application/json", ...(LLM_API_KEY ? { "Authorization": "Bearer " + LLM_API_KEY } : {}) },
       body,
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(60000),
     });
 
     if (!res.ok) {
@@ -116,7 +116,7 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
 // Lightweight extraction without LLM (rule-based fallback)
 export function extractMemoriesSimple({ userMessage, assistantResponse }) {
   const memories = [];
-  const msg = (userMessage || '');
+  const msg = (userMessage || '') + ' ' + (assistantResponse || '');
 
   // English preference patterns
   const prefPatterns = [

@@ -50,7 +50,7 @@ export async function runMaintenance() {
 
   // 8. Reap superseded memories older than grace period with no recent citations
   try {
-    const SUPERSEDED_GRACE_DAYS = parseInt(process.env.SUPERSEDED_GRACE_DAYS || '14');
+    const SUPERSEDED_GRACE_DAYS = parseInt(process.env.SUPERSEDED_GRACE_DAYS || '14') || 14;
     const candidates = db.prepare(
       "SELECT id FROM memories WHERE status = 'superseded' AND updated_at < datetime('now', '-' || ? || ' days') ORDER BY updated_at ASC LIMIT 100"
     ).all(SUPERSEDED_GRACE_DAYS);

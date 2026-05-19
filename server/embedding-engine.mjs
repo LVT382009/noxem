@@ -410,7 +410,7 @@ export function findContradictions(memories) {
       if (sim > CONTRADICTION_THRESHOLD) {
         // Check if they express opposing views about the same topic
         const texts = [memories[i].text.toLowerCase(), memories[j].text.toLowerCase()];
-        const prefers = [/prefer/, /like/, /love/, /hate/, /dislike/, /favorite/, /\buse\b/, /using/];
+        const prefers = [/prefer/, /like/, /love/, /hate/, /dislike/, /favorite/, /\buse\b/, /\busing\b/];
         const hasPreference = prefers.some(p => texts.some(t => p.test(t)));
         if (hasPreference) {
           contradictions.push({
@@ -458,7 +458,7 @@ if (/喜欢|偏好|最爱|很爱|比较爱|爱用|讨厌|不喜欢|喜好|倾向
 // Project: 项目/在做/开发/构建 + プロジェクト/開発
 if (/项目|在做|在开发|正在做|开发了|构建|工程|开发中|プロジェクト|開発|프로젝트|개발/u.test(lower)) return 'project';
 // Profile: 我叫/我的名字/我是/工作 + 名前/職業
-if (/我叫|我的名字|我是|在.+?工作|职位|从事|名为|名前|職業|仕事|이름|직업|일/u.test(lower)) return 'profile';
+if (/我叫|我的名字|我是|在.+?工作|职位|从事|名为|名前|職業|仕事|이름|직업|일하|근무/u.test(lower)) return 'profile';
 // Request: 需要/想要/请/帮我 + お願い/欲しい
 if (/需要|想要|请|帮我|能不能|可以|帮帮忙|お願い|欲しい|ください|필요|원함|주세요/u.test(lower)) return 'request';
 // Learning: 学习/研究/课程/教程 + 学習/勉強/研究
@@ -509,7 +509,7 @@ if (/我的名字|我叫|我是|职位|名前|職業/u.test(lower)) importance =
   if (/^(ok|okay|sure|yes|no|done|thanks|hi|hello|bye|good)\b/i.test(lower)) importance = 0.1; // trivial
   if (/maybe|might|perhaps|possibly/i.test(lower)) importance = Math.max(0.1, importance - 0.1); // uncertain
   // CJK trivial indicators
-  if (/^(好的|对不起|嗯|谢谢|再见|没事|ok)\b/i.test(lower)) importance = 0.1;
+  if (/^(好的|对不起|嗯|谢谢|再见|没事|ok)(?:$|[^\p{L}])/iu.test(lower)) importance = 0.1;
 
   return Math.round(Math.max(0.1, Math.min(1.0, importance)) * 100) / 100;
 }
@@ -634,44 +634,44 @@ export function extractEntityAttribute(text) {
   // Step 3: Chinese prefix patterns (verb-before-object, SVO grammar)
   // These only contain Chinese keywords — JP/KR keywords removed to prevent overlap
   // Negated preference: "不喜欢X" / "不再用X" / "讨厌X"
-  const cjkNegMatch = text.match(/(?:不喜[欢迎]|不再|不用|讨厌)(.+?)(?:[，。、；\s]|$)/u);
+  const cjkNegMatch = text.match(/(?:不喜[欢迎]|不再|不用|讨厌)(.+?)(?:[，。、；,.\s]|$)/u);
   if (cjkNegMatch) {
     const object = cjkNegMatch[1].trim();
     if (object) return { entity: 'user', attribute: `prefer_${object}`, negated: true };
   }
 
   // Preference: "喜欢X" / "偏好X" / "常用X"
-  const cjkPrefMatch = text.match(/(?:喜欢|偏好|最[爱喜]|常用|习惯用|倾向[于]?)(.+?)(?:[，。、；\s]|$)/u);
+  const cjkPrefMatch = text.match(/(?:喜欢|偏好|最[爱喜]|常用|习惯用|倾向[于]?)(.+?)(?:[，。、；,.\s]|$)/u);
   if (cjkPrefMatch) {
     const object = cjkPrefMatch[1].trim();
     if (object) return { entity: 'user', attribute: `prefer_${object}` };
   }
 
   // Identity: "我叫X" / "我的名字是X" → name; "我是X" → identity
-  const cjkNameMatch = text.match(/(?:我叫|我的名字[是为])(.+?)(?:[，。、；\s]|$)/u);
+  const cjkNameMatch = text.match(/(?:我叫|我的名字[是为])(.+?)(?:[，。、；,.\s]|$)/u);
   if (cjkNameMatch) {
     const value = cjkNameMatch[1].trim();
     if (value) return { entity: 'user', attribute: 'name' };
   }
-  const cjkIdentityMatch = text.match(/(?:我是|私は|저는)(.+?)(?:[，。、；\s]|$)/u);
+  const cjkIdentityMatch = text.match(/(?:我是|私は(?=.+?(?:です|だ|是|名字|姓名))|저는(?=.+?(?:입니다|이에요|는|名字|姓名)))(.+?)(?:[，。、；,.\s]|$)/u);
   if (cjkIdentityMatch) {
     const value = cjkIdentityMatch[1].trim();
     if (value) return { entity: 'user', attribute: 'identity' };
   }
-  const cjkWorkMatch = text.match(/(?:我在|)(.+?)(?:工作|上班|で働いて|업무|일하)/u);
+  const cjkWorkMatch = text.match(/(?:我在|在|で働いて|업무상)(.+?)(?:工作|上班|で働いて|업무|일하)/u);
   if (cjkWorkMatch && cjkWorkMatch[1]?.trim()) {
     return { entity: 'user', attribute: 'employer' };
   }
 
   // Tech: "用X" / "基于X" / "用的是X" — Chinese-only keywords
-  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用)(.+?)(?:[，。、；\s]|开发|构建|用来|$)/u);
+  const cjkTechMatch = text.match(/(?:用的是?|基于|运行在|采用)(.+?)(?:[，。、；,.\s]|开发|构建|用来|$)/u);
   if (cjkTechMatch) {
     const tech = cjkTechMatch[1].trim();
     if (tech) return { entity: 'user', attribute: `tech_${tech}` };
   }
 
   // Project: "在做X" / "开发X" / "构建X" — Chinese-only keywords
-  const cjkProjMatch = text.match(/(?:在做|在开发|正在做|开发了?|构建|开发中|開发)(.+?)(?:[，。、；\s]|$)/u);
+  const cjkProjMatch = text.match(/(?:在做|在开发|正在做|开发了?|构建|开发中|開发)(.+?)(?:[，。、；,.\s]|$)/u);
   if (cjkProjMatch) {
     const project = cjkProjMatch[1].trim();
     if (project) return { entity: 'user', attribute: `project_${project}` };
