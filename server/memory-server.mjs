@@ -107,8 +107,8 @@ const ENABLE_QUERY_REWRITE = BRAIN2_ENABLED && process.env.ENABLE_QUERY_REWRITE 
 const ENABLE_SMART_EXTRACT = BRAIN2_ENABLED && process.env.ENABLE_SMART_EXTRACT !== 'false';
 const ENABLE_PROACTIVE_ADVISOR = BRAIN2_ENABLED && process.env.ENABLE_PROACTIVE_ADVISOR !== 'false';
 const ADVISOR_INTERVAL = Math.max(1, Math.min(3600, parseInt(process.env.ADVISOR_INTERVAL || '10') || 10));
-const REWRITE_TIMEOUT_MS = parseInt(process.env.REWRITE_TIMEOUT_MS || '3000');
-const EXTRACT_DEBOUNCE_MS = parseInt(process.env.EXTRACT_DEBOUNCE_MS || '2000');
+const REWRITE_TIMEOUT_MS = parseInt(process.env.REWRITE_TIMEOUT_MS || '3000') || 3000;
+const EXTRACT_DEBOUNCE_MS = parseInt(process.env.EXTRACT_DEBOUNCE_MS || '2000') || 2000;
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
 
 // Weibull decay: w = exp(-(age/eta)^k) — steeper initial drop then long tail
@@ -1700,7 +1700,12 @@ async function shutdown(signal) {
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
   server.close();
-// Drain extraction queue before closing
+  // Force-exit fallback: schedule BEFORE drain so it fires if drain hangs
+  const forceExitTimer = setTimeout(() => {
+    console.log("Forcing exit after timeout.");
+    process.exit(1);
+  }, 5000);
+  forceExitTimer.unref();
 const qStatus = getExtractionQueueStatus();
 const queueSize = qStatus.queue_length || 0;
 if (queueSize > 0) {
@@ -1735,13 +1740,9 @@ if (_embedQueue.length > 0) {
   try { await Promise.race([_embedLock, new Promise(r => setTimeout(r, 3000))]); } catch {}
 
   close(); // close SQLite
+  clearTimeout(forceExitTimer);
   console.log("Memory server stopped.");
   process.exit(0);
-  // Force exit after 5s if connections don't close
-  setTimeout(() => {
-    console.log('Forcing exit after timeout.');
-    process.exit(1);
-  }, 5000);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
