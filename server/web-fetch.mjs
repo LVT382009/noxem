@@ -64,14 +64,13 @@ try {
   let currentUrl = url;
   let hops = 0;
   let response;
+  // Single timeout signal covers entire redirect chain
+  const signal = AbortSignal.timeout(timeout);
 
   // Manual redirect loop - validate each hop against SSRF
   while (hops <= MAX_REDIRECTS) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-
     response = await fetch(currentUrl, {
-      signal: controller.signal,
+      signal,
       redirect: "manual",
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; NoxemResearch/1.0)",
@@ -79,8 +78,6 @@ try {
         "Accept-Language": "en-US,en;q=0.5",
       },
     });
-
-    clearTimeout(timeoutId);
 
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
