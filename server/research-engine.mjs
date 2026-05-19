@@ -19,6 +19,7 @@ import { fetchPages, isFetchableUrl } from './web-fetch.mjs';
 
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
+const LLM_API_KEY = process.env.LLM_API_KEY || '';
 const RESEARCH_ENABLED = process.env.RESEARCH_ENABLED !== 'false';
 const RESEARCH_MIN_INTERVAL_MS = parseInt(process.env.RESEARCH_MIN_INTERVAL || '30000'); // 30s
 const RESEARCH_MAX_TOPICS_PER_SESSION = 50; // per session lifetime
@@ -200,7 +201,7 @@ async function callLLM(messages, maxTokens = 256, temperature = 0.1, timeout = 1
   try {
     const res = await fetch(LLM_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(LLM_API_KEY ? { 'Authorization': 'Bearer ' + LLM_API_KEY } : {}) },
       body: JSON.stringify({ model: LLM_MODEL, messages, max_tokens: maxTokens, temperature }),
       signal: AbortSignal.timeout(timeout),
     });

@@ -39,6 +39,7 @@ function fetchUrl(url, timeout = 10000, maxRedirects = 5, originalUrl = null) {
     }, (res) => {
       // Follow redirects (with depth limit) — S-#32: pass original URL for relative resolution
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume(); // drain body to free the socket
         const location = res.headers.location;
         return fetchUrl(location, timeout, maxRedirects - 1, url).then(resolve).catch(reject);
       }

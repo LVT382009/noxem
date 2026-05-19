@@ -28,7 +28,10 @@ export async function rewriteQuery(query, { timeoutMs = 3000 } = {}) {
   // Check cache
   const cacheKey = hashQuery(query);
   const cached = _rewriteCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < REWRITE_CACHE_TTL_MS) return cached;
+  if (cached && Date.now() - cached.timestamp < REWRITE_CACHE_TTL_MS) {
+    _rewriteCache.delete(cacheKey); _rewriteCache.set(cacheKey, cached); // LRU touch
+    return cached;
+  }
 
   // Call LLM for rewrite
   const messages = [

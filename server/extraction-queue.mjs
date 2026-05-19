@@ -40,6 +40,7 @@ function scheduleExtraction() {
 }
 
 async function processExtractionQueue() {
+  if (!_storeMemoryFn || !_embedFn) { _extractionQueue.length = 0; return; }
   _extractLock = _extractLock.then(async () => {
     while (_extractionQueue.length > 0) {
       const batch = _extractionQueue.splice(0, 5);

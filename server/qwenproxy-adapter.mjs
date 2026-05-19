@@ -48,7 +48,7 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+      headers: upstreamHeaders(),
     body: JSON.stringify(bodyObj),
     signal: AbortSignal.timeout(timeoutMs),
   });
