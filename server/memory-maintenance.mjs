@@ -26,6 +26,7 @@ export async function runMaintenance() {
     ).all();
     let chainsCollapsed = 0;
     const stmtUpdate = db.prepare('UPDATE memories SET superseded_by = ? WHERE id = ?');
+	const getMemoryStmt = db.prepare('SELECT superseded_by, status FROM memories WHERE id = ?');
     for (const row of intermediates) {
       const visited = new Set();
       let currentId = row.superseded_by;
@@ -33,7 +34,7 @@ export async function runMaintenance() {
       while (currentId) {
         if (visited.has(currentId)) break; // cycle protection
         visited.add(currentId);
-        const next = db.prepare('SELECT superseded_by, status FROM memories WHERE id = ?').get(currentId);
+        const next = getMemoryStmt.get(currentId);
         if (!next || next.status !== 'superseded' || !next.superseded_by) { tipId = currentId; break; }
         currentId = next.superseded_by;
         tipId = currentId;
