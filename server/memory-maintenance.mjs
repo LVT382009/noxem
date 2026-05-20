@@ -38,7 +38,7 @@ export async function runMaintenance() {
     // For small sets (<500): brute-force O(n²) pairwise cosine
     // For large sets (>=500): KNN-based — find nearest neighbors per memory via index
 const withEmbedding = memories.filter(m => m.embedding);
-const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.90');
+const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
 const alreadySuperseded = new Set(); // shared between dedup and near-dup merge
     try {
       let dupes = [];
@@ -78,11 +78,11 @@ const alreadySuperseded = new Set(); // shared between dedup and near-dup merge
       LOG_DEBUG && console.error('[Maintenance] Dedup error:', err.message);
     }
 
-// 1b. Near-duplicate merge (0.85-0.90 threshold)
+// 1b. Near-duplicate merge (0.90-DUP_THRESHOLD band)
 // Same entity+attribute pairs that are paraphrases but below the dedup threshold.
 // Merge them into a single memory and supersede originals.
 try {
-  const MERGE_THRESHOLD_LOW = 0.85;
+  const MERGE_THRESHOLD_LOW = 0.90;
   const entityAttrMap = new Map();
   for (const m of withEmbedding || memories.filter(m => m.embedding)) {
     if (!m.entity || !m.attribute) continue;
@@ -98,6 +98,7 @@ try {
 
     // Find pairs in the merge band (0.85-0.90) that weren't already superseded
     const toMerge = new Set();
+	let maxPairSim = 0;
     for (let i = 0; i < mems.length; i++) {
       for (let j = i + 1; j < mems.length; j++) {
         if (alreadySuperseded.has(mems[i].id) || alreadySuperseded.has(mems[j].id)) continue;
@@ -105,6 +106,7 @@ try {
         if (sim >= MERGE_THRESHOLD_LOW && sim < Math.max(MERGE_THRESHOLD_LOW, DUP_THRESHOLD)) {
           toMerge.add(mems[i].id);
           toMerge.add(mems[j].id);
+          			if (sim > maxPairSim) maxPairSim = sim;
         }
       }
     }
@@ -113,7 +115,11 @@ try {
     const mergeMems = mems.filter(m => toMerge.has(m.id));
     mergeMems.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
-    const mergedText = mergeMems.map(m => m.text).join(' | ');
+    // High overlap (near top of merge band): keep longest text to avoid redundancy.
+    // Lower overlap: concatenate with separator for readability in LLM prompts.
+    const mergedText = maxPairSim >= (DUP_THRESHOLD - 0.01)
+    	? mergeMems.reduce((best, m) => m.text.length > best.text.length ? m : best).text
+    	: mergeMems.map(m => m.text).join('\n---\n');
     const bestType = mergeMems.find(m => m.type !== 'fact')?.type || 'fact';
     const newImportance = Math.min(1.0, Math.max(...mergeMems.map(m => m.importance || 0)) + 0.1);
     const mergeIds = mergeMems.map(m => m.id);

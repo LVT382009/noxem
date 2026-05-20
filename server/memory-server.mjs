@@ -248,8 +248,8 @@ function enqueueEmbedding(id, text, contextPrefix) {
 // as fallback. LRU eviction at capacity.
 const _queryCache = new Map(); // key → { queryVec, queryNorm, keywords, results, resultIds, timestamp, resultEntities }
 const _queryCacheNorm = new Map(); // normalizedQuery → cache key (Tier 1 fast path)
-const QUERY_CACHE_MAX = 200;
-const QUERY_CACHE_TTL_MS = 30 * 60 * 1000; // 30 min (was 5 min + full-clear — pointless)
+const QUERY_CACHE_MAX = 500;
+const QUERY_CACHE_TTL_MS = parseInt(process.env.QUERY_CACHE_TTL_MIN || '120') * 60 * 1000; // 2h default (personal memory is stable)
 const QUERY_CACHE_TIER2_THRESHOLD = 0.92; // Tier 2: high-confidence embedding match
 let _cacheHits = 0;
 let _cacheMisses = 0;
@@ -911,7 +911,18 @@ try {
         }
       }
     }
-    associativeResults = associativeResults.slice(0, 5);
+    associativeResults = associativeResults.slice(0, 10);
+		// Re-rank against original query to prevent topic drift
+		if (associativeResults.length > 0 && queryVecForCache) {
+			associativeResults = associativeResults
+				.map(r => {
+					const sim = r.embedding ? cosineSimilarity(queryVecForCache, r.embedding) : 1;
+					return { ...r, _assoc_sim: sim };
+				})
+				.filter(r => r._assoc_sim >= 0.75)
+				.sort((a, b) => b._assoc_sim - a._assoc_sim)
+				.slice(0, 5);
+		}
   }
 } catch (err) {
   LOG_DEBUG && console.error('[Associative] Entity lookup error:', err.message);
