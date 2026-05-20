@@ -39,7 +39,7 @@ export async function runMaintenance() {
     // For large sets (>=500): KNN-based — find nearest neighbors per memory via index
     try {
       const withEmbedding = memories.filter(m => m.embedding);
-      const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
+      const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.90');
       let dupes = [];
 
       if (withEmbedding.length < 500 || !vectorKnnSearch) {
@@ -77,6 +77,81 @@ export async function runMaintenance() {
     } catch (err) {
       LOG_DEBUG && console.error('[Maintenance] Dedup error:', err.message);
     }
+
+// 1b. Near-duplicate merge (0.85-0.90 threshold)
+// Same entity+attribute pairs that are paraphrases but below the dedup threshold.
+// Merge them into a single memory and supersede originals.
+try {
+  const MERGE_THRESHOLD_LOW = 0.85;
+  const entityAttrMap = new Map();
+  for (const m of withEmbedding || memories.filter(m => m.embedding)) {
+    if (!m.entity || !m.attribute) continue;
+    const key = `${m.entity}::${m.attribute}`;
+    if (!entityAttrMap.has(key)) entityAttrMap.set(key, []);
+    entityAttrMap.get(key).push(m);
+  }
+
+  let mergedCount = 0;
+  for (const [key, mems] of entityAttrMap) {
+    if (mems.length < 2) continue;
+    mems.sort((a, b) => a.id - b.id);
+
+    // Find pairs in the merge band (0.85-0.90) that weren't already superseded
+    const toMerge = new Set();
+    for (let i = 0; i < mems.length; i++) {
+      for (let j = i + 1; j < mems.length; j++) {
+        if (alreadySuperseded.has(mems[i].id) || alreadySuperseded.has(mems[j].id)) continue;
+        const sim = cosineSimilarity(mems[i].embedding, mems[j].embedding);
+        if (sim >= MERGE_THRESHOLD_LOW && sim < DUP_THRESHOLD) {
+          toMerge.add(mems[i].id);
+          toMerge.add(mems[j].id);
+        }
+      }
+    }
+
+    if (toMerge.size < 2) continue;
+    const mergeMems = mems.filter(m => toMerge.has(m.id));
+    mergeMems.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    const mergedText = mergeMems.map(m => m.text).join(' | ');
+    const bestType = mergeMems.find(m => m.type !== 'fact')?.type || 'fact';
+    const newImportance = Math.min(1.0, Math.max(...mergeMems.map(m => m.importance)) + 0.1);
+    const mergeIds = mergeMems.map(m => m.id);
+
+    let embedding = null;
+    try { embedding = await embed(mergedText); } catch {}
+
+    const newId = storeMemory({
+      session_id: mergeMems[0].session_id || '',
+      type: bestType,
+      text: mergedText,
+      embedding,
+      metadata: {
+        source: 'near_dup_merge',
+        extraction_method: 'maintenance_merge',
+        merged_from: mergeIds,
+        stored_at: new Date().toISOString(),
+      },
+      importance: newImportance,
+      context_prefix: `Merged ${mergeMems.length} near-duplicates about ${key}:`,
+      entity: mergeMems[0].entity,
+      attribute: mergeMems[0].attribute,
+    });
+
+    for (const m of mergeMems) {
+      updateMemoryStatus(m.id, 'superseded', newId);
+      deleteVec(db, m.id);
+    }
+
+    mergedCount++;
+    LOG_DEBUG && console.log(`[Maintenance] Merged ${mergeMems.length} near-duplicates for "${key}" -> #${newId}`);
+  }
+
+  results.merged = mergedCount;
+  if (mergedCount > 0) LOG_DEBUG && console.log(`[Maintenance] Merged ${mergedCount} near-duplicate groups`);
+} catch (err) {
+  LOG_DEBUG && console.error('[Maintenance] Near-dup merge error:', err.message);
+}
 
     // 2. Contradiction detection (entity-attribute matching - directional)
     // Handles: preference changes, negation flips, temporal updates, state changes
@@ -211,7 +286,8 @@ function extractValue(text) {
   const lower = text.toLowerCase();
 
   // Negated preference: "I don't like X", "I no longer use X"
-  const negMatch = lower.match(/(?:don'?t|do not|not|never|no longer|used to)\s+(?:prefer|like|love|hate|dislike|use|using|favor|choose)\s+(\S+)/i);
+  // Word-boundary anchored to prevent "notable", "nothing", "nevertheless" false positives
+  const negMatch = lower.match(/(?:don'?t|do\s+not|\bnot\b|\bnever\b|no\s+longer|used\s+to)\s+(?:prefer|like|love|hate|dislike|use|using|favor|choose)\s+(\S+)/i);
   if (negMatch) return { value: negMatch[1], negated: true };
 
   // Temporal past: "I used to X", "previously X", "formerly X"
