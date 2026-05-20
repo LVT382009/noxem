@@ -236,59 +236,221 @@ function enqueueEmbedding(id, text, contextPrefix) {
 }
 
 
-// ─── Semantic Query Cache ─────────────────────────────────────────
-// Caches search results keyed by query embedding; cosine >0.95 = hit
-// Invalidated on store/sync/purge; TTL: 5min default
-const _queryCache = new Map(); // hash -> { queryVec, results, timestamp }
-const QUERY_CACHE_MAX = 100;
-const QUERY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 min
+// ─── Semantic Query Cache (Multi-Tier) ─────────────────────────
+// Tier 1: Exact normalized query match — O(1) via hash map
+//   Lowercase, strip punctuation, remove stop words, sort words (<=5 words)
+//   Catches rephrasings like "user name" → "name of user"
+// Tier 2: High-confidence embedding match — cosine >= 0.92
+//   Catches semantic paraphrases like "what is the user called" → "user name"
+//
+// Invalidation: selective — on store, only invalidate entries whose
+// entity+attribute overlaps with the new memory. TTL-based expiry
+// as fallback. LRU eviction at capacity.
+const _queryCache = new Map(); // key → { queryVec, queryNorm, keywords, results, resultIds, timestamp, resultEntities }
+const _queryCacheNorm = new Map(); // normalizedQuery → cache key (Tier 1 fast path)
+const QUERY_CACHE_MAX = 500;
+const QUERY_CACHE_TTL_MS = parseInt(process.env.QUERY_CACHE_TTL_MIN || '120') * 60 * 1000; // 2h default (personal memory is stable)
+const QUERY_CACHE_TIER2_THRESHOLD = 0.92; // Tier 2: high-confidence embedding match
 let _cacheHits = 0;
-let _cacheCounter = 0;
 let _cacheMisses = 0;
+let _cacheTier1Hits = 0;
+let _cacheTier2Hits = 0;
 
-function hashVec(vec) {
-  // S-#31: Use FNV-1a across all dimensions for better distribution
-  if (!vec || vec.length === 0) return 0;
-  let h = 0x811c9dc5; // FNV offset basis (32-bit)
-  const step = Math.max(1, Math.floor(vec.length / 32)); // sample ~32 elements
-  for (let i = 0; i < vec.length; i += step) {
-    const q = Math.round(vec[i] * 10000) & 0xFF; // quantize to byte
-    h ^= q;
-    h = Math.imul(h, 0x01000193); // FNV prime
+// ─── Query Normalization (inline, no import overhead) ──────────────
+const _STOP_WORDS = new Set([
+  'a','an','the','is','are','was','were','be','been','being','have','has','had',
+  'do','does','did','will','would','could','should','may','might','shall','can',
+  'need','to','of','in','for','on','with','at','by','from','as','into','through',
+  'during','before','after','above','below','between','out','off','over','under',
+  'again','then','once','here','there','when','where','why','how','all','each',
+  'every','both','few','more','most','other','some','such','no','nor','not',
+  'only','own','same','so','than','too','very','just','because','but','and','or',
+  'if','while','about','up','what','which','who','whom','this','that','these',
+  'those','i','me','my','myself','we','our','you','your','he','him','his','she',
+  'her','it','its','they','them','their','am','get','got','make','made','go',
+  'gone','come','came','take','took','see','saw','know','knew','think','thought',
+  'say','said','tell','told','give','gave','find','found','want','wanted','like',
+  'liked','use','used','work','worked','call','called','try','tried','ask','asked',
+  'put','mean','meant','become','became','leave','left','let','keep','kept',
+  'begin','began','seem','seemed','help','helped','show','showed','hear','heard',
+  'play','played','run','ran','move','moved','live','lived','believe','believed',
+  'hold','held','bring','brought','happen','happened','write','wrote','provide',
+  'provided','sit','sat','stand','stood','lose','lost','pay','paid','meet','met',
+  'include','included','continue','continued','set','learn','learned','change',
+  'changed','lead','led','understand','understood','watch','watched','follow',
+  'followed','stop','stopped','create','created','speak','spoke','read','allow',
+  'allowed','add','added','spend','spent','grow','grew','open','opened','walk',
+  'walked','win','won','offer','offered','remember','remembered','consider',
+  'considered','appear','appeared','buy','bought','wait','waited','serve',
+  'served','die','died','send','sent','expect','expected','build','built','stay',
+  'stayed','fall','fell','cut','reach','reached','kill','killed','remain',
+  'remained','suggest','suggested','raise','raised','pass','passed','sell','sold',
+  'require','required','report','reported','decide','decided','also','well',
+  'back','even','still','way','much','many','thing','things',
+]);
+
+// Core synonyms — NOT domain-specific (avoid overfitting like ai→key, server→express)
+const _SYNONYMS = {
+  called:'name', named:'name', username:'name',
+  job:'work', employment:'work', employer:'work', works:'work', working:'work', company:'work', office:'work', career:'work', profession:'work',
+  mail:'email', 'e-mail':'email', inbox:'email',
+  location:'place', city:'place', country:'place',
+  cost:'price', expensive:'price', euros:'price', dollars:'price', salary:'price', income:'price', wage:'price',
+  pet:'animal', bird:'animal',
+  diagnosis:'health', symptom:'health', treatment:'health',
+  framework:'project', website:'project', app:'project', application:'project',
+  provider:'service', engine:'service', tool:'service',
+  speech:'voice', transcription:'voice', transcribe:'voice',
+  commute:'travel', subway:'travel', metro:'travel', transport:'travel',
+  hobby:'interest', hobbies:'interest', curiosity:'interest',
+  studied:'education', school:'education', university:'education', college:'education',
+  girlfriend:'partner', boyfriend:'partner', dating:'partner',
+  prefer:'preference', prefers:'preference',
+  temperature:'weather', forecast:'weather',
+  credentials:'key', token:'key',
+};
+
+function _extractKeywords(query) {
+  const words = query.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim().split(/\s+/);
+  const kw = [];
+  for (const w of words) {
+    if (!_STOP_WORDS.has(w) && w.length > 0) kw.push(_SYNONYMS[w] || w);
   }
-  return h >>> 0; // unsigned 32-bit
+  return kw;
 }
 
-function findCachedResult(queryVec) {
+function _normalizeQuery(query) {
+  const words = query.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim().split(/\s+/);
+  const norm = [];
+  for (const w of words) {
+    if (!_STOP_WORDS.has(w) && w.length > 0) norm.push(_SYNONYMS[w] || w);
+  }
+  if (norm.length <= 5) norm.sort();
+  return norm.join(' ');
+}
+
+function hashVec(vec) {
+  if (!vec || vec.length === 0) return 0;
+  let h = 0x811c9dc5;
+  const step = Math.max(1, Math.floor(vec.length / 32));
+  for (let i = 0; i < vec.length; i += step) {
+    const q = Math.round(vec[i] * 10000) & 0xFF;
+    h ^= q;
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+function _keywordJaccard(kwA, kwB) {
+  if (kwA.length === 0 || kwB.length === 0) return 0;
+  const setA = new Set(kwA), setB = new Set(kwB);
+  let inter = 0;
+  for (const item of setA) { if (setB.has(item)) inter++; }
+  return inter / (setA.size + setB.size - inter);
+}
+
+function findCachedResult(queryVec, rawQuery) {
   if (!queryVec || !isEmbeddingReady()) return null;
   const now = Date.now();
-  const qHash = hashVec(queryVec);
-  for (const [key, entry] of _queryCache) {
-    if (now - entry.timestamp > QUERY_CACHE_TTL_MS) { _queryCache.delete(key); continue; }
-    // Quick hash check first, then full cosine
-    if (hashVec(entry.queryVec) !== qHash) continue;
-    const sim = cosineSimilarity(queryVec, entry.queryVec);
-    if (sim > 0.95) {
-      _cacheHits++;
-      return { results: entry.results, similarity: sim };
+  const queryNorm = _normalizeQuery(rawQuery);
+  const queryKw = _extractKeywords(rawQuery);
+
+  // Tier 1: Exact normalized match — O(1) lookup
+  const normKey = _queryCacheNorm.get(queryNorm);
+  if (normKey) {
+    const entry = _queryCache.get(normKey);
+    if (entry && now - entry.timestamp <= QUERY_CACHE_TTL_MS) {
+      _cacheHits++; _cacheTier1Hits++;
+      return { results: entry.results, similarity: 1.0, tier: 1 };
+    }
+    if (entry) { // expired
+      _queryCache.delete(normKey);
+      _queryCacheNorm.delete(entry.queryNorm);
     }
   }
+
+  // Tier 2: High-confidence embedding match (cosine >= 0.92)
+  let bestMatch = null, bestSim = 0;
+  for (const [key, entry] of _queryCache) {
+    if (now - entry.timestamp > QUERY_CACHE_TTL_MS) {
+      _queryCache.delete(key);
+      _queryCacheNorm.delete(entry.queryNorm);
+      continue;
+    }
+    const embSim = cosineSimilarity(queryVec, entry.queryVec);
+    if (embSim >= QUERY_CACHE_TIER2_THRESHOLD && embSim > bestSim) {
+      // Keyword guard: reject if zero overlap (unrelated queries with high cosine)
+      const kwSim = _keywordJaccard(queryKw, entry.keywords);
+      if (kwSim > 0 || queryNorm === entry.queryNorm) {
+        bestSim = embSim;
+        bestMatch = entry;
+      }
+    }
+  }
+
+  if (bestMatch) {
+    _cacheHits++; _cacheTier2Hits++;
+    return { results: bestMatch.results, similarity: bestSim, tier: 2 };
+  }
+
   _cacheMisses++;
   return null;
 }
 
-function addToQueryCache(queryVec, results) {
+function addToQueryCache(queryVec, results, rawQuery) {
   if (!queryVec || results.length === 0) return;
-  // Evict oldest if at capacity
+  const queryNorm = _normalizeQuery(rawQuery);
+  const keywords = _extractKeywords(rawQuery);
+  const resultIds = results.slice(0, 10).map(r => r.id).filter(Boolean);
+  const resultEntities = new Set();
+  for (const r of results.slice(0, 5)) {
+    if (r.entity) resultEntities.add(`${r.entity}::${r.attribute || ''}`);
+  }
+
   if (_queryCache.size >= QUERY_CACHE_MAX) {
     const oldest = _queryCache.keys().next().value;
+    const oldEntry = _queryCache.get(oldest);
+    if (oldEntry) _queryCacheNorm.delete(oldEntry.queryNorm);
     _queryCache.delete(oldest);
   }
-  _queryCache.set(Date.now(), { queryVec: Array.from(queryVec), results, timestamp: Date.now() });
+
+  const key = Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  _queryCache.set(key, {
+    queryVec: Array.from(queryVec), queryNorm, keywords, results,
+    resultIds, timestamp: Date.now(),
+    resultEntities: [...resultEntities],
+  });
+  _queryCacheNorm.set(queryNorm, key);
 }
 
+// Selective invalidation: only clear entries whose results could be affected
+function invalidateQueryCacheForEntity(entity, attribute) {
+  if (!entity) { _queryCache.clear(); _queryCacheNorm.clear(); return; }
+  const key = `${entity}::${attribute || ''}`;
+  let removed = 0;
+  for (const [cacheKey, entry] of _queryCache) {
+    if (entry.resultEntities?.some(e => e.startsWith(`${entity}::`))) {
+      _queryCache.delete(cacheKey);
+      _queryCacheNorm.delete(entry.queryNorm);
+      removed++;
+    }
+  }
+  // Also remove any expired entries
+  const now = Date.now();
+  for (const [cacheKey, entry] of _queryCache) {
+    if (now - entry.timestamp > QUERY_CACHE_TTL_MS) {
+      _queryCache.delete(cacheKey);
+      _queryCacheNorm.delete(entry.queryNorm);
+      removed++;
+    }
+  }
+  if (removed > 0) LOG_DEBUG && console.log(`[Cache] Selective invalidation: removed ${removed} entries for ${key}`);
+}
+
+// Full invalidation — used only for purge/batch operations
 function invalidateQueryCache() {
   _queryCache.clear();
+  _queryCacheNorm.clear();
 }
 
 
@@ -407,7 +569,7 @@ app.get('/health', async (_req, res) => {
     vector_index: isVecReady(),
     advisor: ENABLE_ADVISOR,
       core_memory_blocks: getAllCoreBlocks().length,
-      query_cache: { size: _queryCache.size, hits: _cacheHits, misses: _cacheMisses, hit_rate: _cacheHits + _cacheMisses > 0 ? Math.round(_cacheHits / (_cacheHits + _cacheMisses) * 100) : 0 },
+      query_cache: { size: _queryCache.size, hits: _cacheHits, misses: _cacheMisses, tier1_hits: _cacheTier1Hits, tier2_hits: _cacheTier2Hits, hit_rate: _cacheHits + _cacheMisses > 0 ? Math.round(_cacheHits / (_cacheHits + _cacheMisses) * 100) : 0 },
     llm: llmOk,
     maintenance: ENABLE_MAINTENANCE,
     research: ENABLE_RESEARCH,
@@ -564,7 +726,7 @@ app.post('/memory/store', (req, res) => {
   // Queue background embedding
   const enqueued = enqueueEmbedding(id, trimmed, contextPrefix);
 
-  invalidateQueryCache();
+    invalidateQueryCacheForEntity(entity, attribute);
   res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -606,7 +768,7 @@ app.post('/memory/store-batch', (req, res) => {
   }
 
   res.json({ ok: true, ids, embedding: embedDropped ? 'partial' : 'queued', dropped: embedDropped || undefined });
-  invalidateQueryCache();
+    for (const item of items) { if (item.entity) invalidateQueryCacheForEntity(item.entity, item.attribute); }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -655,10 +817,10 @@ app.get("/memory/search", async (req, res) => {
           if (queryVecs.length === 1) queryVecForCache = qVec;
 
       // C-3: Skip cache for multi-query — cached single-query results would discard expansion
-      const cached = queryVecs.length === 1 && findCachedResult(qVec);
+      const cached = queryVecs.length === 1 && findCachedResult(qVec, q.trim());
       if (cached) {
-        searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
-        searchMethod = "cache+" + (cached.similarity).toFixed(3);
+        searchResults = cached.results.slice(0, limitNum);
+        searchMethod = "cache_t" + cached.tier + "+" + (cached.similarity).toFixed(3);
             // Cached results are final — skip live search
   try {
     const ids = searchResults.map(r => r.id).filter(Boolean);
@@ -719,16 +881,60 @@ app.get("/memory/search", async (req, res) => {
 
     // Store in semantic cache if we got results from embedding search
     if (queryVecForCache && searchResults.length > 0 && !searchMethod.startsWith("cache")) {
-      addToQueryCache(queryVecForCache, searchResults);
+      addToQueryCache(queryVecForCache, searchResults, q.trim());
     }
 
-    // Track recall counts for returned results
-    try {
-      const ids = searchResults.map(r => r.id).filter(Boolean);
-      if (ids.length) incrementRecallCounts(ids);
-    } catch {}
 
-    res.json({ ok: true, method: searchMethod, queries: queries.length > 1 ? queries : undefined, results: searchResults });
+// Track recall counts for returned results
+try {
+  const ids = searchResults.map(r => r.id).filter(Boolean);
+  if (ids.length) incrementRecallCounts(ids);
+} catch {}
+
+// ── Associative retrieval: surface related memories via entity index ──
+// Post-retrieval enrichment: for top-3 results with entity data,
+// look up other active memories sharing the same entity.
+// Lightweight — uses existing SQLite index, no graph DB needed.
+let associativeResults = [];
+try {
+  const topEntities = new Map();
+  for (const r of searchResults.slice(0, 3)) {
+    if (r.entity) topEntities.set(`${r.entity}::${r.attribute || ''}`, r.entity);
+  }
+  if (topEntities.size > 0) {
+    const mainIds = new Set(searchResults.map(r => r.id));
+    for (const [key, entity] of topEntities) {
+      const related = getMemoriesByEntityAttr(entity, key.split('::')[1] || '');
+      for (const rm of related) {
+        if (rm.status === 'active' && !mainIds.has(rm.id) && !associativeResults.some(a => a.id === rm.id)) {
+          associativeResults.push({ ...rm, _associative: true, _via_entity: entity });
+        }
+      }
+    }
+    associativeResults = associativeResults.slice(0, 10);
+		// Re-rank against original query to prevent topic drift
+		if (associativeResults.length > 0 && queryVecForCache) {
+			associativeResults = associativeResults
+				.map(r => {
+					const sim = r.embedding ? cosineSimilarity(queryVecForCache, r.embedding) : 1;
+					return { ...r, _assoc_sim: sim };
+				})
+				.filter(r => r._assoc_sim >= 0.75)
+				.sort((a, b) => b._assoc_sim - a._assoc_sim)
+				.slice(0, 5);
+		}
+  }
+} catch (err) {
+  LOG_DEBUG && console.error('[Associative] Entity lookup error:', err.message);
+}
+
+res.json({
+  ok: true,
+  method: searchMethod,
+  queries: queries.length > 1 ? queries : undefined,
+  results: searchResults,
+  related: associativeResults.length > 0 ? associativeResults : undefined,
+});
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1276,7 +1482,7 @@ app.post('/memory/sync', async (req, res) => {
 
     const ids = memories.length > 0 ? storeMemories(memories) : [];
  res.json({ ok: true, stored: ids.length, ids });
-    invalidateQueryCache();
+    for (const m of memories) { if (m.entity) invalidateQueryCacheForEntity(m.entity, m.attribute); }
 
  // Trigger background research pipeline (non-blocking, async)
  if (ENABLE_ADVISOR && user_message?.trim()) {
@@ -1444,7 +1650,7 @@ app.post('/memory/extract', async (req, res) => {
 app.post('/memory/dedup', async (req, res) => {
   try {
     const { threshold, auto_mark } = req.body;
-    const DUP_THRESHOLD = parseFloat(threshold || process.env.DUP_THRESHOLD || '0.92');
+    const DUP_THRESHOLD = parseFloat(threshold || process.env.DUP_THRESHOLD || '0.90');
     const memories = getActiveWithEmbedding();
     const withEmbedding = memories.filter(m => m.embedding);
     if (withEmbedding.length < 2) return res.json({ ok: true, duplicates: [], count: 0, marked_invalid: 0 });
