@@ -37,9 +37,10 @@ export async function runMaintenance() {
     // 1. Deduplication
     // For small sets (<500): brute-force O(n²) pairwise cosine
     // For large sets (>=500): KNN-based — find nearest neighbors per memory via index
+const withEmbedding = memories.filter(m => m.embedding);
+const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.90');
+const alreadySuperseded = new Set(); // shared between dedup and near-dup merge
     try {
-      const withEmbedding = memories.filter(m => m.embedding);
-      const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.90');
       let dupes = [];
 
       if (withEmbedding.length < 500 || !vectorKnnSearch) {
@@ -64,7 +65,6 @@ export async function runMaintenance() {
         }
       }
 
-      const alreadySuperseded = new Set(); // S-#28
     for (const d of dupes) {
         const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
         if (alreadySuperseded.has(older.id)) continue;
@@ -102,7 +102,7 @@ try {
       for (let j = i + 1; j < mems.length; j++) {
         if (alreadySuperseded.has(mems[i].id) || alreadySuperseded.has(mems[j].id)) continue;
         const sim = cosineSimilarity(mems[i].embedding, mems[j].embedding);
-        if (sim >= MERGE_THRESHOLD_LOW && sim < DUP_THRESHOLD) {
+        if (sim >= MERGE_THRESHOLD_LOW && sim < Math.max(MERGE_THRESHOLD_LOW, DUP_THRESHOLD)) {
           toMerge.add(mems[i].id);
           toMerge.add(mems[j].id);
         }
@@ -115,7 +115,7 @@ try {
 
     const mergedText = mergeMems.map(m => m.text).join(' | ');
     const bestType = mergeMems.find(m => m.type !== 'fact')?.type || 'fact';
-    const newImportance = Math.min(1.0, Math.max(...mergeMems.map(m => m.importance)) + 0.1);
+    const newImportance = Math.min(1.0, Math.max(...mergeMems.map(m => m.importance || 0)) + 0.1);
     const mergeIds = mergeMems.map(m => m.id);
 
     let embedding = null;

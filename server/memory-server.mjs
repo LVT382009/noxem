@@ -429,7 +429,7 @@ function invalidateQueryCacheForEntity(entity, attribute) {
   const key = `${entity}::${attribute || ''}`;
   let removed = 0;
   for (const [cacheKey, entry] of _queryCache) {
-    if (entry.resultEntities?.some(e => e === key || e.startsWith(`${entity}::`))) {
+    if (entry.resultEntities?.some(e => e.startsWith(`${entity}::`))) {
       _queryCache.delete(cacheKey);
       _queryCacheNorm.delete(entry.queryNorm);
       removed++;
@@ -819,7 +819,7 @@ app.get("/memory/search", async (req, res) => {
       // C-3: Skip cache for multi-query — cached single-query results would discard expansion
       const cached = queryVecs.length === 1 && findCachedResult(qVec, q.trim());
       if (cached) {
-        searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
+        searchResults = cached.results.slice(0, limitNum);
         searchMethod = "cache_t" + cached.tier + "+" + (cached.similarity).toFixed(3);
             // Cached results are final — skip live search
   try {
