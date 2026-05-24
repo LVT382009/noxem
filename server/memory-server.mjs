@@ -569,7 +569,7 @@ app.get('/health', async (_req, res) => {
     vector_index: isVecReady(),
     advisor: ENABLE_ADVISOR,
       core_memory_blocks: getAllCoreBlocks().length,
-      query_cache: { size: _queryCache.size, hits: _cacheHits, misses: _cacheMisses, tier1_hits: _cacheTier1Hits, tier2_hits: _cacheTier2Hits, hit_rate: _cacheHits + _cacheMisses > 0 ? Math.round(_cacheHits / (_cacheHits + _cacheMisses) * 100) : 0 },
+      query_cache: { size: _queryCache.size, max: QUERY_CACHE_MAX, ttl_ms: QUERY_CACHE_TTL_MS, hits: _cacheHits, misses: _cacheMisses, tier1_hits: _cacheTier1Hits, tier2_hits: _cacheTier2Hits, hit_rate: _cacheHits + _cacheMisses > 0 ? Math.round(_cacheHits / (_cacheHits + _cacheMisses) * 100) : 0 },
     llm: llmOk,
     maintenance: ENABLE_MAINTENANCE,
     research: ENABLE_RESEARCH,
@@ -1650,7 +1650,7 @@ app.post('/memory/extract', async (req, res) => {
 app.post('/memory/dedup', async (req, res) => {
   try {
     const { threshold, auto_mark } = req.body;
-    const DUP_THRESHOLD = parseFloat(threshold || process.env.DUP_THRESHOLD || '0.90');
+    const DUP_THRESHOLD = parseFloat(threshold || process.env.DUP_THRESHOLD || '0.92');
     const memories = getActiveWithEmbedding();
     const withEmbedding = memories.filter(m => m.embedding);
     if (withEmbedding.length < 2) return res.json({ ok: true, duplicates: [], count: 0, marked_invalid: 0 });
@@ -1686,7 +1686,7 @@ app.post('/memory/dedup', async (req, res) => {
       }
     }
 
-    res.json({ ok: true, duplicates: dupes, count: dupes.length, marked_invalid: marked });
+    res.json({ ok: true, duplicates: dupes, count: dupes.length, threshold: DUP_THRESHOLD, marked_invalid: marked });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
