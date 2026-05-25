@@ -1,28 +1,62 @@
-  name: Mizumi Review
-  on:
-    pull_request:
-      types: [opened, synchronize, ready_for_review]
-    issue_comment:
-      types: [created]
+name: Mizumi Review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
 
-  jobs:
-    review:
-      if: >
-        github.event_name == 'pull_request' ||
-        (github.event_name == 'issue_comment' &&
-        startsWith(github.event.comment.body, '/mizumi'))
-      runs-on: ubuntu-latest
-      permissions:
-        pull-requests: write
-        contents: write
-        issues: write
-      steps:
-        - uses: actions/checkout@v5
-          with:
-            persist-credentials: false
-        - uses: LVT382009/mizumi@v0.1
-          with:
-            nvidia_api_key: ${{ secrets.NVIDIA_NIM_API_KEY }}
-            provider: nvidia
-            model: meta/llama-3.3-70b-instruct
-            profile: chill
+jobs:
+  review:
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       startsWith(github.event.comment.body, '/mizumi'))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v5          # ⚠️ v5 doesn't exist — use v4
+        with:
+          persist-credentials: false
+      - uses: LVT382009/mizumi@v0.1
+        with:
+          # --- Provider ---
+          nvidia_api_key: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          provider: nvidia
+          model: meta/llama-3.3-70b-instruct
+
+          # --- Review behavior ---
+          profile: chill                   # or: assertive | followup
+          max_comments: 15
+          confidence_threshold: 80
+          language: en-US
+
+          # --- Two-pass & calibration ---
+          self_critique: true
+          confidence_calibration: true
+
+          # --- Cost control ---
+          tier_routing: true
+          small_diff_threshold: 50
+
+          # --- Auto-review limits ---
+          auto_review: true
+          auto_pause_after: 5
+
+          # --- Analysis features ---
+          rule_engine: true
+          ast_contract_analysis: true
+          compliance_check: true
+          change_stack: true
+
+          # --- Auto-fix (off by default, enable explicitly) ---
+          auto_fix: true
+          improve_enabled: true
+
+          # --- CI-validated fix loop (requires improve_enabled: true) ---
+          ci_validated_fix: true
+          ci_fix_timeout: 600
+          ci_fix_max_retries: 3
+          ci_fix_revert_on_failure: true
