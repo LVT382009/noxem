@@ -56,17 +56,31 @@ function fetchUrl(url, timeout = 10000, maxRedirects = 5, originalUrl = null) {
   });
 }
 
-/** Decode a DDG redirect URL like //duckduckgo.com/l/?uddg=<encoded>&rut=... */
-function decodeDdgRedirect(url) {
-  if (url.includes('uddg=')) {
+/**
+ * Decode a DDG redirect URL like //duckduckgo.com/l/?uddg=<encoded>&rut=...
+ * M-2: Reject javascript:, data:, vbscript: URIs that could be crafted in DDG redirect params.
+ */
+function decodeDdgRedirect(raw) {
+  if (!raw) return null;
+  let decoded;
+  if (raw.includes('uddg=')) {
     try {
-      const decoded = decodeURIComponent(url.split('uddg=')[1]?.split('&')[0] || url);
-      if (decoded.startsWith('http')) return decoded;
-    } catch { /* keep original */ }
+      decoded = decodeURIComponent(raw.split('uddg=')[1]?.split('&')[0] || raw);
+    } catch { return null; }
+  } else {
+    // Prepend https: if protocol-relative
+    if (raw.startsWith('//')) raw = 'https:' + raw;
+    decoded = raw;
   }
-  // Prepend https: if protocol-relative
-  if (url.startsWith('//')) return 'https:' + url;
-  return url;
+  if (!decoded) return null;
+  // M-2: Reject javascript:, data:, vbscript:, blob: URIs
+  if (/^\s*(javascript|data|vbscript|blob):/i.test(decoded)) return null;
+  try {
+    const u = new URL(decoded);
+    // Only allow http/https — no file:, gopher:, etc.
+    if (!['http:', 'https:'].includes(u.protocol)) return null;
+    return u.toString();
+  } catch { return null; }
 }
 
 // S-#41: Basic HTML entity decoder

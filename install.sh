@@ -169,8 +169,18 @@ echo "[6/7] Deploying server to persistent location..."
 rm -rf "$HERMES_SERVER_DIR"
 mkdir -p "$HERMES_SERVER_DIR"
 # Copy full repo structure (server, plugins, hooks, launcher, scripts)
-rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' "$APP_DIR/" "$HERMES_SERVER_DIR/" 2>/dev/null || \
-  cp -r "$APP_DIR/"* "$HERMES_SERVER_DIR/" 2>/dev/null || true
+rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' "$APP_DIR/" "$HERMES_SERVER_DIR/" 2>/dev/null || {
+  RSYNC_STATUS=$?
+  echo "  WARNING: rsync failed (exit $RSYNC_STATUS) — falling back to cp"
+  cp -r "$APP_DIR/"* "$HERMES_SERVER_DIR/" 2>/dev/null || {
+    echo "  ERROR: Both rsync and cp failed. Installation incomplete."
+    echo "  Manual steps:"
+    echo "    1. mkdir -p $HERMES_SERVER_DIR"
+    echo "    2. cp -r $APP_DIR/* $HERMES_SERVER_DIR/"
+    echo "    3. cd $HERMES_SERVER_DIR/server && npm install"
+    exit 1
+  }
+}
 # Fix CRLF line endings (Windows git checkout can introduce carriage returns)
 find "$HERMES_SERVER_DIR" -type f \( -name "*.sh" -o -name "*.mjs" -o -name "*.js" \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
 chmod +x "$HERMES_SERVER_DIR/noxem-launcher.sh" 2>/dev/null || true
