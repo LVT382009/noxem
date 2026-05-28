@@ -178,8 +178,8 @@ export async function searchDuckDuckGo(query, maxResults = 5) {
     }
     if (current) results.push(current);
 
-    // Filter out DDG ad URLs (duckduckgo.com/y.js ad redirects)
-    const filtered = results.filter(r => !r.url.includes('duckduckgo.com/y.js'));
+    // Filter out DDG ad URLs (duckduckgo.com/y.js ad redirects) and null URLs
+    const filtered = results.filter(r => r.url && !r.url.includes('duckduckgo.com/y.js'));
 
     return filtered.slice(0, maxResults).map(r => ({
       title: r.title,

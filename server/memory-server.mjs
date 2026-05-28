@@ -31,7 +31,7 @@ if (CORS_ORIGIN === '*') {
 app.use(cors({
   origin: CORS_ORIGIN || false,   // false = same-origin only; set CORS_ORIGIN=https://example.com for cross-origin
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-memory-auth'],
   maxAge: 86400,
 }));
 app.use(express.json({ limit: '10mb' }));

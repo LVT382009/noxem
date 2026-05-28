@@ -27,7 +27,7 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 // QwenProxy mode proxies user messages externally; the upstream must be localhost.
 const QWENPROXY_URL_RAW = process.env.QWENPROXY_URL || 'http://127.0.0.1:3000';
 let QWENPROXY_URL = QWENPROXY_URL_RAW;
-{
+if (BRAIN2_PROVIDER === 'qwenproxy') {
   try {
     const parsed = new URL(QWENPROXY_URL_RAW);
     if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost' && parsed.hostname !== '::1' && parsed.hostname !== '::') {
@@ -115,6 +115,38 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
 
   return { content, reasoning, model, finishReason, usage };
   } // end retry loop
+}
+
+// Parse SSE from an already-fetched Response object (avoids double-POST).
+async function collectSSEResponse(res) {
+  let content = '';
+  let reasoning = '';
+  let model = DEFAULT_MODEL;
+  let finishReason = 'stop';
+  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+  const text = await res.text();
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed === 'data: [DONE]') continue;
+    if (!trimmed.startsWith('data: ')) continue;
+
+    try {
+      const chunk = JSON.parse(trimmed.slice(6));
+      const delta = chunk.choices?.[0]?.delta;
+      if (delta) {
+        if (delta.content) content += delta.content;
+        if (delta.reasoning_content) reasoning += delta.reasoning_content;
+        if (delta.thinking) reasoning += delta.thinking;
+      }
+      if (chunk.model) model = chunk.model;
+      if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+      if (chunk.usage) usage = chunk.usage;
+    } catch { /* skip malformed lines */ }
+  }
+
+  if (!content && reasoning) content = reasoning;
+  return { content, reasoning, model, finishReason, usage };
 }
 
 // ── SSE streaming passthrough ─────────────────────────────────
@@ -272,14 +304,19 @@ const server = createServer(async (req, res) => {
       return res.end(JSON.stringify({ error: { message: 'Invalid JSON', type: 'invalid_request_error' } }));
     }
 
-    // H-1: Validate message structure — block images, audio, tool calls, etc.
+    // H-1: Validate message structure — extract text from multipart content, reject non-text modalities.
     if (reqObj.messages) {
       for (const msg of reqObj.messages) {
         if (msg.content != null && typeof msg.content !== 'string') {
-          // Array content (multi-modal) is not supported — strip to text only
+          // Array content (multi-modal) — extract text parts, ignore images/audio/etc.
           if (Array.isArray(msg.content)) {
             msg.content = msg.content
-              .filter(part => typeof part === 'string')
+              .map(part => {
+                if (typeof part === 'string') return part;
+                if (part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') return part.text;
+                return null;
+              })
+              .filter(part => part !== null)
               .join('\n');
           }
           if (typeof msg.content !== 'string') {
@@ -352,7 +389,8 @@ const server = createServer(async (req, res) => {
             const text = await upstreamRes.text().catch(() => '');
             throw new Error(`QwenProxy returned non-SSE response (${ct}) — check QWENPROXY_URL is pointing to a QwenProxy SSE endpoint`);
           }
-          const result = await collectSSE(upstreamUrl, proxyBody, timeoutMs);
+          // Parse the already-fetched response instead of issuing a second POST
+          const result = await collectSSEResponse(upstreamRes);
           const response = {
             id: `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             object: 'chat.completion',
