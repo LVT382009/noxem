@@ -383,11 +383,14 @@ const server = createServer(async (req, res) => {
             signal: AbortSignal.timeout(timeoutMs),
             redirect: 'follow',
           });
+          if (!upstreamRes.ok) {
+            const errText = await upstreamRes.text().catch(() => '');
+            throw new Error(`QwenProxy returned ${upstreamRes.status} ${upstreamRes.statusText}: ${errText.substring(0, 500)}`);
+          }
           const ct = upstreamRes.headers.get('content-type') || '';
           if (!ct.includes('text/event-stream') && !ct.includes('stream')) {
-            // Buffers a non-SSE response — reject to prevent the SSE parser from consuming garbage
             const text = await upstreamRes.text().catch(() => '');
-            throw new Error(`QwenProxy returned non-SSE response (${ct}) — check QWENPROXY_URL is pointing to a QwenProxy SSE endpoint`);
+            throw new Error(`QwenProxy returned non-SSE response (${ct}): ${text.substring(0, 300)}`);
           }
           // Parse the already-fetched response instead of issuing a second POST
           const result = await collectSSEResponse(upstreamRes);
