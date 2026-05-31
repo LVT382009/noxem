@@ -1,3 +1,4 @@
+import { resolveCoreference } from './coreference-resolver.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 // Prefer IPv4 for HuggingFace CDN downloads — WSL IPv6 can cause ConnectTimeoutError
 if (!process.env.NODE_OPTIONS?.includes('ipv4first')) {
@@ -324,11 +325,12 @@ function cosineSimilarity(a, b) {
   return denom < 1e-10 ? 0 : dot / denom;
 }
 
-export async function embed(text, role = 'document') {
+export async function embed(text, role = 'document', sessionMemories = null) {
   if (!modelReady) throw new Error('Embedding engine not initialized');
   return withLock(async () => {
     const prefix = role === 'query' ? PREFIXES.query : PREFIXES.document;
-    const inputs = await tokenizer(prefix + text, { padding: true });
+    const resolvedText = sessionMemories ? resolveCoreference(text, sessionMemories) : text;
+	const inputs = await tokenizer(prefix + resolvedText, { padding: true });
     const { sentence_embedding } = await model(inputs);
     const arr = Array.from(sentence_embedding.data);
     const result = normalize(arr.slice(0, EMBED_DIM));
@@ -357,24 +359,26 @@ export async function embedBatch(texts, role = 'document') {
 }
 
 // Search by embedding: compare query embedding against all stored embeddings
-export function searchByEmbedding(queryEmbedding, storedMemories, topK = 5) {
-  const scored = storedMemories
-    .filter(m => m.embedding)
-    .map(m => ({
-      id: m.id,
-      text: m.text,
-      type: m.type,
-      session_id: m.session_id,
-      created_at: m.created_at,
-      importance: m.importance,
-      recall_count: m.recall_count,
-      score: cosineSimilarity(queryEmbedding, m.embedding),
-    }))
-    .filter(m => m.score > 0.3)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+export function searchByEmbedding(queryEmbedding, storedMemories, topK = 5, intent = 'mixed') {
+ const COSINE_BY_INTENT = { identifier: 0.5, exact: 0.4, mixed: 0.3, conceptual: 0.2 };
+ const threshold = COSINE_BY_INTENT[intent] || 0.3;
+ const scored = storedMemories
+ .filter(m => m.embedding)
+ .map(m => ({
+ id: m.id,
+ text: m.text,
+ type: m.type,
+ session_id: m.session_id,
+ created_at: m.created_at,
+ importance: m.importance,
+ recall_count: m.recall_count,
+ score: cosineSimilarity(queryEmbedding, m.embedding),
+ }))
+ .filter(m => m.score > threshold)
+ .sort((a, b) => b.score - a.score)
+ .slice(0, topK);
 
-  return scored;
+ return scored;
 }
 
 // Find duplicates: memories with similarity > threshold

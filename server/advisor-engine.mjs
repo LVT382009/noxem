@@ -2,16 +2,19 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 /**
  * Advisor Engine — Brain 2 advisor for drift detection + context recovery.
  *
+ * v2: RLM bridge integration — decomposes tasks into sub-calls for
+ * deeper analysis with full memory corpus visibility.
+ * Falls back to single-shot LLM calls when RLM is unavailable.
+ *
  * DDG web search has been moved to research-engine.mjs.
  * This module focuses on:
  * - Pre-compression context preservation
  * - Task drift detection
  * - Session-end memory extraction
  * - Advice and guidance
- *
- * If research memories exist for the session, they are available
- * via memory_search — the advisor doesn't need to do web searches itself.
  */
+
+import { callRLMWithFallback, getRLMStatus, shutdownRLM } from './rlm-bridge.mjs';
 
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
@@ -32,10 +35,95 @@ function callLLM(messages, maxTokens = 1024, temperature = 0.3) {
 }
 
 // Pre-compression advisor: analyze conversation before compaction
-// Qwen3 reviews the conversation and extracts what must survive
-export async function analyzeBeforeCompress(conversationHistory, sessionMemories) {
+export async function analyzeBeforeCompress(conversationHistory, sessionMemories, { structured = false } = {}) {
   if (!ADVISOR_ENABLED) return fallbackCompressAnalysis(conversationHistory, sessionMemories);
 
+  const { data, source, metadata } = await callRLMWithFallback({
+    task: 'pre_compress_analysis',
+    context: { conversationHistory, sessionMemories },
+    fallbackFn: () => _singleShotCompress(conversationHistory, sessionMemories),
+    timeout: 45_000,
+  });
+
+  LOG_DEBUG && console.log(`[Advisor] analyzeBeforeCompress: source=${source}, calls=${metadata.calls}`);
+
+  // If RLM returned structured data, format it
+  if (source === 'rlm' && typeof data === 'object' && !Array.isArray(data)) {
+    if (structured) return data; // Return raw structured object
+    const lines = [];
+    if (data.critical_context?.length) lines.push(`CRITICAL_CONTEXT:\n${data.critical_context.map(c => `- ${c}`).join('\n')}`);
+    if (data.task_drift_warnings?.length) lines.push(`TASK_DRIFT_WARNINGS:\n${data.task_drift_warnings.map(w => `- ${w}`).join('\n')}`);
+    if (data.key_facts?.length) lines.push(`KEY_FACTS:\n${data.key_facts.map(f => `- ${typeof f === 'string' ? f : f.text || JSON.stringify(f)}`).join('\n')}`);
+    if (data.advice) lines.push(`ADVICE: ${data.advice}`);
+    return lines.length > 0 ? lines.join('\n\n') : 'CRITICAL_CONTEXT: No critical context detected.\nADVICE: Proceed normally.';
+  }
+
+  // Fallback: data is the raw text string from single-shot
+  if (structured) {
+    // Parse text into structured format
+    return { critical_context: [], task_drift_warnings: [], key_facts: [], advice: typeof data === 'string' ? data : '' };
+  }
+  return data;
+}
+
+// Proactive advisor: called when advice is explicitly requested
+export async function getAdvice({ userMessage, conversationHistory, activeMemories, currentTaskContext, structured = false }) {
+  if (!ADVISOR_ENABLED) return fallbackAdvice();
+
+  const { data, source, metadata } = await callRLMWithFallback({
+    task: 'advice',
+    context: { userMessage, conversationHistory, activeMemories, currentTaskContext },
+    fallbackFn: () => _singleShotAdvice({ userMessage, conversationHistory, activeMemories, currentTaskContext }),
+    timeout: 30_000,
+  });
+
+  LOG_DEBUG && console.log(`[Advisor] getAdvice: source=${source}, calls=${metadata.calls}`);
+
+  // If RLM returned structured data, format it
+  if (source === 'rlm' && typeof data === 'object' && !Array.isArray(data)) {
+    if (structured) return data; // Return raw structured object
+    if (!data.drift_detected && data.advice_text === 'All good — no issues detected.') {
+      return data.advice_text;
+    }
+    const parts = [];
+    if (data.drift_detected) parts.push(`DRIFT DETECTED (${data.severity || 'medium'}): ${data.drift_details?.join('; ') || 'See warnings above'}`);
+    if (data.relevant_memories?.length) parts.push(`Relevant memories: ${data.relevant_memories.join('; ')}`);
+    if (data.advice_text) parts.push(data.advice_text);
+    return parts.length > 0 ? parts.join('\n\n') : 'All good — no issues detected.';
+  }
+
+  // Fallback: data is raw text from single-shot
+  if (structured) {
+    return { drift_detected: false, drift_details: [], relevant_memories: [], advice_text: typeof data === 'string' ? data : '', severity: 'none' };
+  }
+  return data;
+}
+
+// Session end analysis: extract final memories, summarize
+export async function analyzeSessionEnd(conversationHistory, allSessionMemories) {
+  if (!ADVISOR_ENABLED) return [];
+
+  const { data, source, metadata } = await callRLMWithFallback({
+    task: 'session_end_analysis',
+    context: { conversationHistory, allSessionMemories },
+    fallbackFn: () => _singleShotSessionEnd(conversationHistory),
+    timeout: 45_000,
+  });
+
+  LOG_DEBUG && console.log(`[Advisor] analyzeSessionEnd: source=${source}, calls=${metadata.calls}`);
+
+  // If RLM returned structured data
+  if (source === 'rlm' && typeof data === 'object' && data.memories) {
+    return data.memories.filter(m => m.text && m.type);
+  }
+
+  // Fallback: data is the raw array from single-shot
+  return data;
+}
+
+// ── Single-shot LLM calls (kept as fallbacks) ──────────────
+
+async function _singleShotCompress(conversationHistory, sessionMemories) {
   const recentTurns = (conversationHistory || []).slice(-10);
   const convoText = recentTurns.map(t =>
     `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 1000)}`
@@ -81,11 +169,7 @@ Stay factual and concise. Only flag real issues, not hypothetical ones.`,
   }
 }
 
-// Proactive advisor: called when advice is explicitly requested
-// Checks task context, warns about drift, provides guidance
-export async function getAdvice({ userMessage, conversationHistory, activeMemories, currentTaskContext }) {
-  if (!ADVISOR_ENABLED) return fallbackAdvice();
-
+async function _singleShotAdvice({ userMessage, conversationHistory, activeMemories, currentTaskContext }) {
   const taskSummary = currentTaskContext
     ? `Current task: ${currentTaskContext.substring(0, 500)}`
     : '';
@@ -127,41 +211,89 @@ Respond concisely. If everything looks fine, say "All good — no issues detecte
   }
 }
 
-// Session end analysis: extract final memories, summarize
-export async function analyzeSessionEnd(conversationHistory, allSessionMemories) {
-  if (!ADVISOR_ENABLED) return [];
+async function _singleShotSessionEnd(conversationHistory) {
+  // v2: Process entire session history in chunks, then merge
+  const fullHistory = conversationHistory || [];
+  const CHUNK_SIZE = 10;
+  const allMemories = [];
 
-  const convoText = (conversationHistory || []).slice(-20).map(t =>
-    `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 300)}`
-  ).join('\n\n');
+  // Fallback for short sessions: process in one call
+  if (fullHistory.length <= 20) {
+    const convoText = fullHistory.map(t =>
+      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 300)}`
+    ).join('\n\n');
 
-  const messages = [
-    {
-      role: 'system',
-      content: `Extract factual memories from this conversation. Return ONLY a JSON array. Each memory: {"text": "...", "type": "fact|preference|project|goal|pattern|entity|event|issue|setup|learning|profile"}
+    const messages = [
+      {
+        role: 'system',
+        content: `Extract factual memories from this conversation. Return ONLY a JSON array. Each memory: {"text": "...", "type": "fact|preference|project|goal|pattern|entity|event|issue|setup|learning|profile"}
 
 Rules:
 - Extract only non-obvious, durable facts
 - Omit greetings, small talk, trivial confirmations
 - Include user preferences, project details, technical setup, goals
 - Include patterns (how user works) and entities (tools, people, services mentioned)`,
-    },
-    { role: 'user', content: `Conversation:\n${convoText}\n\nExtract memories:` },
-  ];
+      },
+      { role: 'user', content: `Conversation:\n${convoText}\n\nExtract memories:` },
+    ];
 
-  try {
-    const res = await callLLM(messages, 1024, 0.1);
-    const data = await res.json();
-    const content = data?.choices?.[0]?.message?.content || '';
-    if (!content || content.startsWith('[LLM un')) return [];
-        const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return [];
-    const memories = JSON.parse(jsonMatch[0]);
-    return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];
-  } catch (err) {
-    LOG_DEBUG && console.error('Session end analysis error:', err.message);
-    return [];
+    try {
+      const res = await callLLM(messages, 1024, 0.1);
+      const data = await res.json();
+      const content = data?.choices?.[0]?.message?.content || '';
+      if (!content || content.startsWith('[LLM un')) return [];
+      const jsonMatch = content.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) return [];
+      const memories = JSON.parse(jsonMatch[0]);
+      return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];
+    } catch (err) {
+      LOG_DEBUG && console.error('Session end analysis error:', err.message);
+      return [];
+    }
   }
+
+  // Long sessions: chunk and extract per segment, then dedup
+  const chunks = [];
+  for (let i = 0; i < fullHistory.length; i += CHUNK_SIZE) {
+    chunks.push(fullHistory.slice(i, i + CHUNK_SIZE));
+  }
+
+  for (const chunk of chunks.slice(0, 6)) {
+    const chunkText = chunk.map(t =>
+      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 300)}`
+    ).join('\n\n');
+
+    const messages = [
+      {
+        role: 'system',
+        content: `Extract factual memories from this conversation chunk. Return ONLY a JSON array: [{"text": "...", "type": "fact|preference|project|goal|pattern|entity|event|issue|setup|learning|profile"}]
+Rules: Extract only non-obvious, durable facts. Omit greetings, small talk.`,
+      },
+      { role: 'user', content: `Chunk:\n${chunkText}\n\nExtract memories:` },
+    ];
+
+    try {
+      const res = await callLLM(messages, 512, 0.1);
+      const data = await res.json();
+      const content = data?.choices?.[0]?.message?.content || '';
+      if (!content) continue;
+      const jsonMatch = content.match(/\[[\s\S]*?\]/);
+      if (!jsonMatch) continue;
+      const chunkMems = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(chunkMems)) allMemories.push(...chunkMems.filter(m => m.text && m.type));
+    } catch (err) {
+      LOG_DEBUG && console.error('Chunk extraction error:', err.message);
+    }
+  }
+
+  // Simple dedup by text prefix
+  const seen = new Set();
+  return allMemories.filter(m => {
+    const key = m.text.toLowerCase().substring(0, 60);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // Fallback: rule-based analysis when LLM is unavailable
@@ -196,3 +328,5 @@ function fallbackCompressAnalysis(conversationHistory, sessionMemories) {
 function fallbackAdvice() {
   return 'All good — no issues detected.';
 }
+
+export { getRLMStatus, shutdownRLM };

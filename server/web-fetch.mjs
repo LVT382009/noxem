@@ -2,11 +2,47 @@
  * Web Fetch Module — fetch URLs and extract readable text content.
  * Zero external dependencies: uses Node.js built-in fetch (Node 18+).
  * Used by research-engine.mjs to read pages found by DDG search.
+ *
+ * v2: servo-fetch adapter — tries servo-fetch sidecar first, falls back to regex.
  */
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MiB — abort if response exceeds this
 const MAX_TEXT_LENGTH = 2000; // Truncate extracted text to this many chars
+const SERVO_FETCH_URL = process.env.SERVO_FETCH_URL || 'http://127.0.0.1:3002';
+const SERVO_FETCH_TIMEOUT_MS = 8_000;
+
+// v2: SSRF protection — private IP ranges
+const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?fc00:/i];
+
+export function isPrivateUrl(urlStr) {
+  try {
+    const parsed = new URL(urlStr);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return true;
+    const hostname = parsed.hostname || '';
+    const ipv4mapped = hostname.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+    const checkHost = ipv4mapped ? ipv4mapped[1] : hostname.replace(/[\[\]]/g, '');
+    return PRIVATE_IP_RANGES.some(r => r.test(checkHost));
+  } catch { return true; }
+}
+
+// v2: servo-fetch liveness check
+let servoFetchAlive = false;
+let servoFetchCheckedAt = 0;
+const SERVO_FETCH_CHECK_INTERVAL_MS = 30_000;
+
+export async function checkServoFetchLiveness() {
+  const now = Date.now();
+  if (now - servoFetchCheckedAt < SERVO_FETCH_CHECK_INTERVAL_MS) return servoFetchAlive;
+  servoFetchCheckedAt = now;
+  try {
+    const res = await fetch(`${SERVO_FETCH_URL}/health`, { signal: AbortSignal.timeout(2000) });
+    servoFetchAlive = res.ok;
+  } catch {
+    servoFetchAlive = false;
+  }
+  return servoFetchAlive;
+}
 
 // Skip these URL extensions (non-HTML content)
 const SKIP_EXTENSIONS = /\.(pdf|png|jpg|jpeg|gif|svg|webp|ico|zip|tar|gz|bz2|7z|exe|dmg|mp3|mp4|avi|mov|wav|ogg|flac|doc|docx|xls|xlsx|ppt|pptx|apk|iso|bin|dat)$/i;
@@ -41,6 +77,33 @@ export function isFetchableUrl(url) {
 }
 
 /**
+ * Try servo-fetch sidecar first, fall back to regex extraction.
+ * servo-fetch returns { markdown, title, byline, lang }.
+ * We map: markdown → text, title → title.
+ */
+async function fetchViaServoFetch(url, { timeout = SERVO_FETCH_TIMEOUT_MS } = {}) {
+  try {
+    const res = await fetch(`${SERVO_FETCH_URL}/v1/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(timeout),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.markdown) return null;
+    return {
+      url,
+      title: data.title || '',
+      text: data.markdown.replace(/\s+/g, ' ').trim().substring(0, MAX_TEXT_LENGTH),
+      error: null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch a URL and extract readable text content.
  * Returns { url, title, text, error } — never throws.
  */
@@ -49,10 +112,22 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
     return { url, title: '', text: '', error: 'non-html-url' };
   }
 
+  // v2: SSRF protection
+  if (isPrivateUrl(url)) {
+    return { url, title: '', text: '', error: 'blocked-private-url' };
+  }
+
   if (!canFetch()) {
     return { url, title: '', text: '', error: 'rate-limited' };
   }
 
+  // v2: Try servo-fetch sidecar first
+  if (await checkServoFetchLiveness()) {
+    const servoResult = await fetchViaServoFetch(url);
+    if (servoResult) return servoResult;
+  }
+
+  // Fallback: regex-based extraction
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -118,11 +193,6 @@ function extractTitle(html) {
 
 /**
  * Extract readable text from HTML — zero-dependency approach.
- * 1. Remove script, style, nav, header, footer, aside blocks
- * 2. Decode HTML entities
- * 3. Strip remaining tags
- * 4. Collapse whitespace
- * 5. Truncate
  */
 function extractText(html, maxLength = MAX_TEXT_LENGTH) {
   let text = html;
