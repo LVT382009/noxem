@@ -24,6 +24,9 @@ import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { checkServoFetchLiveness } from './web-fetch.mjs';
 import { triggerResearch, getRecentResearch, getResearchStatus } from './research-engine.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
+import { onMemoryStored, runPipeline, getPipelineStatus } from './memory-pipeline.mjs';
+import { bundleSearch } from './bundle-search.mjs';
+import { storeProcedure, getProcedure, listAllProcedures, searchProcedures, deleteProcedureById, touchProcedureUse } from './memory-store.mjs';
 
 const app = express();
 app.use(cors({
@@ -784,6 +787,7 @@ app.post('/memory/store', async (req, res) => {
 
 	// v2: Wire graph edge extraction
  await extractAndStoreEdges(id, trimmed, session_id);
+  onMemoryStored(session_id || 'default');
 
 	invalidateQueryCacheForEntity(entity, attribute);
   res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped' });
@@ -1067,6 +1071,18 @@ res.json({
 
 // Search feedback loop: Hermes reports which memory IDs actually influenced its response
 // This gives a stronger importance boost (+0.03) vs mere retrieval (+0.01)
+app.post('/memory/bundle-search', async (req, res) => {
+  try {
+    const { query, limit } = req.body;
+    if (!query?.trim()) return res.status(400).json({ error: 'query required' });
+    if (!isEmbeddingReady()) return res.status(503).json({ error: 'Brain-1 not ready' });
+    const results = await bundleSearch(query, parseInt(limit) || 5);
+    res.json({ ok: true, ...results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/memory/search/feedback', (req, res) => {
   try {
     const { memory_ids, session_id, context } = req.body;
@@ -1822,6 +1838,122 @@ app.post('/memory/dedup', async (req, res) => {
     }
 
     res.json({ ok: true, duplicates: dupes, count: dupes.length, threshold: DUP_THRESHOLD, marked_invalid: marked });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/memory/pipeline/status', (_req, res) => {
+  res.json({ ok: true, ...getPipelineStatus() });
+});
+
+app.post('/memory/learn', async (req, res) => {
+  try {
+    const { session_id, memory_ids } = req.body;
+    const sessionId = session_id || 'pipeline';
+    const targetIds = memory_ids || [];
+
+    // Get the requested memories or recent session memories
+    const sourceMems = targetIds.length > 0
+      ? targetIds.map(id => getMemory(id)).filter(Boolean)
+      : getSessionMemories(sessionId).slice(-15);
+
+    if (sourceMems.length < 3) {
+      return res.json({ ok: true, procedure_id: null, message: 'Not enough memories to extract a procedure (minimum 3)' });
+    }
+
+    const memText = sourceMems.map(m => `[${m.type}] ${m.text}`).join('\n');
+
+    const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
+    const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
+
+    const llmRes = await fetch(LLM_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: LLM_MODEL,
+        messages: [
+          { role: 'system', content: 'Extract a reusable procedure/workflow from these memories. Return JSON: {"name":"...","description":"...","trigger_context":"when to use this","steps":[{"text":"...","step_type":"action|check|decision","expected_outcome":"..."}],"context_points":[{"context_type":"tool|environment|prerequisite","context_value":"..."}]}. If no clear workflow, return empty steps array.' },
+          { role: 'user', content: `Memories:
+${memText}
+
+Extract procedure:` },
+        ],
+        max_tokens: 1024,
+        temperature: 0.1,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!llmRes.ok) return res.status(503).json({ error: 'LLM unavailable' });
+    const llmData = await llmRes.json();
+    const procContent = llmData?.choices?.[0]?.message?.content || '';
+    const jsonMatch = procContent.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return res.json({ ok: true, procedure_id: null, message: 'No procedure could be extracted' });
+
+    const procData = JSON.parse(jsonMatch[0]);
+    if (!procData.steps?.length) return res.json({ ok: true, procedure_id: null, message: 'No steps extracted' });
+
+    const procId = storeProcedure({
+      name: procData.name || 'Unnamed Procedure',
+      description: procData.description || '',
+      trigger_context: procData.trigger_context || '',
+      session_id: sessionId,
+      steps: procData.steps || [],
+      context_points: procData.context_points || [],
+    });
+
+    res.json({ ok: true, procedure_id: procId, name: procData.name, steps: procData.steps?.length || 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/memory/procedures', (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const procedures = listAllProcedures(limit);
+    res.json({ ok: true, procedures });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/memory/procedures/search', (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q) return res.status(400).json({ error: 'query "q" required' });
+    const results = searchProcedures(q);
+    res.json({ ok: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/memory/procedures/:id', (req, res) => {
+  try {
+    const proc = getProcedure(parseInt(req.params.id));
+    if (!proc) return res.status(404).json({ error: 'not found' });
+    touchProcedureUse(proc.id);
+    res.json({ ok: true, ...proc });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/memory/procedures/:id', (req, res) => {
+  try {
+    const changes = deleteProcedureById(parseInt(req.params.id));
+    res.json({ ok: true, deleted: changes > 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/memory/pipeline/run', async (_req, res) => {
+  try {
+    await runPipeline();
+    res.json({ ok: true, status: getPipelineStatus() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

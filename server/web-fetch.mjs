@@ -239,6 +239,85 @@ function decodeHtmlEntities(str) {
     .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
 }
 
+
+/**
+ * Crawl a domain: fetch seed URL, extract links, follow them up to maxDepth.
+ * Uses servo-fetch POST /v1/crawl when available, else BFS with fetchPage().
+ * Per-domain rate limiting (500ms). URL dedup via Set.
+ */
+export async function crawlDomain(seedUrl, { maxDepth = 2, maxPages = 5, sameDomainOnly = true } = {}) {
+  if (isPrivateUrl(seedUrl)) return [];
+  if (!isFetchableUrl(seedUrl)) return [];
+
+  // v2: Try servo-fetch crawl endpoint first
+  if (await checkServoFetchLiveness()) {
+    try {
+      const res = await fetch(`${SERVO_FETCH_URL}/v1/crawl`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: seedUrl, max_depth: maxDepth, max_pages: maxPages, same_domain_only: sameDomainOnly }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.pages?.length) {
+          return data.pages.map(p => ({
+            url: p.url,
+            title: p.title || '',
+            text: (p.markdown || p.text || '').replace(/\s+/g, ' ').trim().substring(0, MAX_TEXT_LENGTH),
+          })).filter(p => p.text.length > 50);
+        }
+      }
+    } catch (err) {
+      LOG_DEBUG && console.error('[WebFetch] servo-fetch crawl failed:', err.message);
+    }
+  }
+
+  // Fallback: BFS crawl using fetchPage
+  const visited = new Set();
+  const results = [];
+  const queue = [{ url: seedUrl, depth: 0 }];
+  const seedOrigin = new URL(seedUrl).origin;
+  const domainLastFetch = new Map();
+
+  while (queue.length > 0 && results.length < maxPages) {
+    const { url, depth } = queue.shift();
+    if (visited.has(url)) continue;
+    if (depth > maxDepth) continue;
+    visited.add(url);
+
+    // Per-domain rate limit: 500ms
+    const domain = new URL(url).hostname;
+    const lastFetch = domainLastFetch.get(domain) || 0;
+    if (Date.now() - lastFetch < 500) {
+      await new Promise(r => setTimeout(r, 500 - (Date.now() - lastFetch)));
+    }
+
+    const page = await fetchPage(url);
+    domainLastFetch.set(domain, Date.now());
+
+    if (page.error || !page.text) continue;
+    results.push({ url: page.url, title: page.title, text: page.text });
+
+    // Extract links from the page (simple regex, not full HTML parsing)
+    if (depth < maxDepth && results.length < maxPages) {
+      const linkRegex = /href=["'](https?:\/\/[^"']+)["']/gi;
+      let match;
+      while ((match = linkRegex.exec(page.text)) !== null) {
+        try {
+          const linkUrl = match[1];
+          if (sameDomainOnly && new URL(linkUrl).origin !== seedOrigin) continue;
+          if (!visited.has(linkUrl) && isFetchableUrl(linkUrl) && !isPrivateUrl(linkUrl)) {
+            queue.push({ url: linkUrl, depth: depth + 1 });
+          }
+        } catch {}
+      }
+    }
+  }
+
+  return results.filter(r => r.text.length > 50);
+}
+
 /**
  * Fetch multiple URLs concurrently with a concurrency limit.
  * Returns array of results, filtering out errors.

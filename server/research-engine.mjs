@@ -20,7 +20,7 @@
 
 import { searchWeb } from './ddg-search.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
-import { fetchPages, isFetchableUrl } from './web-fetch.mjs';
+import { fetchPages, isFetchableUrl, crawlDomain } from './web-fetch.mjs';
 
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
@@ -28,6 +28,7 @@ const RESEARCH_ENABLED = process.env.RESEARCH_ENABLED !== 'false';
 const RESEARCH_MIN_INTERVAL_MS = parseInt(process.env.RESEARCH_MIN_INTERVAL || '30000');
 const RESEARCH_MAX_TOPICS_PER_SESSION = 50;
 const RESEARCH_MAX_DDQ_RESULTS = 5;
+const RESEARCH_CRAWL_MODE = process.env.RESEARCH_CRAWL_MODE === 'true';
 const RESEARCH_MAX_FETCH_PAGES = 2;
 const RESEARCH_MAX_SUB_QUERIES = parseInt(process.env.RESEARCH_MAX_SUB_QUERIES || '3');
 
@@ -119,6 +120,27 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
   if (fetchUrls.length > 0) {
     try { fetchedPages = await fetchPages(fetchUrls); } catch (err) {
       LOG_DEBUG && console.error('[Research] Web fetch failed:', err.message);
+    }
+  }
+
+  // v2: Crawl mode — if enabled, crawl top result domains for more content
+  if (RESEARCH_CRAWL_MODE && fetchedPages.length > 0) {
+    const crawledUrls = new Set(fetchUrls);
+    const topDomains = [...new Set(
+      fetchedPages.slice(0, 2).map(p => { try { return new URL(p.url).origin; } catch { return null; } }).filter(Boolean)
+    )];
+    for (const domain of topDomains) {
+      try {
+        const crawlResults = await crawlDomain(domain, { maxDepth: 2, maxPages: 3, sameDomainOnly: true });
+        for (const cr of crawlResults) {
+          if (!crawledUrls.has(cr.url)) {
+            fetchedPages.push(cr);
+            crawledUrls.add(cr.url);
+          }
+        }
+      } catch (err) {
+        LOG_DEBUG && console.error('[Research] Crawl failed for', domain, err.message);
+      }
     }
   }
 

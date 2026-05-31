@@ -71,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 // Fresh installs get CREATE TABLE IF NOT EXISTS (above) + all migrations.
 // Existing DBs run only the migrations they haven't seen yet.
 
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 function addColumn(table, column, def) {
 	try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`); } catch (e) {
@@ -265,9 +265,40 @@ const migrations = {
 		// Rebuild FTS index from existing memories
 		db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')");
 	},
-};
+	5: () => {
+		db.exec(`CREATE TABLE IF NOT EXISTS procedures (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      trigger_context TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      use_count INTEGER DEFAULT 0,
+      last_used_at TEXT,
+      session_id TEXT DEFAULT ''
+    )`);
+		db.exec(`CREATE TABLE IF NOT EXISTS procedure_steps (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      procedure_id INTEGER NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
+      step_order INTEGER NOT NULL DEFAULT 0,
+      text TEXT NOT NULL,
+      step_type TEXT DEFAULT 'action',
+      expected_outcome TEXT DEFAULT '',
+      step_context TEXT DEFAULT ''
+    )`);
+		db.exec(`CREATE TABLE IF NOT EXISTS procedure_context_points (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      procedure_id INTEGER NOT NULL REFERENCES procedures(id) ON DELETE CASCADE,
+      context_type TEXT NOT NULL,
+      context_value TEXT NOT NULL,
+      source_memory_id INTEGER
+    )`);
+		db.exec('CREATE INDEX IF NOT EXISTS idx_procedures_name ON procedures(name)');
+		db.exec('CREATE INDEX IF NOT EXISTS idx_procedure_steps_procedure ON procedure_steps(procedure_id)');
+		db.exec('CREATE INDEX IF NOT EXISTS idx_procedure_context_procedure ON procedure_context_points(procedure_id)');
+	}
 
-// Run pending migrations
+};// Run pending migrations
 const currentVersion = db.pragma('user_version', { simple: true });
 for (let v = currentVersion + 1; v <= DB_VERSION; v++) {
 	const migrate = db.transaction(() => {
@@ -282,6 +313,60 @@ for (let v = currentVersion + 1; v <= DB_VERSION; v++) {
 		console.error(`[Schema] Migration v${v} FAILED: ${err.message}`);
 		break;
 	}
+}
+
+
+
+// Procedural Memory Operations
+const insertProcedure = db.prepare('INSERT INTO procedures (name, description, trigger_context, session_id) VALUES (?, ?, ?, ?)');
+const insertStep = db.prepare('INSERT INTO procedure_steps (procedure_id, step_order, text, step_type, expected_outcome, step_context) VALUES (?, ?, ?, ?, ?, ?)');
+const insertContextPoint = db.prepare('INSERT INTO procedure_context_points (procedure_id, context_type, context_value, source_memory_id) VALUES (?, ?, ?, ?)');
+const getProcedureById = db.prepare('SELECT * FROM procedures WHERE id = ?');
+const getProcedureSteps = db.prepare('SELECT * FROM procedure_steps WHERE procedure_id = ? ORDER BY step_order');
+const getProcedureContextPoints = db.prepare('SELECT * FROM procedure_context_points WHERE procedure_id = ?');
+const listProcedures = db.prepare('SELECT * FROM procedures ORDER BY use_count DESC, updated_at DESC LIMIT ?');
+const touchProcedure = db.prepare("UPDATE procedures SET use_count = use_count + 1, last_used_at = datetime('now') WHERE id = ?");
+const deleteProcedure = db.prepare('DELETE FROM procedures WHERE id = ?');
+
+export function storeProcedure({ name, description = '', trigger_context = '', session_id = '', steps = [], context_points = [] }) {
+  const procId = insertProcedure.run(name, description, trigger_context, session_id).lastInsertRowid;
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    insertStep.run(procId, i, s.text || '', s.step_type || 'action', s.expected_outcome || '', s.step_context || '');
+  }
+  for (const cp of context_points) {
+    insertContextPoint.run(procId, cp.context_type || '', cp.context_value || '', cp.source_memory_id || null);
+  }
+  return procId;
+}
+
+export function getProcedure(id) {
+  const proc = getProcedureById.get(id);
+  if (!proc) return null;
+  proc.steps = getProcedureSteps.all(id);
+  proc.context_points = getProcedureContextPoints.all(id);
+  return proc;
+}
+
+export function listAllProcedures(limit = 50) {
+  return listProcedures.all(Math.min(limit, 200));
+}
+
+export function touchProcedureUse(id) { touchProcedure.run(id); }
+
+export function deleteProcedureById(id) { return deleteProcedure.run(id).changes; }
+
+export function searchProcedures(query, limit = 10) {
+  const q = `%${query.replace(/[%_]/g, '\\$&')}%`;
+  return db.prepare(`
+    SELECT p.*, GROUP_CONCAT(ps.text, ' | ') as steps_summary
+    FROM procedures p
+    LEFT JOIN procedure_steps ps ON p.id = ps.procedure_id
+    WHERE p.name LIKE ? OR p.description LIKE ? OR p.trigger_context LIKE ?
+    GROUP BY p.id
+    ORDER BY p.use_count DESC
+    LIMIT ?
+  `).all(q, q, q, Math.min(limit, 50));
 }
 
 initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
