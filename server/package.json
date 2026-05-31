@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^11.0.0",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
@@ -16,6 +17,7 @@
     "express": "^4.21.0",
     "node-fetch": "^3.3.2",
     "sharp": "^0.34.5",
-    "sqlite-vec": "^0.1.6"
+    "sqlite-vec": "^0.1.6",
+    "zod": "^4.4.3"
   }
 }

@@ -3,7 +3,7 @@ import cors from 'cors';
 import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
-import { isVecReady } from './vector-index.mjs';
+import { isVecReady, checkTurboVecHealth, isTurboVecHealthy, getVectorBackend } from './vector-index.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
@@ -620,6 +620,8 @@ app.get('/health', async (_req, res) => {
     embedding: isEmbeddingReady(),
     embedding_error: getEmbeddingError()?.message || null,
     vector_index: isVecReady(),
+  turbovec: isTurboVecHealthy(),
+  vector_backend: getVectorBackend(),
     advisor: ENABLE_ADVISOR,
       core_memory_blocks: getAllCoreBlocks().length,
       query_cache: { size: _queryCache.size, max: QUERY_CACHE_MAX, ttl_ms: QUERY_CACHE_TTL_MS, hits: _cacheHits, misses: _cacheMisses, tier1_hits: _cacheTier1Hits, tier2_hits: _cacheTier2Hits, hit_rate: _cacheHits + _cacheMisses > 0 ? Math.round(_cacheHits / (_cacheHits + _cacheMisses) * 100) : 0 },
@@ -1891,7 +1893,10 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
   console.log(`  Port: ${PORT}`);
   console.log(`  Brain-1: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
-  console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'}`);
+  console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'} (backend: ${getVectorBackend()})`)
+if (getVectorBackend() !== 'sqlite') {
+  checkTurboVecHealth().then(h => console.log(`  TurboVec: ${h.ok ? `alive (${h.count} vectors)` : 'unavailable'}`)).catch(() => {})
+};
   console.log(` Brain-2: ${ENABLE_ADVISOR ? 'ON' : 'OFF'}`);
   console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
   console.log(` Research: ${ENABLE_RESEARCH ? 'Background pipeline (topic -> DDG -> fetch -> extract)' : 'OFF (Brain 1 only)'}`);

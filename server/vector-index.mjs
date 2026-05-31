@@ -111,4 +111,159 @@ export function deleteVec(db, memoryId) {
   } catch (err) { LOG_DEBUG && console.error('[VectorIndex] deleteVec failed:', err.message); }
 }
 
-export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec };
+
+
+// ── TurboVec Sidecar Integration ────────────────────────
+
+const TURBOVEC_URL = process.env.TURBOVEC_URL || 'http://127.0.0.1:3003';
+const VECTOR_BACKEND = process.env.VECTOR_BACKEND || 'sqlite'; // sqlite | turbovec | hybrid
+let turboVecHealthy = false;
+
+/**
+ * Check if TurboVec sidecar is alive.
+ */
+export async function checkTurboVecHealth() {
+  try {
+    const res = await fetch(`${TURBOVEC_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    const data = await res.json();
+    turboVecHealthy = data.ok && data.index_loaded;
+    return data;
+  } catch {
+    turboVecHealthy = false;
+    return { ok: false, turbovec_installed: false };
+  }
+}
+
+/**
+ * Add vectors to TurboVec sidecar.
+ */
+export async function addToTurboVec(ids, vectors) {
+  if (!turboVecHealthy) return { added: 0 };
+  try {
+    const res = await fetch(`${TURBOVEC_URL}/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, vectors: vectors.map(v => Array.from(v)) }),
+      signal: AbortSignal.timeout(10000),
+    });
+    return await res.json();
+  } catch (err) {
+    LOG_DEBUG && console.error('[VectorIndex] addToTurboVec failed:', err.message);
+    return { added: 0, error: err.message };
+  }
+}
+
+/**
+ * KNN search via TurboVec sidecar. Returns [{id, score}].
+ */
+export async function knnSearchTurbo(queryEmbedding, topK = 10, allowlist = null) {
+  if (!turboVecHealthy) return null;
+  try {
+    const body = {
+      query: Array.from(queryEmbedding.slice(0, EMBED_DIM)),
+      k: topK,
+    };
+    if (allowlist && allowlist.length > 0) body.allowlist = allowlist;
+    const res = await fetch(`${TURBOVEC_URL}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await res.json();
+    if (!data.ok) return null;
+    return data.results || [];
+  } catch (err) {
+    LOG_DEBUG && console.error('[VectorIndex] knnSearchTurbo error:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Remove a vector from TurboVec sidecar.
+ */
+export async function removeFromTurboVec(id) {
+  if (!turboVecHealthy) return false;
+  try {
+    const res = await fetch(`${TURBOVEC_URL}/remove/${id}`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await res.json();
+    return data.removed || false;
+  } catch (err) {
+    LOG_DEBUG && console.error('[VectorIndex] removeFromTurboVec failed:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Save TurboVec index to disk.
+ */
+export async function saveTurboVec() {
+  if (!turboVecHealthy) return false;
+  try {
+    const res = await fetch(`${TURBOVEC_URL}/save`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(30000),
+    });
+    const data = await res.json();
+    return data.ok || false;
+  } catch (err) {
+    LOG_DEBUG && console.error('[VectorIndex] saveTurboVec failed:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Hybrid KNN search: combines sqlite-vec and TurboVec results.
+ * Routes based on VECTOR_BACKEND env: sqlite (default), turbovec, or hybrid.
+ * Returns [{id, score}] sorted by score descending.
+ */
+export async function knnSearchHybrid(db, queryEmbedding, topK = 10, allowlist = null) {
+  const backend = VECTOR_BACKEND;
+
+  if (backend === 'turbovec') {
+    const results = await knnSearchTurbo(queryEmbedding, topK, allowlist);
+    return results || [];
+  }
+
+  if (backend === 'hybrid') {
+    // Query both backends in parallel
+    const [sqliteResults, turboResults] = await Promise.all([
+      Promise.resolve(knnSearch(db, queryEmbedding, topK)),
+      knnSearchTurbo(queryEmbedding, topK, allowlist),
+    ]);
+
+    // Merge by ID, keeping best score per ID
+    const byId = new Map();
+    for (const r of (sqliteResults || [])) {
+      if (allowlist && !allowlist.includes(r.id)) continue;
+      byId.set(r.id, r.score);
+    }
+    for (const r of (turboResults || [])) {
+      if (allowlist && !allowlist.includes(r.id)) continue;
+      const existing = byId.get(r.id);
+      if (existing === undefined || r.score > existing) {
+        byId.set(r.id, r.score);
+      }
+    }
+
+    return Array.from(byId.entries())
+      .map(([id, score]) => ({ id, score }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
+  // Default: sqlite only
+  const results = knnSearch(db, queryEmbedding, topK);
+  if (allowlist && results) {
+    return results.filter(r => allowlist.includes(r.id));
+  }
+  return results || [];
+}
+
+export function isTurboVecHealthy() { return turboVecHealthy; }
+export function getVectorBackend() { return VECTOR_BACKEND; }
+
+export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec, knnSearchHybrid, knnSearchTurbo, addToTurboVec, removeFromTurboVec, saveTurboVec, checkTurboVecHealth, isTurboVecHealthy, getVectorBackend };
