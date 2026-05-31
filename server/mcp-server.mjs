@@ -21,7 +21,7 @@ import {
   storeEdge, getEdgesByRel, getMemory, getRawText,
   upsertCoreBlock, getCoreBlock, getAllCoreBlocks, deleteCoreBlock,
   getActiveWithEmbedding, updateMemoryStatus, incrementRecallCounts,
-  close, db, searchFts, getMemoriesByEntityAttr, compressMemory,
+  close, db, getMemoriesByEntityAttr, compressMemory,
   getEdgesFromMemory, getEdgesToMemory,
 } from './memory-store.mjs';
 import { getAdvice, analyzeBeforeCompress } from './advisor-engine.mjs';
@@ -66,7 +66,7 @@ server.registerTool(
       let vecResults = [];
       if (isEmbeddingReady()) {
         const queryEmbedding = await embed(query);
-        vecResults = searchByEmbedding(queryEmbedding, limit, intent);
+        vecResults = searchByEmbedding(queryEmbedding, getActiveWithEmbedding(), limit, intent);
       }
       // Step 3: Merge with simple dedup (FTS first, then vector fill)
       const seen = new Set();
@@ -118,14 +118,13 @@ server.registerTool(
       const { entity: ent, attribute: attr } = (entity && attribute)
         ? { entity, attribute }
         : extractEntityAttribute(text);
-      const ctxPrefix = generateContextPrefix(memType, ent, attr);
-      const id = storeMemory({
+        const id = storeMemory({
         text,
         type: memType,
         session_id: session_id || 'mcp',
         entity: ent || '',
         attribute: attr || '',
-        context_prefix: ctxPrefix,
+        context_prefix: generateContextPrefix(memType, finalEntity, finalAttr),
         importance: imp,
       });
       return {
@@ -148,12 +147,13 @@ server.registerTool(
       session_id: z.string().optional().describe('Release memories for specific session only'),
     },
   },
-  async ({ limit = 20, session_id }) => {
+  async ({ token_budget = 2000, session_id }) => {
     try {
       const memories = session_id
         ? getSessionMemories(session_id)
-        : getActiveMemories(limit);
-      const bullets = memories.slice(0, limit).map(m => {
+        : getActiveMemories(50);
+      const maxMems = Math.max(5, Math.min(100, Math.floor(token_budget / 30)));
+const bullets = memories.slice(0, maxMems).map(m => {
         const prefix = m.context_prefix || `[${m.type}]`;
         const text = m.summary || m.text;
         return `- ${prefix} ${text}`;
@@ -199,7 +199,7 @@ server.registerTool(
           session_id: m.session_id || session_id || 'mcp',
           entity: m.entity || entity || '',
           attribute: m.attribute || attribute || '',
-          context_prefix: ctxPrefix,
+          context_prefix: generateContextPrefix(memType, finalEntity, finalAttr),
           importance: imp,
         });
         results.push({ id, type: memType });

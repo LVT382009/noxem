@@ -45,7 +45,7 @@ export function insertVec(db, memoryId, embeddingArray) {
   if (!vecTableReady || !embeddingArray) return;
   try {
     const vec = new Float32Array(embeddingArray.slice(0, EMBED_DIM));
-    db.prepare('INSERT OR REPLACE INTO memory_vecs(rowid, embedding) VALUES (?, ?)').run(memoryId, vec);
+    db.prepare('INSERT OR REPLACE INTO memory_vecs(rowid, embedding) VALUES (?, ?)').run(BigInt(memoryId), vec);
   } catch (err) {
     LOG_DEBUG && console.error('[VectorIndex] insertVec failed:', err.message);
   }
@@ -59,7 +59,7 @@ export function insertVecBatch(db, ids, embeddings) {
     for (let i = 0; i < ids.length; i++) {
       if (embeddings[i]) {
         try {
-          stmt.run(ids[i], new Float32Array(embeddings[i].slice(0, EMBED_DIM)));
+          stmt.run(BigInt(ids[i]), new Float32Array(embeddings[i].slice(0, EMBED_DIM)));
         } catch (err) { LOG_DEBUG && console.error('[VectorIndex] batch insert failed for', ids[i], err.message); }
       }
     }
@@ -94,7 +94,7 @@ export function knnSearch(db, queryEmbedding, topK = 5) {
     // sqlite-vec returns cosine distance (0 = identical, 2 = opposite)
     // Convert to similarity: score = 1 - distance
     return results.map(r => ({
-      id: r.id,
+      id: Number(r.id),
       score: Math.max(0, Math.round((1 - r.distance) * 1000) / 1000),
     }));
   } catch (err) {

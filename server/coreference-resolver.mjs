@@ -78,17 +78,28 @@ function resolvePronoun(pronoun, offset, text, entityIndex) {
     return findNearestEntity(offset, text, entityIndex);
   }
 
-  // For personal pronouns, find the most likely antecedent by entity frequency
+  // For personal pronouns, find the most likely antecedent by gender + frequency
   let bestEntity = null;
   let bestScore = 0;
 
   for (const [, info] of entityIndex) {
+    const entityGender = guessGender(info.name);
+    // Filter by gender: skip entities that clearly don't match
+    if (gender === 'female' && entityGender === 'male') continue;
+    if (gender === 'male' && entityGender === 'female') continue;
+    if (gender === 'neuter' && entityGender === 'male') continue;
+    if (gender === 'neuter' && entityGender === 'female') continue;
+    if (gender === 'male' && entityGender === 'neuter') continue;
+    if (gender === 'female' && entityGender === 'neuter') continue;
+
     let score = info.count;
     // Prefer entities mentioned in preceding text
     const preceding = text.substring(Math.max(0, offset - 200), offset);
     if (preceding.toLowerCase().includes(info.name.toLowerCase())) {
       score += 5;
     }
+    // Boost entities whose gender matches the pronoun
+    if (entityGender === gender) score += 3;
     if (score > bestScore) {
       bestScore = score;
       bestEntity = info.name;
@@ -96,6 +107,17 @@ function resolvePronoun(pronoun, offset, text, entityIndex) {
   }
 
   return bestEntity;
+}
+
+// Simple gender heuristic for entity names
+const FEMALE_ENDINGS = /^(?:[a-zA-Z]+[aeixy]|Maria|Anna|Sarah|Lisa|Emma|Kate|Jane|Mary|Julia|Laura|Emily|Olivia|Sophia|Alice|Rose|Grace|Helen|Diana|Clara|Elena|Nina|Rosa|Tina|Julia|Sara|Lena|Eva|Mia|Ana)$/i;
+const MALE_ENDINGS = /^(?:[a-zA-Z]+[ousnrkd]|James|John|Robert|Michael|David|William|Richard|Thomas|Mark|Steve|Paul|Daniel|Chris|Peter|Alex|Kevin|Brian|Ryan|Nick|Matt|Ryan)$/i;
+function guessGender(name) {
+  // Technical terms (Redis, PostgreSQL, Docker, etc.) are neuter — check FIRST
+  if (/^(?:Redis|PostgreSQL|MySQL|MongoDB|Docker|Kubernetes|nginx|Node|Python|Java|Ruby|Elastic|Kafka|RabbitMQ|SQLite|Mongo|Supabase)/i.test(name)) return 'neuter';
+  if (FEMALE_ENDINGS.test(name)) return 'female';
+  if (MALE_ENDINGS.test(name)) return 'male';
+  return 'unknown';
 }
 
 function findNearestEntity(offset, text, entityIndex) {
