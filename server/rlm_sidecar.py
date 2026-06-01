@@ -517,7 +517,7 @@ async def process_task(req):
     # Scale per-turn content limit based on LLM context window
     # 8192 context -> 1500 chars/turn; 32768 -> 6000 chars/turn; etc.
     _ctx_window = config.get("contextWindow", 8192)
-    TURN_CONTENT_LIMIT = min(int(_ctx_window * 0.18), 8000)
+    TURN_CONTENT_LIMIT = min(int(_ctx_window * 0.18), 32000)
 
     try:
         if task == "pre_compress_analysis":

@@ -414,9 +414,9 @@ class NoxemMemoryProvider:
             },
                         {
             "key": "context_window",
-            "description": "LLM context window size (affects how much conversation content is sent for extraction)",
+            "description": "LLM context window size in tokens (e.g. 8192, 32768, 131072, 1048576). Affects how much conversation content is sent for extraction.",
             "default": "8192",
-            "choices": ["4096", "8192", "16384", "32768", "65536", "131072"],
+            
             "required": False,
         },
         {

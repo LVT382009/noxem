@@ -221,7 +221,7 @@ async function _singleShotSessionEnd(conversationHistory) {
   // Fallback for short sessions: process in one call
   if (fullHistory.length <= 20) {
     const convoText = fullHistory.map(t =>
-      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 8000))}`
+      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 32000))}`
     ).join('\n\n');
 
     const messages = [
@@ -261,7 +261,7 @@ Rules:
 
   for (const chunk of chunks.slice(0, 10)) {
     const chunkText = chunk.map(t =>
-      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 8000))}`
+      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 32000))}`
     ).join('\n\n');
 
     const messages = [
