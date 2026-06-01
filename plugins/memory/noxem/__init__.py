@@ -580,8 +580,9 @@ class NoxemMemoryProvider:
             "Brain-1 for semantic search + dedup. "
             "Brain-2 for advisor + context recovery + background web research.\n"
             "Memory types: preference, fact, project, goal, pattern, entity, event, issue, setup, learning, profile.\n"
-            "Use `memory_search` to look up past info and `memory_store` to save facts."
-        )
+        "Use `memory_search` to look up past info and `memory_store` to save facts.\n"
+        "IMPORTANT: Always use `memory_store` when the user shares personal facts, preferences, identity, or anything worth remembering - do not just reply, also save."
+    )
 
     MAX_MEMORY_TOKENS = 2000
     try:
@@ -762,44 +763,44 @@ class NoxemMemoryProvider:
                 with self._sync_lock:  # P-#19
                     self._sync_fail_count += 1
 
-        # Retry once after 2s (server might be starting up)
-        # Release _sync_lock before sleep to avoid blocking other threads
-        with self._sync_lock: # P-#19
-            _fail_count = self._sync_fail_count
-            _should_retry = _fail_count <= 3
-        if _should_retry:
-            time.sleep(2.0)
-            try:
-                result = self._api_post("/memory/sync", data)
-                if result.get("error"): # P-#25
-                    raise Exception(result["error"])
-                self._server_reachable.set() # P-#19
-                with self._sync_lock: # P-#19
-                    self._sync_fail_count = 0
-                self._flush_pending_queue()
-                return
-            except Exception:
-                pass
-
-            # Buffer turn for later replay
-            with self._queue_lock:
-                if len(self._pending_queue) >= self._pending_queue.maxlen:  # P-#23
-                    logger.warning(
-                        f"Noxem pending queue at capacity ({self._pending_queue.maxlen}), "
-                        f"oldest items will be dropped"
-                    )
-                self._pending_queue.append(data)
-                queue_len = len(self._pending_queue)
-
-            with self._sync_lock:  # P-#19
+            # Retry once after 2s (server might be starting up)
+            # Release _sync_lock before sleep to avoid blocking other threads
+            with self._sync_lock: # P-#19
                 _fail_count = self._sync_fail_count
-            if _fail_count == 1:
-                logger.warning(
-                    f"sync_turn failed — server at {self._server_url} not reachable. "
-                    f"Turn buffered (queue: {queue_len}). Server will retry on next sync."
-                )
-            elif _fail_count % 20 == 0:  # P-#19
-                logger.warning(f"sync_turn failed {_fail_count}x — queue: {queue_len}")
+                _should_retry = _fail_count <= 3
+            if _should_retry:
+                time.sleep(2.0)
+                try:
+                    result = self._api_post("/memory/sync", data)
+                    if result.get("error"): # P-#25
+                        raise Exception(result["error"])
+                    self._server_reachable.set() # P-#19
+                    with self._sync_lock: # P-#19
+                        self._sync_fail_count = 0
+                    self._flush_pending_queue()
+                    return
+                except Exception:
+                    pass
+
+                # Buffer turn for later replay
+                with self._queue_lock:
+                    if len(self._pending_queue) >= self._pending_queue.maxlen:  # P-#23
+                        logger.warning(
+                            f"Noxem pending queue at capacity ({self._pending_queue.maxlen}), "
+                            f"oldest items will be dropped"
+                        )
+                    self._pending_queue.append(data)
+                    queue_len = len(self._pending_queue)
+
+                with self._sync_lock:  # P-#19
+                    _fail_count = self._sync_fail_count
+                if _fail_count == 1:
+                    logger.warning(
+                        f"sync_turn failed — server at {self._server_url} not reachable. "
+                        f"Turn buffered (queue: {queue_len}). Server will retry on next sync."
+                    )
+                elif _fail_count % 20 == 0:  # P-#19
+                    logger.warning(f"sync_turn failed {_fail_count}x — queue: {queue_len}")
 
         # Join previous sync thread if still running, then start new one
         if self._sync_thread and self._sync_thread.is_alive():

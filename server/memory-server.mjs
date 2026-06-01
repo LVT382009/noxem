@@ -1714,6 +1714,7 @@ const FORCE_SAVE_PATTERNS = [
   /\b(i work on|i'm working on|my project)\b/i,
   /\b(remember this|don't forget|write this down|save this)\b/i,
   /\b(my goal|my plan|i want to|i need to)\b/i,
+ /\b(i am|i'm)\s+(gay|lesbian|bisexual|trans|nonbinary|queer|straight|asexual|demisexual|pansexual|aromantic)\b/i,
 ];
 
 function shouldSkipMessage(text) {
