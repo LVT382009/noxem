@@ -27,6 +27,11 @@
 | | |
 |---|---|
 | **Hybrid Search** | Vector KNN + FTS5 keyword, merged via Reciprocal Rank Fusion |
+| **Cone Pipeline** | L0-L3 progressive extraction: episode → facet → scene → persona |
+| **Bundle Search** | M-Flow multi-layer retrieval with Dijkstra shortest-path ranking |
+| **Graph Edges** | Typed relationships between memories with traversal |
+| **Core Blocks** | Key-value persistent config blocks |
+| **MCP Server** | 8 tools via stdio JSON-RPC for AI agent integration |
 | **Auto-Categorization** | Tags: preference, project, profile, goal, entity, event, fact... |
 | **Smart Dedup** | Cosine >0.92 → merge automatically |
 | **Conflict Resolution** | Entity-attribute matching → older superseded |
@@ -55,6 +60,11 @@
 | **Category Auto-Correction** | Catches and fixes misclassified memories |
 | **Search Feedback Loop** | Boost importance for memories that influenced responses |
 | **Bi-Temporal Tracking** | `valid_from` / `valid_until` timestamps |
+| **Procedure Learning** | Extract reusable workflows from session history |
+| **Coreference Resolution** | Pronoun → antecedent matching with gender filtering |
+| **Crawl Mode Research** | Deep domain research with page crawling |
+| **TurboVec Sidecar** | FastAPI + numpy high-perf vector KNN |
+| **RLM Bridge** | Recursive LLM decomposition via Python sidecar |
 | **Research Hints** | Compact summaries injected — no fact dump |
 
 </td>
@@ -193,12 +203,55 @@ hermes noxem config              # Show current configuration
 ## Architecture
 
 ```
-Hermes Agent
-|
-v
-Noxem Plugin (Python) --HTTP--> Noxem Server (Node.js :3001)
-|                               |
-|              +----------------+----------------+
+Hermes Agent / AI Agent
+    |                        |
+    v                        v
+Noxem Plugin (Python)   MCP Server (stdio)
+    |                        |
+    +------ HTTP / stdio -----+
+               |
+               v
+    Noxem Server (Node.js :3001)
+               |
+    +----------+----------+----------+----------+
+    |          |          |          |          |
+    v          v          v          v          v
+ Semantic   Cone       Bundle    Graph     Core
+ Engine     Pipeline   Search    Edges     Blocks
+ --------   --------   --------  ------    ----------
+ Vector KNN L0(epi)   M-Flow    Typed     Key-value
+ FTS5+RRF   L1(facet) retrieval relations  persistent
+ Dedup      L2(scene) Dijkstra  neighbor  config
+ Categorize L3(core)  ranking   traverse
+ MMR        Warmup              lineage
+            schedule
+               |
+    +----------+----------+
+    |                     |
+    v                     v
+ Brain 2              Sidecars
+ Advisor              --------
+ --------             TurboVec (FastAPI :8100)
+ Drift detection      RLM Bridge (NDJSON)
+ Session extract      Python venv @ ~/.hermes/noxem-venv
+ Research (DDG)
+               |
+    +----------+----------+
+    |                     |
+    v                     v
+ QwenProxy            Local LLM
+ (:3000->cloud)       (Ollama/LM Studio/llama.cpp)
+               |
+               v
+         SQLite DB
+         (FTS5 + Vectors + Graph + Procedures)
+
+    Tools: memory_search . memory_store . memory_sync .
+           memory_release . advisor_advice . search_web .
+           research_hints . memory_graph_traverse
+```
+
+----------------+----------------+
 |              |                                 |
 |     Semantic Engine                   LLM Adapter (:8000)
 |     ---------------                   ----------------
@@ -231,13 +284,31 @@ Noxem Plugin (Python) --HTTP--> Noxem Server (Node.js :3001)
 
 ```
 Store --> Enrich --> Categorize --> Extract Entity --> Score Importance
-|          |           |               |                  |
-v          v           v               v                  v
-SQLite   Context    Auto-tag       Entity+attr       0.1 - 1.0
-+ FTS5   prefix     (12 types)     pairs             (type-based)
-|
-v
+  |         |           |               |                 |
+  v         v           v               v                 v
+SQLite   Context    Auto-tag       Entity+attr        0.1 - 1.0
++ FTS5   prefix     (12 types)      pairs           (type-based)
+  |
+  v
 +-------------------------------------------------------------+
+|             Background Maintenance (every 5 min)            |
+|  Dedup --> Contradict --> Consolidate --> Clean/Auto-correct |
++-------------------------------------------------------------+
+  |
+  v
++-------------------------------------------------------------+
+|             Cone Pipeline (warmup: 1,2,4,8 new memories)    |
+|  L0(episode) --> L1(facet) --> L2(scene) --> L3(persona)    |
++-------------------------------------------------------------+
+  |
+  v
+Search --> Hybrid (KNN + FTS5) --> RRF merge --> MMR rerank --> Score
+  |                                                                |
+  v                                                                v
+Bundle Search --> Multi-layer vector --> Dijkstra ranking      Feedback
+```
+
+-------------------------------------------------------------+
 | Background Maintenance (every 5 min)                        |
 | Dedup --> Contradict --> Consolidate --> Clean/Auto-correct |
 +-------------------------------------------------------------+
@@ -273,10 +344,18 @@ hermes noxem config           # Show current configuration
 |:-----|:------------|
 | `memory_search` | Search with method: hybrid, vector, or keyword |
 | `memory_store` | Store a fact with auto-categorization |
+| `memory_sync` | Sync external context into memory |
+| `memory_release` | Release (deactivate) a memory |
 | `memory_supersede` | Mark old memory as superseded by newer one |
 | `memory_lineage` | Trace provenance chain through supersession history |
 | `memory_contradiction_check` | Find contradicting memories (same entity+attribute) |
 | `memory_feedback` | Report which memory IDs influenced your response |
+| `advisor_advice` | Get drift-aware advice from Brain 2 |
+| `search_web` | Search the web via DuckDuckGo |
+| `research_hints` | Get research status and hints |
+| `memory_graph_traverse` | Traverse memory graph edges |
+| `memory_learn` | Extract procedures from session (via /memory/learn) |
+| `memory_bundle_search` | M-Flow multi-layer retrieval (via /memory/bundle-search) |
 
 ---
 
@@ -289,6 +368,13 @@ hermes noxem config           # Show current configuration
 | `DUP_THRESHOLD` | `0.92` | Deduplication sensitivity |
 | `CONTRADICT_THRESHOLD` | `0.80` | Contradiction detection threshold |
 | `ENABLE_MAINTENANCE` | `true` | Auto-cleanup every 5 minutes |
+| `PIPELINE_ENABLED` | `true` | Enable cone extraction pipeline |
+| `RLM_ENABLED` | `true` | Enable RLM Python sidecar bridge |
+| `VECTOR_BACKEND` | `sqlite-vec` | Vector backend: `sqlite-vec` or `turbovec` |
+| `TURBOVEC_URL` | `http://127.0.0.1:8100` | TurboVec sidecar URL |
+| `NOXEM_PYTHON` | auto (venv preferred) | Python binary for sidecars |
+| `BUNDLE_TOP_K` | `5` | Top-K hits per cone layer in bundle search |
+| `BUNDLE_MIN_SCORE` | `0.15` | Minimum similarity for bundle search |
 | `ENABLE_RESEARCH` | `true` | Background web research pipeline |
 | `RESEARCH_MIN_INTERVAL` | `30000` | Min ms between research per session |
 | `MEMORY_DECAY_HALF_LIFE` | `30` | Default recency decay (days) |
