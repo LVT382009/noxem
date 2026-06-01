@@ -311,7 +311,7 @@ server.registerTool(
   },
   async ({ memory_id, direction = 'both', relation, max_depth = 2, limit = 20 }) => {
     try {
-      const results = traverseMemoryGraph(memory_id, max_depth, limit);
+      const results = traverseMemoryGraph(memory_id, max_depth, limit, direction, relation);
       return {
         content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
       };

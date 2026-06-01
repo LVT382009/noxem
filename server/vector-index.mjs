@@ -107,7 +107,7 @@ export function knnSearch(db, queryEmbedding, topK = 5) {
 export function deleteVec(db, memoryId) {
   if (!vecTableReady) return;
   try {
-    db.prepare('DELETE FROM memory_vecs WHERE rowid = ?').run(memoryId);
+    db.prepare('DELETE FROM memory_vecs WHERE rowid = ?').run(BigInt(memoryId));
   } catch (err) { LOG_DEBUG && console.error('[VectorIndex] deleteVec failed:', err.message); }
 }
 

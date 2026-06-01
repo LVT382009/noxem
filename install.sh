@@ -147,7 +147,7 @@ PIP_CMD="$NOXEM_VENV/bin/pip"
 PIP_FLAGS=""
 echo " Using venv pip: $PIP_CMD"
 # Create symlinks so the sidecars can find the venv packages
-PY_SITE="$NOXEM_VENV/lib/python3/site-packages"
+PY_SITE=$($NOXEM_VENV/bin/python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || echo "$NOXEM_VENV/lib/python3/site-packages")
 # Note: sidecars should use the venv python: $NOXEM_VENV/bin/python3
 else
 PIP_CMD="pip3"
@@ -268,8 +268,20 @@ echo " Wrote $NOXEM_CONFIG"
 
 # ── 7. Server deployment ──
 echo "[7/8] Deploying server to persistent location..."
-rm -rf "$HERMES_SERVER_DIR"
+# Backup data before removing (preserves user DB on reinstall)
+        _data_backup=""
+        if [ -d "$HERMES_SERVER_DIR/data" ]; then
+          _data_backup=$(mktemp -d)
+          cp -r "$HERMES_SERVER_DIR/data/"* "$_data_backup/" 2>/dev/null || true
+        fi
+        rm -rf "$HERMES_SERVER_DIR"
 mkdir -p "$HERMES_SERVER_DIR"
+        # Restore backed-up data
+        if [ -n "$_data_backup" ] && [ -d "$_data_backup" ]; then
+          mkdir -p "$HERMES_SERVER_DIR/data"
+          cp -r "$_data_backup/"* "$HERMES_SERVER_DIR/data/" 2>/dev/null || true
+          rm -rf "$_data_backup"
+        fi
 # Copy full repo structure (server, plugins, hooks, launcher, scripts)
 if command -v rsync &>/dev/null; then
 rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' "$APP_DIR/" "$HERMES_SERVER_DIR/" 2>/dev/null

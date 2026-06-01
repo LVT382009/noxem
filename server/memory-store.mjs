@@ -430,7 +430,7 @@ const getByEntityAttr = db.prepare(`SELECT * FROM memories WHERE entity = ? AND 
 const getTopActiveScored = db.prepare(`SELECT id, session_id, type, text, importance, recall_count, created_at FROM memories WHERE status = 'active' ORDER BY importance DESC, recall_count DESC, created_at DESC LIMIT ?`);
 
 const searchFts = db.prepare(`
-SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count, m.summary
+SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count, m.summary, f.rank AS score
   FROM memories_fts f
   JOIN memories m ON m.id = f.rowid
   WHERE memories_fts MATCH @query AND m.status = 'active'
@@ -546,7 +546,7 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
   if (embedding) {
     try {
       const vec = bufferToFloat32(embedding);
-      insertVec(db, id, vec);
+      insertVec(db, result.lastInsertRowid, vec);
     } catch (e) { LOG_DEBUG && console.error('[StoreMemory] Vec insert failed:', e.message); }
   }
   return result.lastInsertRowid;
@@ -762,7 +762,29 @@ export function getEdgesToMemory(memoryId) { return getEdgesTo.all(memoryId); }
 export function getEdgesByRel(relation, limit = 50) { return getEdgesByRelation.all(relation, Math.min(limit, 200)); }
 export function invalidateEdgeById(edgeId) { return invalidateEdge.run(edgeId).changes; }
 export function getEdge(edgeId) { return getEdgeById.get(edgeId); }
-export function traverseMemoryGraph(fromId, maxDepth = 3, limit = 20) { return traverseGraph.all(fromId, maxDepth, limit); }
+export function traverseMemoryGraph(fromId, maxDepth = 3, limit = 20, direction = 'both', relation = '') {
+  let rows;
+  if (direction === 'incoming') {
+    rows = traverseGraphIncoming.all(fromId, maxDepth, limit);
+  } else if (direction === 'outgoing') {
+    rows = traverseGraph.all(fromId, maxDepth, limit);
+  } else {
+    // both: combine outgoing and incoming, dedup by edge id
+    const outRows = traverseGraph.all(fromId, maxDepth, limit);
+    const inRows = traverseGraphIncoming.all(fromId, maxDepth, limit);
+    const seen = new Set();
+    rows = [];
+    for (const r of [...outRows, ...inRows]) {
+      if (!seen.has(r.id)) { seen.add(r.id); rows.push(r); }
+    }
+    rows.sort((a, b) => a.depth - b.depth || b.strength - a.strength);
+    rows = rows.slice(0, limit);
+  }
+  if (relation) {
+    rows = rows.filter(r => r.relation === relation);
+  }
+  return rows;
+}
 
 // Core memory operations
 export function upsertCoreBlock({ key, value, description = '', char_limit = 500 }) {

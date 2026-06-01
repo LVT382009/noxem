@@ -538,9 +538,8 @@ async function extractAndStoreEdges(fromMemoryId, text, sessionId) {
 const recentMems = (getSessionMemories(fromMem.session_id) || []).slice(-8).map(m => `[${m.type}] ${m.text}`).join('\n');
  const llmUrl = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
  const llmModel = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
- const llmRes = await fetch(llmUrl, {
+ const llmRes = await llmFetch(llmUrl, {
  method: 'POST',
- headers: {},
  body: JSON.stringify({
  model: llmModel,
  messages: [
@@ -614,7 +613,7 @@ app.get('/health', async (_req, res) => {
   const stats = getMemoryStats();
   let llmOk = false;
   try {
-    const r = await fetch(`${process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000'}/v1/models`, { signal: AbortSignal.timeout(2000) });
+    const r = await llmFetch(`${process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000'}/v1/models`, { signal: AbortSignal.timeout(2000) });
     llmOk = r.ok;
   } catch {}
   res.json({
@@ -894,7 +893,7 @@ app.get("/memory/search", async (req, res) => {
       try {
         const expQ = q.trim().replace(/"/g, "");
         const prompt = "Generate 2 alternative ways to phrase this search query for a personal memory store. Return ONLY a JSON array of 2 strings. Query: " + expQ;
-        const expandRes = await fetch(process.env.LLM_URL || process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
+        const expandRes = await llmFetch(process.env.LLM_URL || process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ model: process.env.LLM_MODEL || process.env.GEMMA_MODEL || "qwen3.6-plus-no-thinking", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
@@ -1254,8 +1253,10 @@ app.get('/memory/graph/traverse', (req, res) => {
     const fromId = parseInt(req.query.from_id);
     const maxDepth = Math.min(parseInt(req.query.max_depth) || 3, 5);
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+    const direction = req.query.direction || 'both';
+    const relation = req.query.relation || '';
     if (!fromId) return res.status(400).json({ error: 'from_id query parameter required' });
-    const steps = traverseMemoryGraph(fromId, maxDepth, limit);
+    const steps = traverseMemoryGraph(fromId, maxDepth, limit, direction, relation);
     // Enrich with memory text
     const enriched = steps.map(s => {
       const mem = getMemory(s.to_id);
@@ -1605,19 +1606,23 @@ setValidFrom.run(now, new_id);
 
 // Add provenance to new memory metadata
 newMem = getMemory(new_id);
-if (newMem) {
-  const oldMeta = JSON.parse(oldMem.metadata || '{}');
-  const newMeta = JSON.parse(newMem.metadata || '{}');
-  newMeta.supersedes = old_id;
-  newMeta.supersede_reason = reason || 'contradiction';
-  newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
-  // Track source memory IDs for provenance graph
-  let sourceIds = [];
-  try { sourceIds = JSON.parse(newMem.source_memory_ids || '[]'); } catch {}
-  if (!sourceIds.includes(old_id)) sourceIds.push(old_id);
-  const updateMeta = db.prepare('UPDATE memories SET metadata = ?, source_memory_ids = ? WHERE id = ?');
-  updateMeta.run(JSON.stringify(newMeta), JSON.stringify(sourceIds), new_id);
-}
+  if (newMem) {
+    const updateSupersedeMeta = db.transaction(() => {
+      const cur = getMemory(new_id);
+      if (!cur) return;
+      const oldMeta = JSON.parse(oldMem.metadata || '{}');
+      const newMeta = JSON.parse(cur.metadata || '{}');
+      newMeta.supersedes = old_id;
+      newMeta.supersede_reason = reason || 'contradiction';
+      newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
+      let sourceIds = [];
+      try { sourceIds = JSON.parse(cur.source_memory_ids || '[]'); } catch {}
+      if (!sourceIds.includes(old_id)) sourceIds.push(old_id);
+      const updateMeta = db.prepare('UPDATE memories SET metadata = ?, source_memory_ids = ? WHERE id = ?');
+      updateMeta.run(JSON.stringify(newMeta), JSON.stringify(sourceIds), new_id);
+    });
+    updateSupersedeMeta();
+  }
 
 res.json({ ok: true, old_id, new_id, status: 'superseded' });
   } catch (err) {

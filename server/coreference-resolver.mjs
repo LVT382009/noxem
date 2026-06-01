@@ -20,10 +20,18 @@ export function resolveCoreference(text, sessionMemories = []) {
   if (entityIndex.size === 0) return text;
 
   // Replace pronouns with resolved antecedents
-  return text.replace(PRONOUNS, (match, pronoun, offset) => {
-    const resolved = resolvePronoun(pronoun, offset, text, entityIndex);
-    return resolved || match;
-  });
+ // Replace pronouns right-to-left to avoid offset drift
+ const matches = [...text.matchAll(PRONOUNS)];
+ let result = text;
+ for (let i = matches.length - 1; i >= 0; i--) {
+ const [match, pronoun] = matches[i];
+ const offset = matches[i].index;
+ const resolved = resolvePronoun(pronoun, offset, text, entityIndex);
+ if (resolved) {
+ result = result.substring(0, offset) + resolved + result.substring(offset + match.length);
+ }
+ }
+ return result;
 }
 
 function buildEntityIndex(memories) {

@@ -1,4 +1,5 @@
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
+import { llmFetch } from './llm-fetch.mjs';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use LLM
 const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary'];
@@ -25,6 +26,25 @@ ASSISTANT: {{assistantResponse}}
 
 Memories:`;
 
+// Extract a balanced JSON array from LLM output (handles nested brackets)
+function extractBalancedArray(text) {
+ const start = text.indexOf('[');
+ if (start === -1) return null;
+ let depth = 0;
+ let inStr = false;
+ let escape = false;
+ for (let i = start; i < text.length; i++) {
+ const ch = text[i];
+ if (escape) { escape = false; continue; }
+ if (ch === '\\' && inStr) { escape = true; continue; }
+ if (ch === '"' && !escape) { inStr = !inStr; continue; }
+ if (inStr) continue;
+ if (ch === '[') depth++;
+ if (ch === ']') { depth--; if (depth === 0) return text.substring(start, i + 1); }
+ }
+ return null;
+}
+
 export async function extractMemories({ userMessage, assistantResponse, llmUrl, llmModel }) {
   const url = llmUrl || LLM_URL;
   const model = llmModel || LLM_MODEL;
@@ -41,9 +61,8 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
   });
 
   try {
-    const res = await fetch(url, {
+    const res = await llmFetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body,
       signal: AbortSignal.timeout(15000),
     });
@@ -56,21 +75,18 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '[]';
 
-  // Extract JSON array from response (non-greedy to handle multiple arrays)
-  const matches = [...content.matchAll(/\[[\s\S]*?\]/g)];
-  if (!matches.length) return [];
-  for (const match of matches) {
-    try {
-      const memories = JSON.parse(match[0]);
-      if (Array.isArray(memories) && memories.length > 0) {
-        return memories.filter(m => m.text && m.type).map(m => ({
-          text: m.text.trim().substring(0, 500),
-          type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
-        }));
-      }
-    } catch {}
-  }
-  return [];
+ // Extract JSON array — find balanced brackets to handle nested content
+ const arrayStr = extractBalancedArray(content);
+ if (!arrayStr) return [];
+ try {
+ const memories = JSON.parse(arrayStr);
+ if (Array.isArray(memories) && memories.length > 0) {
+ return memories.filter(m => m.text && m.type).map(m => ({
+ text: m.text.trim().substring(0, 500),
+ type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
+ }));
+ }
+ } catch {}
   } catch (err) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
       console.error('Extraction timed out (LLM too slow)');

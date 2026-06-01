@@ -11,6 +11,7 @@ const MAX_BODY_SIZE = 1_048_576; // 1 MiB — abort if response exceeds this
 const MAX_TEXT_LENGTH = 2000; // Truncate extracted text to this many chars
 const SERVO_FETCH_URL = process.env.SERVO_FETCH_URL || 'http://127.0.0.1:3002';
 const SERVO_FETCH_TIMEOUT_MS = 8_000;
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 // v2: SSRF protection — private IP ranges
 const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?fc00:/i];

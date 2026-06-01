@@ -107,6 +107,68 @@ async def call_llm_safe(url, model, messages, max_tokens=512, temperature=0.1, t
 
 # ── Task Decomposition ────────────────────────────────────
 
+# Extract balanced JSON object from LLM output (handles nested braces)
+def _extract_json_object(text):
+    """Find the first balanced { ... } in text, respecting string escaping."""
+    start = text.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_str:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        if ch == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
+# Extract balanced JSON array from LLM output (handles nested brackets)
+def _extract_json_array(text):
+    """Find the first balanced [ ... ] in text, respecting string escaping."""
+    start = text.find('[')
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_str:
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '[':
+            depth += 1
+        if ch == ']':
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return None
+
+
 async def analyze_before_compress(req, budget):
     """
     Decompose: peek → classify → extract → synthesize.
@@ -149,9 +211,9 @@ Conversation:
     # Parse high-salience turns
     high_indices = set()
     try:
-        match = re.search(r'\[[\s\S]*?\]', peek_content)
-        if match:
-            classifications = json.loads(match.group())
+        result_str = _extract_json_array(peek_content)
+        if result_str:
+            classifications = json.loads(result_str)
             for c in classifications:
                 if c.get("salience", 0) >= 0.6:
                     high_indices.add(c.get("index", -1))
@@ -194,9 +256,9 @@ Extract critical context, drift warnings, key facts, and advice:"""
 
     # Parse extraction result
     try:
-        match = re.search(r'\{[\s\S]*\}', extract_content)
-        if match:
-            result = json.loads(match.group())
+        result_str = _extract_json_object(extract_content)
+        if result_str:
+            result = json.loads(result_str)
             return {
                 "critical_context": result.get("critical_context", []),
                 "task_drift_warnings": result.get("task_drift_warnings", []),
@@ -256,9 +318,9 @@ Return JSON:
     budget.consume(tokens)
 
     try:
-        match = re.search(r'\{[\s\S]*\}', content)
-        if match:
-            result = json.loads(match.group())
+        result_str = _extract_json_object(content)
+        if result_str:
+            result = json.loads(result_str)
             return {
                 "drift_detected": result.get("drift_detected", False),
                 "drift_details": result.get("drift_details", []),
@@ -320,9 +382,9 @@ Extract memories:"""
         budget.consume(tokens)
 
         try:
-            match = re.search(r'\[[\s\S]*?\]', content)
-            if match:
-                chunk_mems = json.loads(match.group())
+            result_str = _extract_json_array(content)
+            if result_str:
+                chunk_mems = json.loads(result_str)
                 if isinstance(chunk_mems, list):
                     all_memories.extend([m for m in chunk_mems if m.get("text") and m.get("type")])
         except (json.JSONDecodeError, AttributeError):
@@ -356,9 +418,9 @@ Deduplicated memories:"""
         budget.consume(tokens)
 
         try:
-            match = re.search(r'\[[\s\S]*?\]', content)
-            if match:
-                deduped = json.loads(match.group())
+            result_str = _extract_json_array(content)
+            if result_str:
+                deduped = json.loads(result_str)
                 if isinstance(deduped, list):
                     return {
                         "memories": [m for m in deduped if m.get("text") and m.get("type")],
@@ -399,9 +461,9 @@ async def _single_shot_compress(req, budget):
     budget.consume(tokens)
 
     try:
-        match = re.search(r'\{[\s\S]*\}', content)
-        if match:
-            return json.loads(match.group())
+        result_str = _extract_json_object(content)
+        if result_str:
+            return json.loads(result_str)
     except (json.JSONDecodeError, AttributeError):
         pass
 
@@ -421,9 +483,9 @@ async def _single_shot_advice(req, budget):
     budget.consume(tokens)
 
     try:
-        match = re.search(r'\{[\s\S]*\}', content)
-        if match:
-            return json.loads(match.group())
+        result_str = _extract_json_object(content)
+        if result_str:
+            return json.loads(result_str)
     except (json.JSONDecodeError, AttributeError):
         pass
 
@@ -473,7 +535,19 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    for line in sys.stdin:
+    # Use readline in executor to avoid blocking the event loop on Windows
+    def _read_line():
+        try:
+            return sys.stdin.readline()
+        except Exception:
+            return None
+
+    while True:
+        line = loop.run_until_complete(
+            loop.run_in_executor(None, _read_line)
+        )
+        if not line:
+            break  # EOF
         line = line.strip()
         if not line:
             continue
@@ -494,7 +568,5 @@ def main():
             sys.stdout.flush()
         except BrokenPipeError:
             break
-
-
 if __name__ == "__main__":
     main()

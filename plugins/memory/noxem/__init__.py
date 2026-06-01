@@ -765,14 +765,14 @@ class NoxemMemoryProvider:
 
             # Retry once after 2s (server might be starting up)
             # Release _sync_lock before sleep to avoid blocking other threads
-            with self._sync_lock: # P-#19
+            with self._sync_lock:  # P-#19
                 _fail_count = self._sync_fail_count
-                _should_retry = _fail_count <= 3
+            _should_retry = _fail_count <= 3
             if _should_retry:
                 time.sleep(2.0)
                 try:
                     result = self._api_post("/memory/sync", data)
-                    if result.get("error"): # P-#25
+                    if "error" in result: # P-#25 H18
                         raise Exception(result["error"])
                     self._server_reachable.set() # P-#19
                     with self._sync_lock: # P-#19

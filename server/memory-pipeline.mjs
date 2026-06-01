@@ -30,16 +30,14 @@ const sessionState = new Map();
 
 function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
-    sessionState.set(sessionId, { l0Count: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0 });
+    sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0 });
   }
   return sessionState.get(sessionId);
 }
 
-function getWarmupThreshold(count) {
-  for (const threshold of WARMUP_SCHEDULE) {
-    if (count <= threshold) return threshold;
-  }
-  return WARMUP_SCHEDULE[WARMUP_SCHEDULE.length - 1] * 2;
+function getWarmupThreshold(extractionIndex) {
+    if (extractionIndex < WARMUP_SCHEDULE.length) return WARMUP_SCHEDULE[extractionIndex];
+    return WARMUP_SCHEDULE[WARMUP_SCHEDULE.length - 1] * 2;
 }
 
 /**
@@ -50,7 +48,7 @@ export function onMemoryStored(sessionId) {
   const state = getSessionState(sessionId);
   state.l0Count++;
 
-  const threshold = getWarmupThreshold(state.lastL1Extract);
+  const threshold = getWarmupThreshold(state.l1ExtractCount);
   const newSinceExtract = state.l0Count - state.lastL1Extract;
   if (newSinceExtract >= threshold) {
     // Schedule L1 extraction (non-blocking)
@@ -116,7 +114,7 @@ export async function extractL1FromL0(sessionId) {
       });
     }
 
-    state.lastL1Extract = state.l0Count;
+    state.lastL1Extract = state.l0Count; state.l1ExtractCount++;
     LOG_DEBUG && console.log(`[Pipeline] L1 extraction: ${atoms.length} atoms from ${episodeMems.length} episodes`);
   } catch (err) {
     LOG_DEBUG && console.error('[Pipeline] L1 LLM error:', err.message);
@@ -141,6 +139,10 @@ export async function extractL2Scenes() {
   // For each entity with 3+ L1 memories, create a scene
   for (const [entity, mems] of byEntity) {
     if (mems.length < 3) continue;
+
+ // Skip if scene already exists for this entity
+ const existing = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 2 && m.entity === entity);
+ if (existing.length > 0) continue;
 
     const sceneText = mems.map(m => `- [${m.type}] ${m.text}`).join('\n');
     try {
@@ -194,6 +196,10 @@ export async function extractL2Scenes() {
 export async function extractL3Persona() {
   const l1Mems = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 1);
   if (l1Mems.length < L3_MIN_L1_MEMORIES) return;
+
+ // Skip if persona already exists
+ const existingPersona = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 3);
+ if (existingPersona.length > 0) return;
 
   const textBlock = l1Mems.slice(0, 80).map(m => `[${m.type}] ${m.text}`).join('\n');
 

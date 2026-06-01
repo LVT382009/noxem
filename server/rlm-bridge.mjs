@@ -10,21 +10,23 @@
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { existsSync } from 'fs';
+import { fileURLToPath } from 'url';
 
 const RLM_ENABLED = process.env.RLM_ENABLED !== 'false';
-const RLM_SCRIPT = process.env.RLM_SCRIPT || new URL('./rlm_sidecar.py', import.meta.url).pathname;
+const RLM_SCRIPT = process.env.RLM_SCRIPT || fileURLToPath(new URL('./rlm_sidecar.py', import.meta.url));
 const RLM_MAX_SUB_CALLS = parseInt(process.env.RLM_MAX_SUB_CALLS || '5');
 const RLM_MAX_TOKENS = parseInt(process.env.RLM_MAX_TOKENS || '4096');
 const RLM_TIMEOUT_MS = parseInt(process.env.RLM_TIMEOUT_MS || '45000');
 
 // Resolve Python binary: venv python preferred (has httpx/numpy), system python3 as fallback
-const NOXEM_VENV_PY = new URL('../../.hermes/noxem-venv/bin/python3', import.meta.url).pathname;
+const NOXEM_VENV_PY = fileURLToPath(new URL('../../.hermes/noxem-venv/bin/python3', import.meta.url));
 const NOXEM_PY = process.env.NOXEM_PYTHON || (existsSync(NOXEM_VENV_PY) ? NOXEM_VENV_PY : 'python3');
 
 // Circuit breaker state
 let consecutiveFailures = 0;
 const MAX_FAILURES = 5;
 let circuitOpenUntil = 0;
+let halfOpenProbe = false; // Prevents thundering herd in half-open state
 
 // Child process state
 let childProc = null;
@@ -40,7 +42,9 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 function isCircuitClosed() {
   if (consecutiveFailures < MAX_FAILURES) return true;
   if (Date.now() > circuitOpenUntil) {
-    // Half-open: allow one test call
+    // Half-open: allow only one probe call to avoid thundering herd
+    if (halfOpenProbe) return false;
+    halfOpenProbe = true;
     return true;
   }
   return false;
@@ -165,17 +169,20 @@ export async function callRLMWithFallback({ task, context, fallbackFn, timeout =
     const resp = await callRLM({ task, context, timeout });
     if (resp.status === 'ok' || resp.status === 'degraded') {
       consecutiveFailures = 0; // Reset circuit breaker
+    halfOpenProbe = false;   // Probe succeeded, allow more calls
       return { data: resp.data, source: 'rlm', metadata: resp.metadata };
     }
     // Error from sidecar
     consecutiveFailures++;
     if (consecutiveFailures >= MAX_FAILURES) {
       circuitOpenUntil = Date.now() + 60_000;
+    halfOpenProbe = false;
     }
   } catch (err) {
     consecutiveFailures++;
     if (consecutiveFailures >= MAX_FAILURES) {
       circuitOpenUntil = Date.now() + 60_000;
+    halfOpenProbe = false;
     }
     LOG_DEBUG && console.error(`[RLM] ${task} failed, using fallback:`, err.message);
   }
@@ -203,14 +210,16 @@ export function getRLMStatus() {
  * Shutdown the RLM sidecar process gracefully.
  */
 export function shutdownRLM() {
-  if (childProc) {
+  const proc = childProc;
+  if (proc) {
+    childProc = null; // Prevent new calls from using this process
+    pendingRequests.clear(); // Reject won't fire since we null'd childProc
     try {
       // Close stdin first so Python reads EOF and exits its loop cleanly
-      childProc.stdin.end();
+      proc.stdin.end();
       // Give it 2s to finish writing, then SIGTERM
-      const pid = childProc.pid;
+      const pid = proc.pid;
       setTimeout(() => { try { process.kill(pid, 'SIGTERM'); } catch {} }, 2000);
     } catch {}
-    childProc = null;
   }
 }
