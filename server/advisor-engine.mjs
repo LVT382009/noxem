@@ -221,7 +221,7 @@ async function _singleShotSessionEnd(conversationHistory) {
   // Fallback for short sessions: process in one call
   if (fullHistory.length <= 20) {
     const convoText = fullHistory.map(t =>
-      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 300)}`
+      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 8000))}`
     ).join('\n\n');
 
     const messages = [
@@ -259,9 +259,9 @@ Rules:
     chunks.push(fullHistory.slice(i, i + CHUNK_SIZE));
   }
 
-  for (const chunk of chunks.slice(0, 6)) {
+  for (const chunk of chunks.slice(0, 10)) {
     const chunkText = chunk.map(t =>
-      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, 300)}`
+      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 8000))}`
     ).join('\n\n');
 
     const messages = [
@@ -274,7 +274,7 @@ Rules: Extract only non-obvious, durable facts. Omit greetings, small talk.`,
     ];
 
     try {
-      const res = await callLLM(messages, 512, 0.1);
+      const res = await callLLM(messages, 1024, 0.1);
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content || '';
       if (!content) continue;

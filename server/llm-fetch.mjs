@@ -3,11 +3,11 @@
  * All code that calls an LLM endpoint should use this instead of raw fetch().
  */
 
-const LLM_API_KEY = process.env.LLM_API_KEY || '';
+function _getApiKey() { return process.env.LLM_API_KEY || ''; }
 
 export function llmHeaders(extra = {}) {
   const h = { 'Content-Type': 'application/json', ...extra };
-  if (LLM_API_KEY) h['Authorization'] = `Bearer ${LLM_API_KEY}`;
+  if (_getApiKey()) h['Authorization'] = `Bearer ${_getApiKey()}`;
   return h;
 }
 

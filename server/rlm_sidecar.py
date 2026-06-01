@@ -290,7 +290,7 @@ async def get_advice(req, budget):
         return await _single_shot_advice(req, budget)
 
     recent_text = "\n".join(
-        f"{t.get('role', 'user').upper()}: {(t.get('content') or '')[:300]}"
+        f"{t.get('role', 'user').upper()}: {(t.get('content') or '')[:TURN_CONTENT_LIMIT]}"
         for t in (history or [])[-6:]
     )
 
@@ -354,12 +354,12 @@ async def analyze_session_end(req, budget):
 
     # Step 2: Batch extract memories from each chunk
     all_memories = []
-    for chunk in chunks[:6]:  # Max 6 chunks = 30 turns
+    for chunk in chunks[:10]:  # Max 10 chunks = 50 turns
         if not budget.check(512):
             break
 
         chunk_text = "\n".join(
-            f"{t.get('role', 'user').upper()}: {(t.get('content') or '')[:300]}"
+            f"{t.get('role', 'user').upper()}: {(t.get('content') or '')[:TURN_CONTENT_LIMIT]}"
             for t in chunk
         )
 
@@ -514,6 +514,10 @@ async def process_task(req):
         max_calls=config.get("maxSubCalls", 5),
         max_total_tokens=config.get("maxTokensBudget", 4096),
     )
+    # Scale per-turn content limit based on LLM context window
+    # 8192 context -> 1500 chars/turn; 32768 -> 6000 chars/turn; etc.
+    _ctx_window = config.get("contextWindow", 8192)
+    TURN_CONTENT_LIMIT = min(int(_ctx_window * 0.18), 8000)
 
     try:
         if task == "pre_compress_analysis":

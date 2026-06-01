@@ -17,6 +17,7 @@ const RLM_SCRIPT = process.env.RLM_SCRIPT || fileURLToPath(new URL('./rlm_sideca
 const RLM_MAX_SUB_CALLS = parseInt(process.env.RLM_MAX_SUB_CALLS || '5');
 const RLM_MAX_TOKENS = parseInt(process.env.RLM_MAX_TOKENS || '4096');
 const RLM_TIMEOUT_MS = parseInt(process.env.RLM_TIMEOUT_MS || '45000');
+const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192');
 
 // Resolve Python binary: venv python preferred (has httpx/numpy), system python3 as fallback
 const NOXEM_VENV_PY = fileURLToPath(new URL('../../.hermes/noxem-venv/bin/python3', import.meta.url));

@@ -412,8 +412,15 @@ class NoxemMemoryProvider:
                 "default": "",
                 "required": False,
             },
-            {
-                "key": "embedding_enabled",
+                        {
+            "key": "context_window",
+            "description": "LLM context window size (affects how much conversation content is sent for extraction)",
+            "default": "8192",
+            "choices": ["4096", "8192", "16384", "32768", "65536", "131072"],
+            "required": False,
+        },
+        {
+"key": "embedding_enabled",
                 "description": "Enable Brain-1 for vector search",
                 "default": "true",
                 "choices": ["true", "false"],
@@ -811,7 +818,7 @@ class NoxemMemoryProvider:
     def on_session_end(self, messages: list) -> None:
         try:
             result = self._api_post("/memory/session/end", {
-            "conversation_history": messages[-50:],
+            "conversation_history": messages[-100:],
                 "session_id": self._session_id,
             })
             count = result.get("extracted", 0)
@@ -823,7 +830,7 @@ class NoxemMemoryProvider:
     def on_pre_compress(self, messages: list):
         try:
             # P-#32: Truncate conversation history to prevent oversized payloads
-            max_msgs = 50
+            max_msgs = 100
             truncated = messages[-max_msgs:] if len(messages) > max_msgs else messages
             result = self._api_post("/memory/advisor/compress", {
                 "conversation_history": truncated,  # P-#32

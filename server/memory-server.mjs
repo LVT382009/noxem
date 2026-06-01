@@ -1743,7 +1743,7 @@ app.post('/memory/sync', async (req, res) => {
     // Store user message — skip trivial/greeting messages
     if (user_message?.trim() && !shouldSkipMessage(user_message)) {
       const type = categorizeText(user_message);
-      const userText = user_message.trim().substring(0, 500);
+      const userText = user_message.trim().substring(0, 2000);
       const { entity: userEntity, attribute: userAttr } = extractEntityAttribute(userText);
       const userPrefix = generateContextPrefix(userText, type, session_id);
       let embedding = null;
@@ -1758,7 +1758,7 @@ app.post('/memory/sync', async (req, res) => {
 
     // Store assistant response — skip very short responses
       if (assistant_response?.trim() && !shouldSkipMessage(assistant_response)) {
-      const asstText = assistant_response.trim().substring(0, 500);
+      const asstText = assistant_response.trim().substring(0, 4000);
       const { entity: asstEntity, attribute: asstAttr } = extractEntityAttribute(asstText);
       const asstPrefix = generateContextPrefix(asstText, "fact", session_id);
       let embedding = null;
@@ -2074,6 +2074,7 @@ function shutdown(signal) {
   console.log(`\n${signal} received — shutting down gracefully...`);
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
+  shutdownRLM(); // Stop Brain 2 sidecar before closing server
   server.close(() => {
     close(); // close SQLite
     console.log('Memory server stopped.');
