@@ -9,12 +9,17 @@
 
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
+import { existsSync } from 'fs';
 
 const RLM_ENABLED = process.env.RLM_ENABLED !== 'false';
 const RLM_SCRIPT = process.env.RLM_SCRIPT || new URL('./rlm_sidecar.py', import.meta.url).pathname;
 const RLM_MAX_SUB_CALLS = parseInt(process.env.RLM_MAX_SUB_CALLS || '5');
 const RLM_MAX_TOKENS = parseInt(process.env.RLM_MAX_TOKENS || '4096');
 const RLM_TIMEOUT_MS = parseInt(process.env.RLM_TIMEOUT_MS || '45000');
+
+// Resolve Python binary: venv python preferred (has httpx/numpy), system python3 as fallback
+const NOXEM_VENV_PY = new URL('../../.hermes/noxem-venv/bin/python3', import.meta.url).pathname;
+const NOXEM_PY = process.env.NOXEM_PYTHON || (existsSync(NOXEM_VENV_PY) ? NOXEM_VENV_PY : 'python3');
 
 // Circuit breaker state
 let consecutiveFailures = 0;
@@ -50,7 +55,7 @@ function ensureProcess() {
   }
 
   try {
-    childProc = spawn('python3', [RLM_SCRIPT], {
+    childProc = spawn(NOXEM_PY, [RLM_SCRIPT], {
       stdio: ['pipe', 'pipe', 'inherit'],
       env: { ...process.env },
     });
@@ -92,7 +97,7 @@ function ensureProcess() {
       childProc = null;
     });
 
-    LOG_DEBUG && console.log('[RLM] Sidecar process started');
+    LOG_DEBUG && console.log(`[RLM] Sidecar process started (python: ${NOXEM_PY})`);
   } catch (err) {
     LOG_DEBUG && console.error('[RLM] Failed to spawn sidecar:', err.message);
     childProc = null;
@@ -186,6 +191,7 @@ export async function callRLMWithFallback({ task, context, fallbackFn, timeout =
 export function getRLMStatus() {
   return {
     enabled: RLM_ENABLED,
+    python_bin: NOXEM_PY,
     process_alive: childProc !== null && !childProc.killed && childProc.exitCode === null,
     circuit_open: !isCircuitClosed(),
     consecutive_failures: consecutiveFailures,

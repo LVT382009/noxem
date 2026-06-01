@@ -124,7 +124,7 @@ server.registerTool(
         session_id: session_id || 'mcp',
         entity: ent || '',
         attribute: attr || '',
-        context_prefix: generateContextPrefix(memType, finalEntity, finalAttr),
+        context_prefix: generateContextPrefix(text, memType, session_id || "mcp"),
         importance: imp,
       });
       return {
@@ -192,14 +192,13 @@ server.registerTool(
         const memType = m.type || categorizeText(m.text);
         const imp = m.importance ?? estimateImportance(m.text, memType);
         const { entity, attribute } = extractEntityAttribute(m.text);
-        const ctxPrefix = generateContextPrefix(memType, entity, attribute);
         const id = storeMemory({
           text: m.text,
           type: memType,
           session_id: m.session_id || session_id || 'mcp',
           entity: m.entity || entity || '',
           attribute: m.attribute || attribute || '',
-          context_prefix: generateContextPrefix(memType, finalEntity, finalAttr),
+          context_prefix: generateContextPrefix(m.text, memType, m.session_id || session_id || "mcp"),
           importance: imp,
         });
         results.push({ id, type: memType });

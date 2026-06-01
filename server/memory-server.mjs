@@ -1428,7 +1428,7 @@ Extract procedure:` },
 
     res.json({ ok: true, procedure_id: procId, name: procData.name, steps: procData.steps?.length || 0 });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+  res.status(err.name === "TypeError" ? 503 : 500).json({ error: err.message });
   }
 });
 

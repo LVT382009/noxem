@@ -108,7 +108,7 @@ export async function extractL1FromL0(sessionId) {
         session_id: sessionId,
         entity: atom.entity || '',
         attribute: atom.attribute || '',
-        context_prefix: generateContextPrefix(atom.type, atom.entity, atom.attribute),
+        context_prefix: generateContextPrefix(atom.text, atom.type, sessionId),
         importance: estimateImportance(atom.text, atom.type),
         cone_layer: 1, // L1 facet
         embedding,
