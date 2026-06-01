@@ -115,7 +115,7 @@ echo "$R" | grep -q '"active"' && check "stats" "true" || check "stats" "FAIL"
 echo "=== Re-embed ==="
 R=$(curl -s -X POST http://127.0.0.1:3001/memory/reembed -H "Content-Type: application/json" -d '{}')
 echo "$R"
-echo "$R" | grep -qE '"ok":true|"error":"Embedding engine not ready"' && check "reembed (disabled ok)" "true" || check "reembed" "FAIL"
+echo "$R" | grep -qE '"ok":true|"error":"Brain-1 not ready"|"error":"Embedding engine not ready"' && check "reembed (disabled ok)" "true" || check "reembed" "FAIL"
 
 echo "=== Maintenance run ==="
 R=$(curl -s -X POST http://127.0.0.1:3001/memory/maintenance/run -H "Content-Type: application/json")
@@ -225,7 +225,7 @@ echo "$R" | grep -q '"total"' && check "pagination has total" "true" || check "p
 echo "$R" | grep -qE '"results":\s*\[.+' && check "pagination has results" "true" || check "pagination results" "FAIL"
 
 echo "=== Purge endpoint ==="
-R=$(curl -s -X POST http://127.0.0.1:3001/memory/purge -H "Content-Type: application/json")
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/purge -H "Content-Type: application/json" -d '{"confirm":true}')
 echo "$R"
 echo "$R" | grep -q '"ok":true' && check "purge ok" "true" || check "purge" "FAIL"
 

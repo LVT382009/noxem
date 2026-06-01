@@ -565,6 +565,7 @@ export function storeMemories(items) {
     entity: m.entity || '',
     attribute: m.attribute || '',
     valid_from: m.valid_from || now,
+    summary: m.summary || null,
   }));
   const ids = insertTx(prepared);
   // Update vector index for batch
