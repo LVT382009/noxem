@@ -4,6 +4,7 @@ import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedB
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 import { isVecReady, checkTurboVecHealth, isTurboVecHealthy, getVectorBackend } from './vector-index.mjs';
+import { llmFetch } from './llm-fetch.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
@@ -539,7 +540,7 @@ const recentMems = (getSessionMemories(fromMem.session_id) || []).slice(-8).map(
  const llmModel = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
  const llmRes = await fetch(llmUrl, {
  method: 'POST',
- headers: { 'Content-Type': 'application/json' },
+ headers: {},
  body: JSON.stringify({
  model: llmModel,
  messages: [
@@ -1353,7 +1354,7 @@ app.post('/fetch/screenshot', async (req, res) => {
     const timeout = setTimeout(() => controller.abort(), 15_000);
     const r = await fetch(`${SERVO_FETCH_URL}/v1/screenshot`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {},
       body: JSON.stringify({ url }),
       signal: controller.signal,
     });
@@ -1390,9 +1391,9 @@ app.post('/memory/learn', async (req, res) => {
     const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
     const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 
-    const llmRes = await fetch(LLM_URL, {
+    const llmRes = await llmFetch(LLM_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {},
       body: JSON.stringify({
         model: LLM_MODEL,
         messages: [

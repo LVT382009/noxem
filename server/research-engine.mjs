@@ -203,9 +203,9 @@ async function _runResearch({ sessionId, userMessage, assistantResponse, storeMe
 
 async function callLLM(messages, maxTokens = 256, temperature = 0.1, timeout = 15_000) {
   try {
-    const res = await fetch(LLM_URL, {
+    const res = await llmFetch(LLM_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {},
       body: JSON.stringify({ model: LLM_MODEL, messages, max_tokens: maxTokens, temperature }),
       signal: AbortSignal.timeout(timeout),
     });

@@ -13,6 +13,7 @@
  */
 
 import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr } from './memory-store.mjs';
+import { llmFetch } from './llm-fetch.mjs';
 import { isEmbeddingReady, embed, categorizeText, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
 
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
@@ -74,9 +75,9 @@ export async function extractL1FromL0(sessionId) {
   const memText = episodeMems.map(m => `[${m.type}] ${m.text}`).join('\n');
 
   try {
-    const res = await fetch(LLM_URL, {
+    const res = await llmFetch(LLM_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {},
       body: JSON.stringify({
         model: LLM_MODEL,
         messages: [
@@ -143,9 +144,9 @@ export async function extractL2Scenes() {
 
     const sceneText = mems.map(m => `- [${m.type}] ${m.text}`).join('\n');
     try {
-      const res = await fetch(LLM_URL, {
+      const res = await llmFetch(LLM_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {},
         body: JSON.stringify({
           model: LLM_MODEL,
           messages: [
@@ -197,9 +198,9 @@ export async function extractL3Persona() {
   const textBlock = l1Mems.slice(0, 80).map(m => `[${m.type}] ${m.text}`).join('\n');
 
   try {
-    const res = await fetch(LLM_URL, {
+    const res = await llmFetch(LLM_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {},
       body: JSON.stringify({
         model: LLM_MODEL,
         messages: [

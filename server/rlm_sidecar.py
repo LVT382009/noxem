@@ -65,8 +65,8 @@ class TokenBudget:
 
 # ── LLM Call ──────────────────────────────────────────────
 
-async def call_llm(url, model, messages, max_tokens=512, temperature=0.1, timeout=15):
-    """Call the QwenProxy endpoint. Returns (content_string, tokens_used)."""
+async def call_llm(url, model, messages, max_tokens=512, temperature=0.1, timeout=15, api_key=""):
+    """Call the LLM endpoint. Returns (content_string, tokens_used)."""
     payload = {
         "model": model,
         "messages": messages,
@@ -74,6 +74,8 @@ async def call_llm(url, model, messages, max_tokens=512, temperature=0.1, timeou
         "temperature": temperature,
     }
     headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     if HAS_HTTPX:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -93,10 +95,10 @@ async def call_llm(url, model, messages, max_tokens=512, temperature=0.1, timeou
     return content, tokens
 
 
-async def call_llm_safe(url, model, messages, max_tokens=512, temperature=0.1, timeout=15):
+async def call_llm_safe(url, model, messages, max_tokens=512, temperature=0.1, timeout=15, api_key=""):
     """Call LLM, return empty string on error instead of raising."""
     try:
-        content, tokens = await call_llm(url, model, messages, max_tokens, temperature, timeout)
+        content, tokens = await call_llm(url, model, messages, max_tokens, temperature, timeout, api_key)
         return content, tokens
     except Exception as e:
         print(f"[RLM] LLM call failed: {e}", file=sys.stderr)
@@ -112,6 +114,7 @@ async def analyze_before_compress(req, budget):
     """
     llm_url = req["llmUrl"]
     llm_model = req["llmModel"]
+    llm_api_key = req.get("llmApiKey", "")
     ctx = req.get("context", {})
     history = ctx.get("conversationHistory", [])
     memories = ctx.get("sessionMemories", [])
@@ -139,7 +142,7 @@ Conversation:
         llm_url, llm_model,
         [{"role": "system", "content": "You classify conversation turns by type and importance. Return only valid JSON."},
          {"role": "user", "content": peek_prompt}],
-        256, 0.1, 15
+        256, 0.1, 15, api_key=llm_api_key
     )
     budget.consume(peek_tokens)
 
@@ -185,7 +188,7 @@ Extract critical context, drift warnings, key facts, and advice:"""
         llm_url, llm_model,
         [{"role": "system", "content": "You are a second-brain advisor. Extract critical context from conversations. Return valid JSON."},
          {"role": "user", "content": extract_prompt}],
-        1024, 0.2, 20
+        1024, 0.2, 20, api_key=llm_api_key
     )
     budget.consume(extract_tokens)
 
@@ -214,6 +217,7 @@ async def get_advice(req, budget):
     """
     llm_url = req["llmUrl"]
     llm_model = req["llmModel"]
+    llm_api_key = req.get("llmApiKey", "")
     ctx = req.get("context", {})
     user_msg = ctx.get("userMessage", "")
     history = ctx.get("conversationHistory", [])
@@ -247,7 +251,7 @@ Return JSON:
         llm_url, llm_model,
         [{"role": "system", "content": "You detect task drift and provide advice. Return valid JSON."},
          {"role": "user", "content": advise_prompt}],
-        800, 0.2, 20
+        800, 0.2, 20, api_key=llm_api_key
     )
     budget.consume(tokens)
 
@@ -275,6 +279,7 @@ async def analyze_session_end(req, budget):
     """
     llm_url = req["llmUrl"]
     llm_model = req["llmModel"]
+    llm_api_key = req.get("llmApiKey", "")
     ctx = req.get("context", {})
     history = ctx.get("conversationHistory", [])
 
@@ -310,7 +315,7 @@ Extract memories:"""
             llm_url, llm_model,
             [{"role": "system", "content": "You extract memories from conversations. Return only valid JSON arrays."},
              {"role": "user", "content": prompt}],
-            512, 0.1, 15
+            512, 0.1, 15, api_key=llm_api_key
         )
         budget.consume(tokens)
 
@@ -346,7 +351,7 @@ Deduplicated memories:"""
             llm_url, llm_model,
             [{"role": "system", "content": "You deduplicate memories. Return only valid JSON arrays."},
              {"role": "user", "content": dedup_prompt}],
-            512, 0.1, 15
+            512, 0.1, 15, api_key=llm_api_key
         )
         budget.consume(tokens)
 
@@ -389,7 +394,7 @@ async def _single_shot_compress(req, budget):
         req["llmUrl"], req["llmModel"],
         [{"role": "system", "content": "You are a second-brain advisor. Return JSON: {\"critical_context\":[],\"task_drift_warnings\":[],\"key_facts\":[],\"advice\":\"\"}"},
          {"role": "user", "content": f"Memories:\n{mem_text}\n\nConversation:\n{turns_text}"}],
-        1024, 0.2, 30
+        1024, 0.2, 30, api_key=req.get("llmApiKey", "")
     )
     budget.consume(tokens)
 
@@ -411,7 +416,7 @@ async def _single_shot_advice(req, budget):
         req["llmUrl"], req["llmModel"],
         [{"role": "system", "content": "You are a second-brain advisor. Return JSON: {\"drift_detected\":false,\"drift_details\":[],\"relevant_memories\":[],\"advice_text\":\"\",\"severity\":\"none\"}"},
          {"role": "user", "content": ctx.get("userMessage", "")[:500]}],
-        800, 0.2, 20
+        800, 0.2, 20, api_key=req.get("llmApiKey", "")
     )
     budget.consume(tokens)
 
