@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, deleteVec } from './vector-index.mjs';
+import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, knnSearchHybrid, deleteVec, getVectorBackend, addToTurboVec } from './vector-index.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
@@ -572,7 +572,12 @@ export function storeMemories(items) {
   if (isVecReady()) {
     for (let i = 0; i < ids.length; i++) {
       if (prepared[i].embedding) {
-        try { insertVec(db, ids[i], bufferToFloat32(prepared[i].embedding)); } catch (e) { LOG_DEBUG && console.error('[StoreMemories] Vec insert failed for', ids[i], e.message); }
+                    const vec = bufferToFloat32(prepared[i].embedding);
+                    try { insertVec(db, ids[i], vec); } catch (e) { LOG_DEBUG && console.error('[StoreMemories] Vec insert failed for', ids[i], e.message); }
+                    const tb = getVectorBackend();
+                    if ((tb === 'turbovec' || tb === 'hybrid')) {
+                        addToTurboVec(ids[i], vec).catch(e => LOG_DEBUG && console.error('[StoreMemories] TurboVec add failed:', e.message));
+                    }
       }
     }
   }
@@ -718,6 +723,25 @@ export function vectorKnnSearch(queryEmbedding, topK = 5) {
       score: h.score,
     };
   }).filter(Boolean);
+}
+
+export async function vectorKnnSearchAsync(queryEmbedding, topK = 5) {
+    if (!isVecReady()) return null;
+    const backend = getVectorBackend();
+    const hits = (backend === 'turbovec' || backend === 'hybrid')
+        ? await knnSearchHybrid(db, queryEmbedding, topK)
+        : knnSearch(db, queryEmbedding, topK);
+    if (!hits) return null;
+    return hits.map(h => {
+        const mem = getById.get(h.id);
+        if (!mem || mem.status !== 'active') return null;
+        return {
+            id: mem.id, text: mem.text, type: mem.type,
+            session_id: mem.session_id, importance: mem.importance,
+            recall_count: mem.recall_count, created_at: mem.created_at,
+            score: h.score,
+        };
+    }).filter(Boolean);
 }
 
 export function getTopActiveMemories(limit = 50) { return getTopActiveScored.all(Math.min(limit, 200)); }

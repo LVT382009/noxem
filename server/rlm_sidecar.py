@@ -17,6 +17,13 @@ import json
 import time
 import asyncio
 import re
+import signal
+
+# Ignore SIGPIPE so parent process closing the pipe doesn't kill us with traceback
+try:
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+except AttributeError:
+    pass  # Windows has no SIGPIPE
 
 try:
     import httpx
@@ -469,13 +476,19 @@ def main():
             req = json.loads(line)
         except json.JSONDecodeError as e:
             response = {"status": "error", "error": f"invalid JSON: {e}", "metadata": {"calls": 0, "tokens": 0, "elapsed_ms": 0}}
-            sys.stdout.write(json.dumps(response) + "\n")
-            sys.stdout.flush()
+            try:
+                sys.stdout.write(json.dumps(response) + "\n")
+                sys.stdout.flush()
+            except BrokenPipeError:
+                break
             continue
 
         result = loop.run_until_complete(process_task(req))
-        sys.stdout.write(json.dumps(result) + "\n")
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(json.dumps(result) + "\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            break
 
 
 if __name__ == "__main__":

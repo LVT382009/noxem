@@ -205,7 +205,11 @@ export function getRLMStatus() {
 export function shutdownRLM() {
   if (childProc) {
     try {
-      childProc.kill('SIGTERM');
+      // Close stdin first so Python reads EOF and exits its loop cleanly
+      childProc.stdin.end();
+      // Give it 2s to finish writing, then SIGTERM
+      const pid = childProc.pid;
+      setTimeout(() => { try { process.kill(pid, 'SIGTERM'); } catch {} }, 2000);
     } catch {}
     childProc = null;
   }
