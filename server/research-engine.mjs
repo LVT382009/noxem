@@ -19,6 +19,7 @@
  */
 
 import { searchWeb } from './ddg-search.mjs';
+import { llmFetch } from './llm-fetch.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 import { fetchPages, isFetchableUrl, crawlDomain } from './web-fetch.mjs';
 

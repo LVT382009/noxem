@@ -35,10 +35,11 @@ function extractBalancedArray(text) {
  let escape = false;
  for (let i = start; i < text.length; i++) {
  const ch = text[i];
- if (escape) { escape = false; continue; }
- if (ch === '\\' && inStr) { escape = true; continue; }
- if (ch === '"' && !escape) { inStr = !inStr; continue; }
- if (inStr) continue;
+    if (ch === '\\' && inStr) { escape = !escape; continue; }
+    if (ch === '"' && inStr) { if (!escape) { inStr = false; } escape = false; continue; }
+    if (ch === '"' && !inStr) { inStr = true; escape = false; continue; }
+    escape = false;
+    if (inStr) continue;
  if (ch === '[') depth++;
  if (ch === ']') { depth--; if (depth === 0) return text.substring(start, i + 1); }
  }

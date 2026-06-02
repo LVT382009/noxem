@@ -329,7 +329,7 @@ const touchProcedure = db.prepare("UPDATE procedures SET use_count = use_count +
 const deleteProcedure = db.prepare('DELETE FROM procedures WHERE id = ?');
 
 export function storeProcedure({ name, description = '', trigger_context = '', session_id = '', steps = [], context_points = [] }) {
-  const procId = insertProcedure.run(name, description, trigger_context, session_id).lastInsertRowid;
+  const procId = Number(insertProcedure.run(name, description, trigger_context, session_id).lastInsertRowid);
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
     insertStep.run(procId, i, s.text || '', s.step_type || 'action', s.expected_outcome || '', s.step_context || '');
@@ -380,7 +380,7 @@ const insertTx = db.transaction((items) => {
   const ids = [];
   for (const m of items) {
     const r = insert.run(m);
-    ids.push(r.lastInsertRowid);
+    ids.push(Number(r.lastInsertRowid));
   }
   return ids;
 });
@@ -562,10 +562,10 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
   if (embedding) {
     try {
       const vec = bufferToFloat32(embedding);
-      insertVec(db, result.lastInsertRowid, vec);
+      insertVec(db, Number(result.lastInsertRowid), vec);
     } catch (e) { LOG_DEBUG && console.error('[StoreMemory] Vec insert failed:', e.message); }
   }
-  return result.lastInsertRowid;
+  return Number(result.lastInsertRowid);
 }
 
 export function storeMemories(items) {
@@ -771,7 +771,7 @@ export function getMemoriesByEntityAttr(entity, attribute) {
 
 // Graph edge operations
 export function storeEdge({ from_id, to_id, relation, valid_from = null, valid_until = null, strength = 1.0, source_session_id = '', metadata = {} }) {
-  return insertEdge.run({ from_id, to_id, relation, valid_from: valid_from || new Date().toISOString(), valid_until, strength, source_session_id, metadata: JSON.stringify(metadata) }).lastInsertRowid;
+  return Number(insertEdge.run({ from_id, to_id, relation, valid_from: valid_from || new Date().toISOString(), valid_until, strength, source_session_id, metadata: JSON.stringify(metadata) }).lastInsertRowid);
 }
 
 export function getEdgesFromMemory(memoryId) { return getEdgesFrom.all(memoryId); }

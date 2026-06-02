@@ -29,6 +29,17 @@ const L3_MIN_L1_MEMORIES = 50;
 const sessionState = new Map();
 const extractingL1 = new Set(); // Per-session lock to prevent concurrent L1 extraction
 
+// Periodic cleanup: evict stale session state (idle > 1 hour)
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, state] of sessionState) {
+    if (now - state.lastL1Extract > 3_600_000) {
+      sessionState.delete(sid);
+      extractingL1.delete(sid);
+    }
+  }
+}, 300_000).unref();
+
 function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
     sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0 });
@@ -52,6 +63,7 @@ export function onMemoryStored(sessionId) {
   const threshold = getWarmupThreshold(state.l1ExtractCount);
   const newSinceExtract = state.l0Count - state.lastL1Extract;
   if (newSinceExtract >= threshold && !extractingL1.has(sessionId)) {
+    extractingL1.add(sessionId);
     // Schedule L1 extraction (non-blocking)
     extractL1FromL0(sessionId).finally(() => extractingL1.delete(sessionId))
       .catch(err => {

@@ -79,8 +79,12 @@ class NoxemMemoryProvider:
         self._queue_lock = threading.Lock()
         self._server_procs = []
         self._silent_mode = True  # Always silent when used as Hermes provider
+        self._shutdown_done = False
+        self._atexit_registered = False
         self._stderr_logs = []  # P-#22
-        atexit.register(self.shutdown)
+        if not self._atexit_registered:
+            self._atexit_registered = True
+            atexit.register(self._atexit_shutdown)
 
         # Load noxem.json and propagate to env vars if not already set
         # This bridges the gap: config saved by `hermes memory setup` reaches Node.js servers
@@ -398,8 +402,15 @@ class NoxemMemoryProvider:
         except Exception:
             pass
 
+    def _atexit_shutdown(self):
+        """Guard against double-shutdown via atexit."""
+        if not self._shutdown_done:
+            self._shutdown_done = True
+            self.shutdown()
+
     def shutdown(self) -> None:
         """Process exit cleanup. Kill auto-started servers and show summary."""
+        self._shutdown_done = True
         self._shutdown_event.set()  # P-#24
         if self._server_start_thread and self._server_start_thread.is_alive():
             self._server_start_thread.join(timeout=5.0)

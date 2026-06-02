@@ -1,4 +1,5 @@
 import express from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import cors from 'cors';
 import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
@@ -94,7 +95,9 @@ if (MEMORY_API_KEY) {
     if (EXEMPT_PATHS.some(p => req.path === p)) return next();
     const auth = req.headers.authorization || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : req.query.api_key || '';
-    if (token !== MEMORY_API_KEY) {
+    const tokenBuf = Buffer.from(String(token));
+    const keyBuf = Buffer.from(String(MEMORY_API_KEY));
+    if (tokenBuf.length !== keyBuf.length || !timingSafeEqual(tokenBuf, keyBuf)) {
       return res.status(401).json({ error: 'Unauthorized: invalid or missing API key' });
     }
     next();
@@ -801,6 +804,7 @@ app.post('/memory/store-batch', (req, res) => {
   try {
     const { memories } = req.body;
     if (!memories?.length) return res.status(400).json({ error: 'memories array required' });
+    if (memories.length > 100) return res.status(400).json({ error: 'batch too large (max 100)' });
 
     const enrichedMemories = memories.map(m => {
       const catType = m.type || categorizeText(m.text);
