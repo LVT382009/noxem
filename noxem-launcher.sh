@@ -56,6 +56,7 @@ for _arg in "$@"; do
     --no-brain2) BRAIN2_ENABLED=0; shift ;;
     --qwenproxy) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=qwenproxy; shift ;;
     --local) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=local; shift ;;
+      --freellm) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=freellm; shift ;;
   esac
 done
 
@@ -220,6 +221,58 @@ prompt_local_llm() {
 
   green " Local LLM configured: $_local_url model=$_local_model"
 }
+
+# ── Prompt for FreeLLM (FreeTheAI.xyz) settings ──
+prompt_freellm() {
+    echo ""
+    green '╔══════════════════════════════════════════════╗'
+    green '║ FreeLLM — FreeTheAI.xyz Free API            ║'
+    green '╚══════════════════════════════════════════════╝'
+    echo ""
+    echo " Get free LLM access from FreeTheAI.xyz:"
+    echo ""
+    echo "   1. Join the Discord: https://discord.gg/hnz3yB3bWg"
+    echo "   2. Go to #how-to-signup channel to get your API key"
+    echo "   3. Go to #how-to-checkin channel to activate your key"
+    echo "   4. Browse models at: https://freetheai.xyz/models/"
+    echo "   5. Check model status at: https://freetheai.xyz/status/"
+    echo ""
+    dim " Base URL: https://api.freetheai.xyz/v1 (fixed)"
+    echo ""
+
+    # API key (required)
+    read -rp "API key: " _freellm_api_key
+    if [ -z "$_freellm_api_key" ]; then
+        red " API key is required for FreeTheAI.xyz"
+        echo " Get one at: https://discord.gg/hnz3yB3bWg -> #how-to-signup"
+        return 1
+    fi
+
+    # Model name
+    echo ""
+    echo " Browse available models: https://freetheai.xyz/models/"
+    echo " Check model status: https://freetheai.xyz/status/"
+    read -rp "Model ID (e.g. fee/kimi-k2.6): " _freellm_model
+    if [ -z "$_freellm_model" ]; then
+        _freellm_model="fee/kimi-k2.6"
+        dim " Using default: $_freellm_model"
+    fi
+
+    # Context window
+    read -rp "Context window in tokens [131072]: " _freellm_ctx
+    _freellm_ctx="${_freellm_ctx:-131072}"
+
+    # Export — FreeLLM uses local passthrough mode with fixed URL
+    export LLM_URL="https://api.freetheai.xyz/v1/chat/completions"
+    export LOCAL_LLM_URL="https://api.freetheai.xyz/v1"
+    export LLM_MODEL="$_freellm_model"
+    export LLM_API_KEY="$_freellm_api_key"
+    export NOXEM_CONTEXT_WINDOW="$_freellm_ctx"
+    export BRAIN2_PROVIDER="local"
+
+    green " FreeLLM configured: freetheai.xyz model=$_freellm_model context=${_freellm_ctx}"
+}
+
 
 # ── Setup QwenProxy (clone + install + Playwright) ──
 setup_qwenproxy() {

@@ -153,9 +153,11 @@ export function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
     context,
     llmUrl,
     llmModel,
+ llmApiKey: process.env.LLM_API_KEY || '',
     config: {
       maxSubCalls: RLM_MAX_SUB_CALLS,
       maxTokensBudget: RLM_MAX_TOKENS,
+   contextWindow: parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192'),
     },
   };
 

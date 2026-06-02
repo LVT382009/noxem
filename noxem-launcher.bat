@@ -155,6 +155,7 @@ REM 2. Brain 2
 if "%BRAIN2_ENABLED%"=="0" goto :skip_brain2
 
 if "%BRAIN2_PROVIDER%"=="local" goto :start_local_mode
+if "%BRAIN2_PROVIDER%"=="freellm" goto :start_local_mode
 
 REM ── QwenProxy mode (cloud) ──
 echo [2/2] Starting Brain 2 (QwenProxy)...
@@ -376,6 +377,57 @@ echo Adapter stopped
 echo Noxem cleaned up.
 endlocal
 exit /b
+
+
+REM ── Subroutine: prompt for FreeLLM (FreeTheAI.xyz) settings ──
+:prompt_freellm
+echo.
+echo ╔══════════════════════════════════════════════╗
+echo ║ FreeLLM - FreeTheAI.xyz Free API             ║
+echo ╚══════════════════════════════════════════════╝
+echo.
+echo  Get free LLM access from FreeTheAI.xyz:
+echo.
+echo   1. Join the Discord: https://discord.gg/hnz3yB3bWg
+echo   2. Go to #how-to-signup channel to get your API key
+echo   3. Go to #how-to-checkin channel to activate your key
+echo   4. Browse models at: https://freetheai.xyz/models/
+echo   5. Check model status at: https://freetheai.xyz/status/
+echo.
+echo  Base URL: https://api.freetheai.xyz/v1 ^(fixed^)
+echo.
+
+REM API key (required)
+set /p _FREELLM_API_KEY="API key: "
+if "!_FREELLM_API_KEY!"=="" (
+    echo API key is required for FreeTheAI.xyz
+    echo Get one at: https://discord.gg/hnz3yB3bWg -^> #how-to-signup
+    set BRAIN2_ENABLED=0
+    goto :eof
+)
+
+REM Model name
+echo.
+echo Browse available models: https://freetheai.xyz/models/
+echo Check model status: https://freetheai.xyz/status/
+set _DEFAULT_FREELLM_MODEL=fee/kimi-k2.6
+set /p _FREELLM_MODEL="Model ID [!_DEFAULT_FREELLM_MODEL!]: "
+if "!_FREELLM_MODEL!"=="" set _FREELLM_MODEL=!_DEFAULT_FREELLM_MODEL!
+
+REM Context window
+set /p _FREELLM_CTX="Context window in tokens [131072]: "
+if "!_FREELLM_CTX!"=="" set _FREELLM_CTX=131072
+
+REM Export for adapter and server processes
+set LLM_URL=https://api.freetheai.xyz/v1/chat/completions
+set LOCAL_LLM_URL=https://api.freetheai.xyz/v1
+set LLM_MODEL=!_FREELLM_MODEL!
+set LLM_API_KEY=!_FREELLM_API_KEY!
+set NOXEM_CONTEXT_WINDOW=!_FREELLM_CTX!
+set BRAIN2_PROVIDER=local
+
+echo FreeLLM configured: freetheai.xyz model=!_FREELLM_MODEL! context=!_FREELLM_CTX!
+goto :eof
 
 REM ── Subroutine: prompt for local LLM settings ──
 :prompt_local_llm

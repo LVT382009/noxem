@@ -125,6 +125,7 @@ class NoxemMemoryProvider:
             "llm_url": "LLM_URL",
             "llm_model": "LLM_MODEL",
             "embedding_enabled": "ENABLE_EMBEDDING",
+        "context_window": "NOXEM_CONTEXT_WINDOW",
         }
         # Store API key separately — only pass to child server processes, not global env
         self._llm_api_key = cfg.get("llm_api_key", "")
@@ -144,6 +145,14 @@ class NoxemMemoryProvider:
             self._server_url = os.environ["NOXEM_SERVER"]
         if "LLM_URL" in os.environ:
             self._llm_url = os.environ["LLM_URL"]
+
+        # FreeLLM preset: when provider is freellm, set the fixed base URL
+        if cfg.get("brain2_provider") == "freellm":
+            if "LLM_URL" not in os.environ:
+                os.environ["LLM_URL"] = "https://api.freetheai.xyz/v1/chat/completions"
+            if "GEMMA_URL" not in os.environ:
+                os.environ["GEMMA_URL"] = "https://api.freetheai.xyz/v1/chat/completions"
+            os.environ["BRAIN2_PROVIDER"] = "local"
 
         logger.debug(f"Noxem config loaded from {config_path}: provider={cfg.get('brain2_provider', 'qwenproxy')}")
 
@@ -389,9 +398,9 @@ class NoxemMemoryProvider:
             },
             {
                 "key": "brain2_provider",
-                "description": "Brain 2 provider: qwenproxy (cloud) or local (any OpenAI-compatible LLM)",
+                "description": "Brain 2 provider: qwenproxy (cloud), local (any OpenAI-compatible LLM), or freellm (FreeTheAI.xyz free API)",
                 "default": "qwenproxy",
-                "choices": ["qwenproxy", "local"],
+                "choices": ["qwenproxy", "local", "freellm"],
                 "required": False,
             },
             {

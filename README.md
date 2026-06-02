@@ -111,6 +111,7 @@ bash install.sh
 hermes-noxem                   # Launch with interactive selection
 hermes-noxem --cloud-brain2    # Launch with cloud Brain 2 (no prompt)
 hermes-noxem --local           # Launch with local Brain 2 (no prompt)
+hermes-noxem --freellm # Launch with FreeLLM Brain 2 (no prompt)
 hermes-noxem --no-brain2       # Launch memory-only (no prompt)
 hermes-noxem --resume <id>     # Continue a session with Noxem
 ```
@@ -128,7 +129,8 @@ Brain 2 — Provider Selection
 
 [1] Cloud — free via cloud account
 [2] Local model — any OpenAI-compatible LLM (Ollama, LM Studio, llama.cpp...)
-[3] Skip Brain 2
+[3] FreeLLM - free cloud LLM via FreeTheAI
+[4] Skip Brain 2
 ```
 
 If you choose **Local model**, you'll be prompted for:
@@ -138,7 +140,7 @@ If you choose **Local model**, you'll be prompted for:
 | **Base URL** | Your LLM server's OpenAI-compatible endpoint | `http://localhost:11434/v1` (Ollama) |
 | **Model name** | The model identifier your server expects | `gemma4:e4b`, `llama3.1` |
 | **API key** | Optional — not needed for Ollama or llama.cpp | Leave empty to skip |
-| **Context window** | Token limit for the model | `8192`, `32768`, `131072`, `1048576` |
+| **Context window** | Token limit for the model | `8192`, `32768`, `131072` |
 
 ### Supported Local Providers
 
@@ -148,6 +150,26 @@ If you choose **Local model**, you'll be prompted for:
 | **LM Studio** | `http://localhost:1234/v1` | Start local server first |
 | **llama.cpp** | `http://127.0.0.1:8080/v1` | Use `--jinja` flag for reasoning support |
 | **Any OpenAI-compatible** | Your URL | Must support `/v1/chat/completions` |
+
+### FreeLLM (Free Cloud LLM)
+
+FreeLLM gives you a free cloud LLM via [FreeTheAI](https://freetheai.xyz/). No local GPU needed.
+
+**How to get started:**
+
+1. Join the [FreeTheAI Discord](https://discord.gg/hnz3yB3bWg)
+2. Go to  channel to get your API key
+3. Go to  channel to activate your key
+4. Browse available models at [freetheai.xyz/models](https://freetheai.xyz/models/)
+5. Check model status at [freetheai.xyz/status](https://freetheai.xyz/status/)
+
+Then select **FreeLLM** during setup and enter your API key, model ID, and context window size.
+
+| Setting | Description | Example |
+|:--------|:------------|:--------|
+| **API key** | Your FreeTheAI API key | `sta_...` |
+| **Model ID** | Model from freetheai.xyz/models | See models page |
+| **Context window** | Token limit for the model | `8192`, `32768`, `131072` |
 
 > [!NOTE]
 > When using a local model, web research falls back to **DuckDuckGo search** instead of cloud search. This works fully offline.
@@ -187,7 +209,7 @@ This saves your configuration to `~/.hermes/noxem.json`, which the launcher read
 | Key | Description | Default |
 |:----|:------------|:--------|
 | `memory_server` | Memory server URL | `http://127.0.0.1:3001` |
-| `brain2_provider` | `cloud` or `local` | `cloud` |
+| `brain2_provider` | `cloud`, `local`, or `freellm` | `cloud` |
 | `llm_url` | LLM API endpoint | `http://127.0.0.1:8000/v1/chat/completions` |
 | `llm_model` | Model name for LLM calls | _(provider default)_ |
 | `llm_api_key` | API key (optional) | _(empty)_ |
@@ -309,7 +331,7 @@ flowchart TD
 | `MEMORY_MAX_TOKENS` | `2000` | Token budget for context injection |
 | `RATE_LIMIT_MAX` | `120` | Max requests per minute per IP |
 | `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
-| `BRAIN2_PROVIDER` | `cloud` | Brain 2 mode: `cloud` or `local` |
+| `BRAIN2_PROVIDER` | `cloud` | Brain 2 mode: `cloud`, `local`, or `freellm` |
 | `LOCAL_LLM_URL` | _(empty)_ | Local LLM base URL (e.g. `http://localhost:11434/v1`) |
 | `LLM_MODEL` | _(provider default)_ | Model for Brain 2 calls |
 | `LLM_API_KEY` | _(empty)_ | API key for local LLM (optional) |
