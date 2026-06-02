@@ -127,6 +127,7 @@ class NoxemMemoryProvider:
             "llm_model": "LLM_MODEL",
             "embedding_enabled": "ENABLE_EMBEDDING",
         "context_window": "NOXEM_CONTEXT_WINDOW",
+            "rlm_llm_timeout": "RLM_LLM_TIMEOUT",
         }
         # Store API key separately — only pass to child server processes, not global env
         self._llm_api_key = cfg.get("llm_api_key", "")
@@ -183,6 +184,7 @@ class NoxemMemoryProvider:
         env.setdefault("ENABLE_RESEARCH", "true")
         env.setdefault("NODE_OPTIONS", "--dns-result-order=ipv4first")
         env.setdefault("LOG_LEVEL", "quiet")
+        env.setdefault("RLM_LLM_TIMEOUT", "60")
         # Pass API key only to child server processes, not global env
         if self._llm_api_key:
             env["LLM_API_KEY"] = self._llm_api_key

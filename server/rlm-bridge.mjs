@@ -16,7 +16,8 @@ const RLM_ENABLED = process.env.RLM_ENABLED !== 'false';
 const RLM_SCRIPT = process.env.RLM_SCRIPT || fileURLToPath(new URL('./rlm_sidecar.py', import.meta.url));
 const RLM_MAX_SUB_CALLS = parseInt(process.env.RLM_MAX_SUB_CALLS || '5');
 const RLM_MAX_TOKENS = parseInt(process.env.RLM_MAX_TOKENS || '4096');
-const RLM_TIMEOUT_MS = parseInt(process.env.RLM_TIMEOUT_MS || '45000');
+const RLM_TIMEOUT_MS = parseInt(process.env.RLM_TIMEOUT_MS || '120000');
+const RLM_LLM_TIMEOUT = parseInt(process.env.RLM_LLM_TIMEOUT || '60');
 const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192');
 
 // Resolve Python binary: venv python preferred (has httpx/numpy), system python as fallback
@@ -158,6 +159,7 @@ export function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
       maxSubCalls: RLM_MAX_SUB_CALLS,
       maxTokensBudget: RLM_MAX_TOKENS,
    contextWindow: parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192'),
+    llmTimeout: RLM_LLM_TIMEOUT,
     },
   };
 

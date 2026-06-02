@@ -182,7 +182,29 @@ Source: 4 parallel sub-agent audits → BUGS-sidecars-infra-v2.md, BUGS-server-c
 - **Integration tests**: 65 passed, 0 failed (run-test.sh in WSL Ubuntu-24.04)
 - **Manual**: `.env` fallback correctly extracts `LLM_API_KEY` from `~/.hermes/.env`
 
-## Phase 10 — MEDIUM/LOW (deferred)
+## Phase 10 — RLM Read Timeout Fix (2026-06-03)
 
+### CRITICAL
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| C11 | call_llm() hardcoded timeout=15 too short for cloud LLMs | rlm_sidecar.py:68 | DONE — RLM_LLM_TIMEOUT env var, default 60s |
+| C12 | Bridge RLM_TIMEOUT_MS=45000 too short for 5 sub-calls at 60s each | rlm-bridge.mjs:19 | DONE — default raised to 120s |
+
+### HIGH
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| H28 | rlm_llm_timeout missing from env_map | __init__.py:130 | DONE — added to env_map |
+| H29 | Launchers missing RLM_LLM_TIMEOUT | noxem-launcher.sh/bat | DONE — added RLM_LLM_TIMEOUT=60 |
+| H30 | Bridge doesn't pass llmTimeout in request config | rlm-bridge.mjs:158-162 | DONE — added llmTimeout to request |
+| H31 | Sidecar doesn't read llmTimeout from request | rlm_sidecar.py:529-532 | DONE — reads from config |
+
+## Verification (Phase 10)
+
+- **Syntax check**: All .mjs and .py files pass node --check / python -m py_compile
+- **Integration tests**: 65 passed, 0 failed (run-test.sh in WSL Ubuntu-24.04)
+
+## Phase 11 — MEDIUM/LOW (deferred)
 
 See individual BUGS-*-v2.md and BUGS-*-v3.md reports for remaining bugs.

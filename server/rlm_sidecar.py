@@ -12,6 +12,7 @@ Decomposition strategies:
   session_end_analysis: partition → batch_extract → dedup (2-3 sub-calls)
 """
 
+import os
 import sys
 import json
 import time
@@ -30,6 +31,9 @@ try:
     HAS_HTTPX = True
 except ImportError:
     HAS_HTTPX = False
+
+# Default per-call LLM timeout (seconds). Cloud LLMs need more than the old 15s default.
+_llm_timeout = [int(os.environ.get("RLM_LLM_TIMEOUT", "60"))]
 
 # ── Token Budget ──────────────────────────────────────────
 
@@ -65,8 +69,10 @@ class TokenBudget:
 
 # ── LLM Call ──────────────────────────────────────────────
 
-async def call_llm(url, model, messages, max_tokens=512, temperature=0.1, timeout=15, api_key=""):
+async def call_llm(url, model, messages, max_tokens=512, temperature=0.1, timeout=None, api_key=""):
     """Call the LLM endpoint. Returns (content_string, tokens_used)."""
+    if timeout is None:
+        timeout = _llm_timeout[0]
     payload = {
         "model": model,
         "messages": messages,
@@ -95,8 +101,10 @@ async def call_llm(url, model, messages, max_tokens=512, temperature=0.1, timeou
     return content, tokens
 
 
-async def call_llm_safe(url, model, messages, max_tokens=512, temperature=0.1, timeout=15, api_key=""):
+async def call_llm_safe(url, model, messages, max_tokens=512, temperature=0.1, timeout=None, api_key=""):
     """Call LLM, return empty string on error instead of raising."""
+    if timeout is None:
+        timeout = _llm_timeout[0]
     try:
         content, tokens = await call_llm(url, model, messages, max_tokens, temperature, timeout, api_key)
         return content, tokens
@@ -204,7 +212,7 @@ Conversation:
         llm_url, llm_model,
         [{"role": "system", "content": "You classify conversation turns by type and importance. Return only valid JSON."},
          {"role": "user", "content": peek_prompt}],
-        256, 0.1, 15, api_key=llm_api_key
+        256, 0.1, api_key=llm_api_key
     )
     budget.consume(peek_tokens)
 
@@ -250,7 +258,7 @@ Extract critical context, drift warnings, key facts, and advice:"""
         llm_url, llm_model,
         [{"role": "system", "content": "You are a second-brain advisor. Extract critical context from conversations. Return valid JSON."},
          {"role": "user", "content": extract_prompt}],
-        1024, 0.2, 20, api_key=llm_api_key
+        1024, 0.2, api_key=llm_api_key
     )
     budget.consume(extract_tokens)
 
@@ -313,7 +321,7 @@ Return JSON:
         llm_url, llm_model,
         [{"role": "system", "content": "You detect task drift and provide advice. Return valid JSON."},
          {"role": "user", "content": advise_prompt}],
-        800, 0.2, 20, api_key=llm_api_key
+        800, 0.2, api_key=llm_api_key
     )
     budget.consume(tokens)
 
@@ -377,7 +385,7 @@ Extract memories:"""
             llm_url, llm_model,
             [{"role": "system", "content": "You extract memories from conversations. Return only valid JSON arrays."},
              {"role": "user", "content": prompt}],
-            512, 0.1, 15, api_key=llm_api_key
+            512, 0.1, api_key=llm_api_key
         )
         budget.consume(tokens)
 
@@ -413,7 +421,7 @@ Deduplicated memories:"""
             llm_url, llm_model,
             [{"role": "system", "content": "You deduplicate memories. Return only valid JSON arrays."},
              {"role": "user", "content": dedup_prompt}],
-            512, 0.1, 15, api_key=llm_api_key
+            512, 0.1, api_key=llm_api_key
         )
         budget.consume(tokens)
 
@@ -456,7 +464,7 @@ async def _single_shot_compress(req, budget):
         req["llmUrl"], req["llmModel"],
         [{"role": "system", "content": "You are a second-brain advisor. Return JSON: {\"critical_context\":[],\"task_drift_warnings\":[],\"key_facts\":[],\"advice\":\"\"}"},
          {"role": "user", "content": f"Memories:\n{mem_text}\n\nConversation:\n{turns_text}"}],
-        1024, 0.2, 30, api_key=req.get("llmApiKey", "")
+        1024, 0.2, api_key=req.get("llmApiKey", "")
     )
     budget.consume(tokens)
 
@@ -478,7 +486,7 @@ async def _single_shot_advice(req, budget):
         req["llmUrl"], req["llmModel"],
         [{"role": "system", "content": "You are a second-brain advisor. Return JSON: {\"drift_detected\":false,\"drift_details\":[],\"relevant_memories\":[],\"advice_text\":\"\",\"severity\":\"none\"}"},
          {"role": "user", "content": ctx.get("userMessage", "")[:500]}],
-        800, 0.2, 20, api_key=req.get("llmApiKey", "")
+        800, 0.2, api_key=req.get("llmApiKey", "")
     )
     budget.consume(tokens)
 
@@ -518,6 +526,10 @@ async def process_task(req):
     # 8192 context -> 1500 chars/turn; 32768 -> 6000 chars/turn; etc.
     _ctx_window = config.get("contextWindow", 8192)
     turn_limit = min(int(_ctx_window * 0.18), 32000)
+    # Override per-call LLM timeout if bridge sends one
+    _req_llm_timeout = config.get("llmTimeout")
+    if _req_llm_timeout:
+        _llm_timeout[0] = int(_req_llm_timeout)
 
     try:
         if task == "pre_compress_analysis":
