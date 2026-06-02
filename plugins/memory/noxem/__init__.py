@@ -130,6 +130,16 @@ class NoxemMemoryProvider:
         }
         # Store API key separately — only pass to child server processes, not global env
         self._llm_api_key = cfg.get("llm_api_key", "")
+        # Fallback: secret fields save to .env, not noxem.json
+        if not self._llm_api_key:
+            self._llm_api_key = os.environ.get("LLM_API_KEY", "")
+        if not self._llm_api_key:
+            env_path = Path(self._hermes_home).expanduser() / ".env"
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    if line.startswith("LLM_API_KEY="):
+                        self._llm_api_key = line.split("=", 1)[1].strip().strip(chr(39) + chr(34))
+                        break
         for json_key, env_var in env_map.items():
             val = cfg.get(json_key)
             if val and env_var not in os.environ:

@@ -147,6 +147,19 @@ Source: 4 parallel sub-agent audits → BUGS-sidecars-infra-v2.md, BUGS-server-c
 - **Syntax check**: All .mjs and .py files pass `node --check` / `python -m py_compile`
 - **Integration tests**: 65 passed, 0 failed (run-test.sh in WSL Ubuntu-24.04)
 
-## Phase 8 — MEDIUM/LOW (deferred)
+## Phase 8 — 401 API Key Propagation Fix (2026-06-02)
+
+### CRITICAL
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| C10 | `_load_noxem_config()` reads `llm_api_key` only from `noxem.json` — secret fields save to `.env`, so key is always empty, child processes never get `LLM_API_KEY`, 401 persists | __init__.py:132 | DONE — added fallback: `os.environ` then `.env` file read |
+
+## Verification (Phase 8)
+
+- **Syntax check**:  passes
+- **Integration tests**: 65 passed, 0 failed (run-test.sh in WSL Ubuntu-24.04)
+
+## Phase 9 — MEDIUM/LOW (deferred)
 
 See individual BUGS-*-v2.md and BUGS-*-v3.md reports for remaining bugs.
