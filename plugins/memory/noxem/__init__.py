@@ -78,7 +78,7 @@ class NoxemMemoryProvider:
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
         self._server_procs = []
-        self._silent_mode = False
+        self._silent_mode = True  # Always silent when used as Hermes provider
         self._stderr_logs = []  # P-#22
         atexit.register(self.shutdown)
 
@@ -408,30 +408,31 @@ class NoxemMemoryProvider:
         except Exception:
             pass
 
-        # User-visible shutdown summary (only when we auto-started the servers)
-        if self._silent_mode and self._server_procs:
+        # User-visible shutdown summary
+        if self._silent_mode:
             brain_info = "Brain 1"
             brain2 = os.environ.get("BRAIN2_PROVIDER", "local")
             if brain2 != "none":
                 brain_info += f" + Brain 2 {brain2}"
-            print(f"\nHermes session ended. ({brain_info})")
-            print("Shutting down Noxem servers...")
+            print("")  # blank line before message
+            print(f"Hermes session ended. ({brain_info})")
 
-        # Stop server processes (with optional name tracking)
+            if self._server_procs:
+                print("Shutting down Noxem servers...")
+
+        # Stop server processes (only if we auto-started them)
         for item in self._server_procs:
             proc, name = item if isinstance(item, tuple) else (item, "Server")
             try:
                 if self._silent_mode:
-                    print(f"  {name} stopping...")
+                    print(f" {name} stopping...")
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 if self._silent_mode:
-                    print(f"  {name} stopped")
-                else:
-                    logger.info(f"Noxem stopped auto-started server PID {proc.pid}")
+                    print(f" {name} stopped")
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         self._server_procs.clear()
@@ -441,7 +442,7 @@ class NoxemMemoryProvider:
         self._clean_pid_file(home / "noxem-server.pid")
         self._clean_pid_file(home / "noxem-memory.pid")
         self._clean_pid_file(home / "noxem-adapter.pid")
-        for log_fh in self._stderr_logs:  # P-#22
+        for log_fh in self._stderr_logs:
             try:
                 log_fh.close()
             except Exception:
