@@ -448,67 +448,102 @@ class NoxemMemoryProvider:
     def get_config_schema(self):
         return [
             {
-                "key": "memory_server",
-                "description": "Noxem memory server URL",
-                "default": MEMORY_SERVER_DEFAULT,
-                "required": False,
-            },
-            {
                 "key": "brain2_provider",
-                "description": "Brain 2 provider: qwenproxy (cloud), local (any OpenAI-compatible LLM), or freellm (FreeTheAI.xyz free API)",
+                "description": "Brain 2 provider",
                 "default": "qwenproxy",
                 "choices": ["qwenproxy", "local", "freellm"],
-                "required": False,
             },
+            # ── QwenProxy (cloud) ───────────────────────
+            {
+                "key": "llm_api_key",
+                "description": "QwenProxy API key",
+                "secret": True,
+                "when": {"brain2_provider": "qwenproxy"},
+                "env_var": "LLM_API_KEY",
+            },
+            # ── Local LLM ───────────────────────────────
             {
                 "key": "llm_url",
-            "description": "LLM API endpoint (for advisor + extraction). Auto-set for FreeLLM — you can skip this.",
-                "default": "http://127.0.0.1:8000/v1/chat/completions",
-                "required": False,
+                "description": "LLM API endpoint",
+                "default": "http://localhost:11434/v1/chat/completions",
+                "when": {"brain2_provider": "local"},
             },
             {
                 "key": "llm_model",
-            "description": "Model name for LLM calls (ignored for QwenProxy — auto-normalized). Required for FreeLLM/local — see freetheai.xyz/models",
-                "default": "qwen3.6-plus-no-thinking",
-                "required": False,
+                "description": "Model name",
+                "default": "llama3.1",
+                "when": {"brain2_provider": "local"},
             },
             {
-                "key": "llm_api_key",
-            "description": "API key for LLM endpoint (required for FreeLLM/cloud, not needed for Ollama/llama.cpp)",
-                "default": "",
-                "required": False,
+                "key": "llm_api_key_local",
+                "description": "LLM API key",
+                "secret": True,
+                "when": {"brain2_provider": "local"},
+                "env_var": "LLM_API_KEY",
             },
-                        {
-            "key": "context_window",
-            "description": "LLM context window size in tokens (e.g. 8192, 32768, 131072, 1048576). Affects how much conversation content is sent for extraction.",
-            "default": 8192,
-            
-            "required": False,
-        },
-        {
-"key": "embedding_enabled",
-                "description": "Enable Brain-1 for vector search",
+            # ── FreeLLM ──────────────────────────────────
+            {
+                "key": "llm_model_freellm",
+                "description": "Model ID (browse: freetheai.xyz/models)",
+                "default": "fee/kimi-k2.6",
+                "when": {"brain2_provider": "freellm"},
+            },
+            {
+                "key": "llm_api_key_freellm",
+                "description": "FreeLLM API key",
+                "secret": True,
+                "when": {"brain2_provider": "freellm"},
+                "url": "https://discord.gg/hnz3yB3bWg",
+                "env_var": "LLM_API_KEY",
+            },
+            {
+                "key": "context_window",
+                "description": "Context window",
+                "default": 8192,
+                "choices": [8192, 32768, 131072, 1048576],
+            },
+            {
+                "key": "embedding_enabled",
+                "description": "Brain-1 semantic search",
                 "default": "true",
                 "choices": ["true", "false"],
-                "required": False,
             },
         ]
-
     def save_config(self, values: dict, hermes_home: str) -> None:
         config_path = Path(hermes_home) / "noxem.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        # Merge with existing config so we don't lose previously saved fields
         existing = {}
         if config_path.exists():
             try:
                 existing = json.loads(config_path.read_text())
             except Exception:
                 pass
+
+        # Normalize aliased keys from conditional schema fields
+        # llm_api_key_local / llm_api_key_freellm -> llm_api_key
+        if values.get("llm_api_key_local"):
+            values["llm_api_key"] = values.pop("llm_api_key_local")
+        elif values.get("llm_api_key_freellm"):
+            values["llm_api_key"] = values.pop("llm_api_key_freellm")
+        values.pop("llm_api_key_local", None)
+        values.pop("llm_api_key_freellm", None)
+
+        # llm_model_freellm -> llm_model
+        if values.get("llm_model_freellm"):
+            values["llm_model"] = values.pop("llm_model_freellm")
+        values.pop("llm_model_freellm", None)
+
         # FreeLLM preset: auto-set the fixed base URL
         if values.get("brain2_provider") == "freellm":
-            existing["llm_url"] = "https://api.freetheai.xyz/v1/chat/completions"
+            values["llm_url"] = "https://api.freetheai.xyz/v1/chat/completions"
             if not values.get("llm_model"):
-                existing["llm_model"] = "fee/kimi-k2.6"
+                values["llm_model"] = "fee/kimi-k2.6"
+
+        # QwenProxy: clear local-only fields
+        if values.get("brain2_provider") == "qwenproxy":
+            values.pop("llm_url", None)
+            values.pop("llm_model", None)
+
         existing.update(values)
         config_path.write_text(json.dumps(existing, indent=2))
         logger.info(f"Noxem config saved to {config_path}")
