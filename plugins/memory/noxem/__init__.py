@@ -42,7 +42,6 @@ MEMORY_SERVER_DEFAULT = "http://127.0.0.1:3001"
 #   node server/memory-server.mjs --tls-cert=/path/to/cert.pem --tls-key=/path/to/key.pem
 # For self-signed certs, set NODE_TLS_REJECT_UNAUTHORIZED=0 in env (dev only).
 
-
 class NoxemMemoryProvider:
     """MemoryProvider for Hermes Agent — connects to the Noxem memory server."""
 
@@ -483,6 +482,12 @@ class NoxemMemoryProvider:
             },
             # ── FreeLLM ──────────────────────────────────
             {
+                "key": "_freellm_tutorial",
+                "description": "\n  FreeLLM Setup Tutorial:\n  Step 1: Join the Discord server: https://discord.gg/hnz3yB3bWg\n  Step 2: Go to #how-to-signup channel to generate your API key\n  Step 3: Go to #how-to-checkin to activate your API key\n  Press Enter to continue",
+                "default": "",
+                "when": {"brain2_provider": "freellm"},
+            },
+            {
                 "key": "llm_model_freellm",
                 "description": "Model ID (browse: freetheai.xyz/models)",
                 "default": "fee/kimi-k2.6",
@@ -493,7 +498,7 @@ class NoxemMemoryProvider:
                 "description": "FreeLLM API key",
                 "secret": True,
                 "when": {"brain2_provider": "freellm"},
-                "url": "https://discord.gg/hnz3yB3bWg",
+
                 "env_var": "LLM_API_KEY",
             },
             {
@@ -532,6 +537,7 @@ class NoxemMemoryProvider:
         if values.get("llm_model_freellm"):
             values["llm_model"] = values.pop("llm_model_freellm")
         values.pop("llm_model_freellm", None)
+        values.pop("_freellm_tutorial", None)
 
         # FreeLLM preset: auto-set the fixed base URL
         if values.get("brain2_provider") == "freellm":
@@ -1003,7 +1009,6 @@ class NoxemMemoryProvider:
     @staticmethod
     def _urlencode(s: str) -> str:
         return urllib.parse.quote(s, safe="")
-
 
 def register(ctx) -> None:
     """Plugin entry point — registers noxem as a memory provider."""
