@@ -404,7 +404,7 @@ class NoxemMemoryProvider:
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=3.0)
         try:
-            sys.stdout.flush()
+            sys.stderr.flush()
         except Exception:
             pass
 
@@ -414,25 +414,25 @@ class NoxemMemoryProvider:
             brain2 = os.environ.get("BRAIN2_PROVIDER", "local")
             if brain2 != "none":
                 brain_info += f" + Brain 2 {brain2}"
-            print("")  # blank line before message
-            print(f"Hermes session ended. ({brain_info})")
+            sys.stderr.write(chr(10))  # blank line
+            sys.stderr.write(f"Hermes session ended. ({brain_info})" + chr(10))
 
             if self._server_procs:
-                print("Shutting down Noxem servers...")
+                sys.stderr.write("Shutting down Noxem servers..." + chr(10))
 
         # Stop server processes (only if we auto-started them)
         for item in self._server_procs:
             proc, name = item if isinstance(item, tuple) else (item, "Server")
             try:
                 if self._silent_mode:
-                    print(f" {name} stopping...")
+                    sys.stderr.write(f" {name} stopping..." + chr(10))
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 if self._silent_mode:
-                    print(f" {name} stopped")
+                    sys.stderr.write(f" {name} stopped" + chr(10))
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         self._server_procs.clear()
@@ -450,7 +450,7 @@ class NoxemMemoryProvider:
         self._stderr_logs.clear()
 
         if self._silent_mode:
-            print("Noxem cleaned up.")
+            sys.stderr.write("Noxem cleaned up." + chr(10))
         logger.info("Noxem shutdown complete")
 
     # ── Config ────────────────────────────────────────────────
