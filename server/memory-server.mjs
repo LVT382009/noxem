@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+const LOG_QUIET = process.env.LOG_LEVEL === 'quiet';
 
 import { isVecReady, checkTurboVecHealth, isTurboVecHealthy, getVectorBackend } from './vector-index.mjs';
 import { llmFetch } from './llm-fetch.mjs';
@@ -2054,35 +2055,33 @@ app.get('/memory/research/hints', (req, res) => {
 // Add a relationship edge between two memories
 // ─── Start ────────────────────────────────────────────────────────
 const server = app.listen(PORT, '127.0.0.1', () => {
-  console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
-  console.log(`  Port: ${PORT}`);
-  console.log(`  Brain-1: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
-  console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'} (backend: ${getVectorBackend()})`)
-if (getVectorBackend() !== 'sqlite') {
-  checkTurboVecHealth().then(h => console.log(`  TurboVec: ${h.ok ? `alive (${h.count} vectors)` : 'unavailable'}`)).catch(() => {})
-};
-  console.log(` Brain-2: ${ENABLE_ADVISOR ? 'ON' : 'OFF'}`);
-  console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
-  console.log(` Research: ${ENABLE_RESEARCH ? 'Background pipeline (topic -> DDG -> fetch -> extract)' : 'OFF (Brain 1 only)'}`);
-  console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
-  console.log(`  Decay: Weibull (type-specific eta/k)`);
-  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+  if (!LOG_QUIET) console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);
+  if (!LOG_QUIET) console.log(`  Port: ${PORT}`);
+  if (!LOG_QUIET) console.log(`  Brain-1: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
+  if (!LOG_QUIET) console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'} (backend: ${getVectorBackend()})`)
+if (!LOG_QUIET && getVectorBackend() !== 'sqlite') { checkTurboVecHealth().then(h => console.log(`  TurboVec: ${h.ok ? `alive (${h.count} vectors)` : 'unavailable'}`)).catch(() => {}); };
+  if (!LOG_QUIET) console.log(` Brain-2: ${ENABLE_ADVISOR ? 'ON' : 'OFF'}`);
+  if (!LOG_QUIET) console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
+  if (!LOG_QUIET) console.log(` Research: ${ENABLE_RESEARCH ? 'Background pipeline (topic -> DDG -> fetch -> extract)' : 'OFF (Brain 1 only)'}`);
+  if (!LOG_QUIET) console.log(`  Maintenance: ${ENABLE_MAINTENANCE ? 'ON (5min)' : 'DISABLED'}`);
+  if (!LOG_QUIET) console.log(`  Decay: Weibull (type-specific eta/k)`);
+  if (!LOG_QUIET) console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
 });
 
 // Graceful shutdown
 function shutdown(signal) {
-  console.log(`\n${signal} received — shutting down gracefully...`);
+  if (!LOG_QUIET) console.log(`\n${signal} received — shutting down gracefully...`);
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   stopMaintenanceCron();
   shutdownRLM(); // Stop Brain 2 sidecar before closing server
   server.close(() => {
     close(); // close SQLite
-    console.log('Memory server stopped.');
+    if (!LOG_QUIET) console.log('Memory server stopped.');
     process.exit(0);
   });
   // Force exit after 5s if connections don't close
   setTimeout(() => {
-    console.log('Forcing exit after timeout.');
+    if (!LOG_QUIET) console.log('Forcing exit after timeout.');
     process.exit(1);
   }, 5000);
 }

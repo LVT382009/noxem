@@ -40,6 +40,7 @@ set NOXEM_CONFIG=%USERPROFILE%\.hermes\noxem.json
 if not defined ENABLE_EMBEDDING set ENABLE_EMBEDDING=true
 if not defined ENABLE_ADVISOR set ENABLE_ADVISOR=true
 if not defined ENABLE_MAINTENANCE set ENABLE_MAINTENANCE=true
+if not defined LOG_LEVEL set LOG_LEVEL=quiet
 set NODE_OPTIONS=--dns-result-order=ipv4first
 
 REM ── Read saved config from noxem.json ──

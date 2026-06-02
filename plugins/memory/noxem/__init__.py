@@ -79,6 +79,7 @@ class NoxemMemoryProvider:
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
         self._server_procs = []
+        self._silent_mode = False
         self._stderr_logs = []  # P-#22
         atexit.register(self.shutdown)
 
@@ -94,6 +95,7 @@ class NoxemMemoryProvider:
 
     def _try_start_servers_async(self):
         """Start both servers (memory + LLM) in background thread, then check health."""
+        self._silent_mode = True
         def _start():
             try:
                 self._try_start_servers()
@@ -171,6 +173,7 @@ class NoxemMemoryProvider:
         env.setdefault("ENABLE_MAINTENANCE", "true")
         env.setdefault("ENABLE_RESEARCH", "true")
         env.setdefault("NODE_OPTIONS", "--dns-result-order=ipv4first")
+        env.setdefault("LOG_LEVEL", "quiet")
         # Pass API key only to child server processes, not global env
         if self._llm_api_key:
             env["LLM_API_KEY"] = self._llm_api_key
@@ -201,13 +204,45 @@ class NoxemMemoryProvider:
                         [node_bin, str(path)],
                         **popen_kwargs,
                     )
-                    self._server_procs.append(proc)
+                    self._server_procs.append((proc, "LLM server"))
                     self._write_pid_file(home / 'noxem-server.pid', proc.pid)  # P-#29
                     logger.info(f"Noxem auto-started LLM server from {path} (PID {proc.pid})")
-                    sys.stderr.write(f"[Noxem] Auto-starting LLM server... (PID {proc.pid})\n")
+                    logger.debug(f"Auto-starting LLM server (PID {proc.pid})")
                     break
                 except Exception as e:
                     logger.debug(f"Failed to auto-start LLM from {path}: {e}")
+
+        # Start QwenProxy adapter if cloud Brain 2 is configured
+        brain2_provider = env.get("BRAIN2_PROVIDER", "qwenproxy")
+        if brain2_provider == "qwenproxy":
+            adapter_candidates = [
+                home / "noxem-server" / "server" / "qwenproxy-adapter.mjs",
+                home / ".hermes" / "noxem-server" / "server" / "qwenproxy-adapter.mjs",
+            ]
+            for path in adapter_candidates:
+                if path.exists():
+                    try:
+                        _adapter_stderr_log = open(home / "noxem-adapter-stderr.log", "a")
+                        self._stderr_logs.append(_adapter_stderr_log)
+                        popen_kwargs = {
+                            "cwd": str(path.parent),
+                            "env": env,
+                            "stdout": subprocess.DEVNULL,
+                            "stderr": _adapter_stderr_log,
+                            "start_new_session": True,
+                        }
+                        if platform.system() == "Windows":
+                            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                        proc = subprocess.Popen(
+                            [node_bin, str(path)],
+                            **popen_kwargs,
+                        )
+                        self._server_procs.append((proc, "Adapter"))
+                        self._write_pid_file(home / "noxem-adapter.pid", proc.pid)
+                        logger.debug(f"Auto-starting QwenProxy adapter (PID {proc.pid})")
+                        break
+                    except Exception as e:
+                        logger.debug(f"Failed to auto-start adapter from {path}: {e}")
 
         # Start memory server
         memory_candidates = [
@@ -233,9 +268,9 @@ class NoxemMemoryProvider:
                         [node_bin, str(path)],
                         **popen_kwargs,
                     )
-                    self._server_procs.append(proc)
+                    self._server_procs.append((proc, "Memory server"))
                     logger.info(f"Noxem auto-started memory server from {path} (PID {proc.pid})")
-                    sys.stderr.write(f"[Noxem] Auto-starting memory server... (PID {proc.pid})\n")
+                    logger.debug(f"Auto-starting memory server (PID {proc.pid})")
                     started = True
                     break
                 except Exception as e:
@@ -353,7 +388,7 @@ class NoxemMemoryProvider:
             pass
 
     def shutdown(self) -> None:
-        """Process exit cleanup. Join daemon threads then kill auto-started server processes."""
+        """Process exit cleanup. Kill auto-started servers and show summary."""
         self._shutdown_event.set()  # P-#24
         if self._server_start_thread and self._server_start_thread.is_alive():
             self._server_start_thread.join(timeout=5.0)
@@ -363,27 +398,49 @@ class NoxemMemoryProvider:
             sys.stdout.flush()
         except Exception:
             pass
-        for proc in self._server_procs:
+
+        # User-visible shutdown summary (only when we auto-started the servers)
+        if self._silent_mode and self._server_procs:
+            brain_info = "Brain 1"
+            brain2 = os.environ.get("BRAIN2_PROVIDER", "local")
+            if brain2 != "none":
+                brain_info += f" + Brain 2 {brain2}"
+            print(f"\nHermes session ended. ({brain_info})")
+            print("Shutting down Noxem servers...")
+
+        # Stop server processes (with optional name tracking)
+        for item in self._server_procs:
+            proc, name = item if isinstance(item, tuple) else (item, "Server")
             try:
+                if self._silent_mode:
+                    print(f"  {name} stopping...")
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                logger.info(f"Noxem stopped auto-started server PID {proc.pid}")
+                if self._silent_mode:
+                    print(f"  {name} stopped")
+                else:
+                    logger.info(f"Noxem stopped auto-started server PID {proc.pid}")
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         self._server_procs.clear()
-        # P-#29: Clean up PID files on shutdown
+
+        # Clean up PID files
         home = Path(self._hermes_home).expanduser()
-        self._clean_pid_file(home / 'noxem-server.pid')
-        self._clean_pid_file(home / 'noxem-memory.pid')
+        self._clean_pid_file(home / "noxem-server.pid")
+        self._clean_pid_file(home / "noxem-memory.pid")
+        self._clean_pid_file(home / "noxem-adapter.pid")
         for log_fh in self._stderr_logs:  # P-#22
             try:
                 log_fh.close()
             except Exception:
                 pass
         self._stderr_logs.clear()
+
+        if self._silent_mode:
+            print("Noxem cleaned up.")
         logger.info("Noxem shutdown complete")
 
     # ── Config ────────────────────────────────────────────────
