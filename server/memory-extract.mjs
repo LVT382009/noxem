@@ -1,3 +1,4 @@
+const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 import { llmFetch } from './llm-fetch.mjs';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
@@ -65,7 +66,7 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     const res = await llmFetch(url, {
       method: 'POST',
       body,
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
     });
 
     if (!res.ok) {

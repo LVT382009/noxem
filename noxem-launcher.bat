@@ -42,6 +42,7 @@ if not defined ENABLE_ADVISOR set ENABLE_ADVISOR=true
 if not defined ENABLE_MAINTENANCE set ENABLE_MAINTENANCE=true
 if not defined LOG_LEVEL set LOG_LEVEL=quiet
 if not defined RLM_LLM_TIMEOUT set RLM_LLM_TIMEOUT=60
+if not defined EXTRACT_TIMEOUT_MS set EXTRACT_TIMEOUT_MS=60000
 set NODE_OPTIONS=--dns-result-order=ipv4first
 
 REM ── Read saved config from noxem.json ──

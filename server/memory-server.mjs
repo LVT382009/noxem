@@ -100,6 +100,7 @@ if (MEMORY_API_KEY) {
     if (tokenBuf.length !== keyBuf.length || !timingSafeEqual(tokenBuf, keyBuf)) {
       return res.status(401).json({ error: 'Unauthorized: invalid or missing API key' });
     }
+const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
     next();
   });
   LOG_DEBUG && console.log('API key authentication: ENABLED');
@@ -553,7 +554,7 @@ const recentMems = (getSessionMemories(fromMem.session_id) || []).slice(-8).map(
  max_tokens: 256,
  temperature: 0.1,
  }),
- signal: AbortSignal.timeout(15000),
+ signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
  });
  if (llmRes.ok) {
  const llmData = await llmRes.json();
@@ -1412,7 +1413,7 @@ Extract procedure:` },
         max_tokens: 1024,
         temperature: 0.1,
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
     });
 
     if (!llmRes.ok) return res.status(503).json({ error: 'LLM unavailable' });

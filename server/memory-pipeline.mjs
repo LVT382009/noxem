@@ -16,6 +16,8 @@ import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMem
 import { llmFetch } from './llm-fetch.mjs';
 import { isEmbeddingReady, embed, categorizeText, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
 
+const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
+
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
@@ -99,7 +101,7 @@ export async function extractL1FromL0(sessionId) {
         max_tokens: 1024,
         temperature: 0.1,
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
     });
 
     if (!res.ok) return;
@@ -172,7 +174,7 @@ export async function extractL2Scenes() {
           max_tokens: 256,
           temperature: 0.1,
         }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
       });
 
       if (!res.ok) continue;
@@ -230,7 +232,7 @@ export async function extractL3Persona() {
         max_tokens: 512,
         temperature: 0.1,
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
     });
 
     if (!res.ok) return;
