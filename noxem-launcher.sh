@@ -115,9 +115,18 @@ read_noxem_config() {
       export NOXEM_SERVER="$_cfg_memory_server"
       # Extract port from URL for memory server
       MEMORY_PORT=$(echo "$_cfg_memory_server" | grep -oE '[0-9]+$' || echo "$MEMORY_PORT")
-    fi
-  fi
+		fi
+	fi
 }
+if [ -z "${LLM_API_KEY:-}" ]; then
+	_env_file="${HOME}/.hermes/.env"
+	if [ -f "$_env_file" ]; then
+  _resolved_key=$(grep '^LLM_API_KEY=' "$_env_file" 2>/dev/null | head -1 | cut -d= -f2- | sed "s/^['\"]//;s/['\"]$//")
+		if [ -n "$_resolved_key" ]; then
+			export LLM_API_KEY="$_resolved_key"
+		fi
+	fi
+fi
 
 # ── Prompt for Qwen credentials (email + password) ──
 prompt_qwen_credentials() {
@@ -406,6 +415,24 @@ cd "$NOXEM_DIR"
 # Read saved config first (env vars/cli flags take precedence)
 read_noxem_config
 
+# Fallback: secret fields save to .env, not noxem.json
+if [ -z "${LLM_API_KEY:-}" ]; then
+	_env_file="${HOME}/.hermes/.env"
+	if [ -f "$_env_file" ]; then
+		_resolved_key=$(grep '^LLM_API_KEY=' "$_env_file" 2>/dev/null | head -1 | cut -d= -f2- | sed "s/^['\"]//;s/['\"]$//")
+		if [ -n "$_resolved_key" ]; then
+			export LLM_API_KEY="$_resolved_key"
+		fi
+	fi
+fi
+
+# FreeLLM preset: set fixed URL
+if [ "$BRAIN2_PROVIDER" = 'freellm' ]; then
+	export LLM_URL="https://api.freetheai.xyz/v1/chat/completions"
+	export LOCAL_LLM_URL="https://api.freetheai.xyz/v1"
+	export BRAIN2_PROVIDER=freellm  # keep as freellm for display, treated as local for adapter
+fi
+
 # ── Brain 1 + Brain 2 selection ──
 if [ -z "$BRAIN2_ENABLED" ]; then
   if [ ! -t 0 ]; then
@@ -442,56 +469,65 @@ if [ "$BRAIN2_ENABLED" = '1' ] && [ -z "$BRAIN2_PROVIDER" ]; then
     green '║ Brain 2 — Provider Selection           ║'
     green '╚═══════════════════════════════════════╝'
     echo ""
-    echo ' [1] Qwen 3.6 Plus — free cloud via QwenProxy (requires Qwen account)'
-    echo ' [2] Local model — any OpenAI-compatible LLM (Ollama, LM Studio, llama.cpp...)'
-    echo ' [3] Skip Brain 2 — fall back to Brain 1 only'
-    echo ""
-    read -rp 'Choose [1-3]: ' _provider_choice
-    case "$_provider_choice" in
-      1)
-        if check_ubuntu_brain2; then
-          BRAIN2_PROVIDER=qwenproxy
-        else
-          echo ""
-          dim " QwenProxy not supported on this Ubuntu version."
-          dim " You can still use a local model instead."
-          read -rp 'Configure a local model instead? [y/N]: ' _use_local
-          if [[ "$_use_local" =~ ^[Yy]$ ]]; then
-            BRAIN2_PROVIDER=local
-            prompt_local_llm
-          else
-            BRAIN2_ENABLED=0
-            export BRAIN2_ENABLED
-          fi
-        fi
-        ;;
-      2)
-        BRAIN2_PROVIDER=local
-        prompt_local_llm
-        ;;
-      3)
-        BRAIN2_ENABLED=0
-        export BRAIN2_ENABLED
-        ;;
-      *)
-        BRAIN2_PROVIDER=qwenproxy
-        ;;
-    esac
+	echo ' [1] Qwen 3.6 Plus — free cloud via QwenProxy (requires Qwen account)'
+	echo ' [2] Local model — any OpenAI-compatible LLM (Ollama, LM Studio, llama.cpp...)'
+	echo ' [3] FreeLLM — free cloud LLM via FreeTheAI.xyz'
+	echo ' [4] Skip Brain 2 — fall back to Brain 1 only'
+	echo ""
+	read -rp 'Choose [1-4]: ' _provider_choice
+	case "$_provider_choice" in
+	1)
+		if check_ubuntu_brain2; then
+			BRAIN2_PROVIDER=qwenproxy
+		else
+			echo ""
+		dim " QwenProxy not supported on this Ubuntu version."
+		dim " You can still use a local model instead."
+			read -rp 'Configure a local model instead? [y/N]: ' _use_local
+			if [[ "$_use_local" =~ ^[Yy]$ ]]; then
+				BRAIN2_PROVIDER=local
+				prompt_local_llm
+			else
+				BRAIN2_ENABLED=0
+				export BRAIN2_ENABLED
+			fi
+		fi
+		;;
+	2)
+		BRAIN2_PROVIDER=local
+		prompt_local_llm
+		;;
+	3)
+		BRAIN2_PROVIDER=freellm
+		prompt_freellm
+		;;
+	4)
+		BRAIN2_ENABLED=0
+		export BRAIN2_ENABLED
+		;;
+	*)
+		BRAIN2_PROVIDER=qwenproxy
+		;;
+	esac
   fi
 fi
 export BRAIN2_PROVIDER
 
 echo ""
 if [ "$BRAIN2_ENABLED" = '1' ]; then
-  if [ "$BRAIN2_PROVIDER" = 'local' ]; then
-    green '╔═══════════════════════════════════╗'
-    green '║ Noxem — Starting Servers (Local)  ║'
-    green '╚═══════════════════════════════════╝'
-  else
-    green '╔═══════════════════════════════════╗'
-    green '║ Noxem — Starting Servers (Cloud)  ║'
-    green '╚═══════════════════════════════════╝'
-  fi
+if [ "$BRAIN2_PROVIDER" = 'qwenproxy' ]; then
+	green '╔═══════════════════════════════════╗'
+	green '║ Noxem — Starting Servers (Cloud) ║'
+	green '╚═══════════════════════════════════╝'
+elif [ "$BRAIN2_PROVIDER" = 'freellm' ]; then
+	green '╔═══════════════════════════════════╗'
+	green '║ Noxem — Starting Servers (FreeLLM) ║'
+	green '╚═══════════════════════════════════╝'
+else
+	green '╔═══════════════════════════════════╗'
+	green '║ Noxem — Starting Servers (Local) ║'
+	green '╚═══════════════════════════════════╝'
+fi
 else
   green '╔═══════════════════════════════════╗'
   green '║ Noxem — Brain 1 Only              ║'
@@ -515,9 +551,9 @@ wait_for_port $MEMORY_PORT "Memory server" 180
 
 # 2. Brain 2 — QwenProxy + adapter, or local model adapter
 if [ "$BRAIN2_ENABLED" = '1' ]; then
-  if [ "$BRAIN2_PROVIDER" = 'local' ]; then
+  if [ "$BRAIN2_PROVIDER" = 'local' ] || [ "$BRAIN2_PROVIDER" = 'freellm' ]; then
     # ── Local LLM mode ──────────────────────────────────────
-    echo "[2/2] Starting Brain 2 (Local model)..."
+    if [ "$BRAIN2_PROVIDER" = 'freellm' ]; then echo "[2/2] Starting Brain 2 (FreeLLM)..."; else echo "[2/2] Starting Brain 2 (Local model)..."; fi
 
     # Verify the local endpoint is reachable
     dim " Checking local LLM endpoint..."

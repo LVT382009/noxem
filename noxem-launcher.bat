@@ -77,6 +77,16 @@ if exist "%NOXEM_CONFIG%" (
   if not defined LLM_API_KEY if defined _CFG_LLM_API_KEY set LLM_API_KEY=!_CFG_LLM_API_KEY!
 )
 
+REM Fallback: secret fields save to .env, not noxem.json
+if not defined LLM_API_KEY (
+    set _ENV_FILE=%USERPROFILE%\.hermes\.env
+    if exist "!_ENV_FILE!" (
+        for /f "tokens=1,* delims==" %%e in ('findstr /B "LLM_API_KEY=" "!_ENV_FILE!"') do (
+            set LLM_API_KEY=%%f
+        )
+    )
+)
+
 REM ── Brain selection ──
 echo.
 echo Noxem - Brain Selection
@@ -317,7 +327,7 @@ if not defined LOCAL_LLM_URL if defined LLM_URL (
 
 REM Start the LLM adapter (local passthrough mode)
 echo Starting LLM adapter (local mode)...
-set BRAIN2_PROVIDER=local
+if not "!BRAIN2_PROVIDER!"=="freellm" set BRAIN2_PROVIDER=local
 start /B node "%ADAPTER_SERVER%"
 set ADAPTER_PID=0
 

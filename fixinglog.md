@@ -160,6 +160,29 @@ Source: 4 parallel sub-agent audits → BUGS-sidecars-infra-v2.md, BUGS-server-c
 - **Syntax check**:  passes
 - **Integration tests**: 65 passed, 0 failed (run-test.sh in WSL Ubuntu-24.04)
 
-## Phase 9 — MEDIUM/LOW (deferred)
+## Phase 9 — Launcher FreeLLM + .env Fallback (2026-06-02)
+
+### CRITICAL
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| C11 | Launcher `read_noxem_config` only reads `llm_api_key` from `noxem.json` (always empty for secrets) — FreeLLM 401 via launcher path | noxem-launcher.sh:111 | DONE — added `.env` file fallback after `read_noxem_config` call |
+| C12 | Launcher falls through to QwenProxy when `BRAIN2_PROVIDER=freellm` — no FreeLLM menu option or server start branch | noxem-launcher.sh:435-591 | DONE — added `[3] FreeLLM` menu option, `freellm` branch in server start + banner |
+| C13 | Same issues in Windows `noxem-launcher.bat` | noxem-launcher.bat | DONE — added FreeLLM menu, `.env` fallback |
+
+### HIGH
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| H27 | `__init__.py` `_load_noxem_config` reads `llm_api_key` only from `noxem.json` (empty for secrets) — auto-start 401 | __init__.py:132 | DONE — added `os.environ` then `.env` file fallback |
+
+## Verification (Phase 9)
+
+- **Syntax check**: `bash -n` / `python -m py_compile` pass
+- **Integration tests**: 65 passed, 0 failed (run-test.sh in WSL Ubuntu-24.04)
+- **Manual**: `.env` fallback correctly extracts `LLM_API_KEY` from `~/.hermes/.env`
+
+## Phase 10 — MEDIUM/LOW (deferred)
+
 
 See individual BUGS-*-v2.md and BUGS-*-v3.md reports for remaining bugs.
