@@ -372,8 +372,8 @@ export function searchProcedures(query, limit = 10) {
 initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
 
 const insert = db.prepare(
-	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary)
-	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary)`
+	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer)
+	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer)`
 );
 
 const insertTx = db.transaction((items) => {
@@ -454,7 +454,7 @@ const getAllWithEmbeddings = db.prepare(
 );
 
 const getWithoutEmbedding = db.prepare(
-  `SELECT id, text FROM memories WHERE embedding IS NULL AND status = 'active' LIMIT ?`
+  `SELECT id, text, context_prefix FROM memories WHERE embedding IS NULL AND status = 'active' LIMIT ?`
 );
 
 const updateEmbedding = db.prepare(
@@ -481,6 +481,21 @@ const traverseGraph = db.prepare(`
     WHERE gw.depth < ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now')) AND gw.path NOT LIKE '%|' || e.to_id || '|%'
   )
   SELECT * FROM graph_walk ORDER BY depth, strength DESC LIMIT ?
+`);
+
+// Recursive graph traversal: multi-hop from a starting memory (incoming edges)
+const traverseGraphIncoming = db.prepare(`
+WITH RECURSIVE graph_walk(id, from_id, to_id, relation, strength, depth, path) AS (
+  SELECT e.id, e.from_id, e.to_id, e.relation, e.strength, 1, '|' || e.to_id || '-' || e.relation || '->' || e.from_id || '|'
+  FROM memory_edges e
+  WHERE e.to_id = ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now'))
+  UNION ALL
+  SELECT e.id, e.from_id, e.to_id, e.relation, gw.strength * e.strength, gw.depth + 1, gw.path || e.to_id || '-' || e.relation || '->' || e.from_id || '|'
+  FROM memory_edges e
+  JOIN graph_walk gw ON e.to_id = gw.from_id
+  WHERE gw.depth < ? AND (e.valid_until IS NULL OR e.valid_until > datetime('now')) AND gw.path NOT LIKE '%|' || e.from_id || '|%'
+)
+SELECT * FROM graph_walk ORDER BY depth, strength DESC LIMIT ?
 `);
 
 // Core memory prepared statements
@@ -527,7 +542,7 @@ function ensureEmbeddingBuffer(embedding) {
   return null;
 }
 
-export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null }) {
+export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null, cone_layer = 0 }) {
   embedding = ensureEmbeddingBuffer(embedding);
   const result = insert.run({
     session_id: session_id || '',
@@ -541,6 +556,7 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
     attribute,
     valid_from: valid_from || new Date().toISOString(),
  summary: summary || null,
+ cone_layer,
  });
   // Update vector index if embedding provided
   if (embedding) {
@@ -566,6 +582,7 @@ export function storeMemories(items) {
     attribute: m.attribute || '',
     valid_from: m.valid_from || now,
     summary: m.summary || null,
+    cone_layer: m.cone_layer ?? 0,
   }));
   const ids = insertTx(prepared);
   // Update vector index for batch

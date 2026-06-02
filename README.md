@@ -7,10 +7,11 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![Platform](https://img.shields.io/badge/Platform-Win%20%7C%20Linux%20%7C%20macOS-0078D4?style=flat-square)]()
+[![Tests](https://img.shields.io/badge/Tests-65%20passed-brightgreen?style=flat-square)]()
 
 ---
 
-[Features](#-features) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Config](#-configuration) · [Benchmarks](#-benchmarks) · [Contributing](#-contributing)
+[Features](#-features) · [Quick Start](#-quick-start) · [Architecture](#-architecture) · [Config](#-configuration) · [Benchmarks](#-benchmarks) · [Tools](#-available-tools) · [Contributing](#-contributing)
 
 </div>
 
@@ -49,7 +50,7 @@
 
 | | |
 |---|---|
-| **Cloud or Local** | QwenProxy (cloud) **or** any local OpenAI-compatible LLM |
+| **Cloud or Local** | Cloud Brain 2 (free account) **or** any local OpenAI-compatible LLM |
 | **Ollama / LM Studio / llama.cpp** | Drop-in — just enter your base URL + model name |
 | **Drift Detection** | Warns when conversation goes off-goal |
 | **Context Recovery** | Preserves critical info across compaction |
@@ -72,11 +73,7 @@
 </table>
 
 > [!TIP]
-> Run `hermes-noxem` to start. Choose **Brain 1 only** (fast, low RAM) or **Brain 1 + Brain 2**. Brain 2 supports two providers:
-> - **QwenProxy** — free cloud Qwen 3.6 Plus (requires Qwen account, auto-login)
-> - **Local model** — any OpenAI-compatible endpoint (Ollama, LM Studio, llama.cpp, etc.)
->
-> Local mode is fully offline — no account needed. DDG search handles research when no cloud LLM is available.
+> Run `hermes-noxem` to start. Choose **Brain 1 only** (fast, low RAM) or **Brain 1 + Brain 2**. Brain 2 supports cloud or local — local mode is fully offline.
 
 ---
 
@@ -106,20 +103,22 @@ bash install.sh
 > [!NOTE]
 > First run downloads Brain 1 (~300 MB).
 
+---
+
 ## How to Use
 
 ```bash
-hermes-noxem                  # Launch with interactive selection
-hermes-noxem --qwenproxy      # Launch with cloud Brain 2 (no prompt)
-hermes-noxem --local          # Launch with local Brain 2 (no prompt)
-hermes-noxem --no-brain2      # Launch memory-only (no prompt)
-hermes-noxem --resume <id>    # Continue a session with Noxem
+hermes-noxem                   # Launch with interactive selection
+hermes-noxem --cloud-brain2    # Launch with cloud Brain 2 (no prompt)
+hermes-noxem --local           # Launch with local Brain 2 (no prompt)
+hermes-noxem --no-brain2       # Launch memory-only (no prompt)
+hermes-noxem --resume <id>     # Continue a session with Noxem
 ```
 
 | Mode | Enabled | Best for |
 |:-----|:--------|:---------|
 | **Brain 1 only** | Semantic search, dedup, categorization, FTS5 | Low RAM, quick lookups |
-| **Brain 1 + QwenProxy** | Everything + cloud Qwen 3.6 advisor + research | Full sessions, web research |
+| **Brain 1 + Cloud** | Everything + cloud advisor + web research | Full sessions, web research |
 | **Brain 1 + Local** | Everything + local LLM advisor + DDG research | Fully offline, privacy-first |
 
 When you select Brain 2, you'll be asked to choose a provider:
@@ -127,9 +126,9 @@ When you select Brain 2, you'll be asked to choose a provider:
 ```
 Brain 2 — Provider Selection
 
- [1] Qwen 3.6 Plus — free cloud via QwenProxy (requires Qwen account)
- [2] Local model — any OpenAI-compatible LLM (Ollama, LM Studio, llama.cpp...)
- [3] Skip Brain 2
+[1] Cloud — free via cloud account
+[2] Local model — any OpenAI-compatible LLM (Ollama, LM Studio, llama.cpp...)
+[3] Skip Brain 2
 ```
 
 If you choose **Local model**, you'll be prompted for:
@@ -137,8 +136,9 @@ If you choose **Local model**, you'll be prompted for:
 | Setting | Description | Example |
 |:--------|:------------|:--------|
 | **Base URL** | Your LLM server's OpenAI-compatible endpoint | `http://localhost:11434/v1` (Ollama) |
-| **Model name** | The model identifier your server expects | `gemma4:e4b`, `qwen3:8b`, `llama3.1` |
+| **Model name** | The model identifier your server expects | `gemma4:e4b`, `llama3.1` |
 | **API key** | Optional — not needed for Ollama or llama.cpp | Leave empty to skip |
+| **Context window** | Token limit for the model | `8192`, `32768`, `131072`, `1048576` |
 
 ### Supported Local Providers
 
@@ -150,7 +150,29 @@ If you choose **Local model**, you'll be prompted for:
 | **Any OpenAI-compatible** | Your URL | Must support `/v1/chat/completions` |
 
 > [!NOTE]
-> When using a local model, web research falls back to **DuckDuckGo search** instead of QwenProxy's built-in search. This works fully offline (DDG doesn't need a cloud LLM).
+> When using a local model, web research falls back to **DuckDuckGo search** instead of cloud search. This works fully offline.
+
+### CLI Commands
+
+```bash
+hermes noxem status           # Server health + memory stats
+hermes noxem search <query>   # Search stored memories
+hermes noxem run              # Run maintenance manually
+hermes noxem config           # Show current configuration
+```
+
+### Using Brain 2 as an OpenAI API
+
+Brain 2 exposes a full OpenAI-compatible API on port 8000. Use it with any tool:
+
+```bash
+# Example with curl
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"default","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Both streaming and non-streaming are supported — it works as a drop-in OpenAI base URL.
 
 ### Configuring via `hermes memory setup`
 
@@ -165,175 +187,80 @@ This saves your configuration to `~/.hermes/noxem.json`, which the launcher read
 | Key | Description | Default |
 |:----|:------------|:--------|
 | `memory_server` | Memory server URL | `http://127.0.0.1:3001` |
-| `brain2_provider` | `qwenproxy` or `local` | `qwenproxy` |
+| `brain2_provider` | `cloud` or `local` | `cloud` |
 | `llm_url` | LLM API endpoint | `http://127.0.0.1:8000/v1/chat/completions` |
-| `llm_model` | Model name for LLM calls | `qwen3.6-plus-no-thinking` |
+| `llm_model` | Model name for LLM calls | _(provider default)_ |
 | `llm_api_key` | API key (optional) | _(empty)_ |
+| `context_window` | LLM context window size (tokens) | `8192` |
 | `embedding_enabled` | Enable Brain-1 vector search | `true` |
-
-### Using Brain 2 as an OpenAI API
-
-Brain 2 exposes a full OpenAI-compatible API on port 8000. Use it with any tool:
-
-```bash
-# Base URL
-http://127.0.0.1:8000/v1
-
-# Available models (varies by provider)
-# QwenProxy mode: qwen3.6-plus, qwen3.6-plus-no-thinking
-# Local mode: whatever your local server provides
-
-# Example
-curl http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.6-plus-no-thinking","messages":[{"role":"user","content":"Hello"}]}'
-```
-
-Both streaming and non-streaming are supported — it works as a drop-in OpenAI base URL.
-
-```bash
-hermes noxem status              # Server health + memory stats
-hermes noxem search <query>      # Search stored memories
-hermes noxem run                 # Run maintenance manually
-hermes noxem config              # Show current configuration
-```
 
 ---
 
 ## Architecture
 
-```
-Hermes Agent / AI Agent
-    |                        |
-    v                        v
-Noxem Plugin (Python)   MCP Server (stdio)
-    |                        |
-    +------ HTTP / stdio -----+
-               |
-               v
-    Noxem Server (Node.js :3001)
-               |
-    +----------+----------+----------+----------+
-    |          |          |          |          |
-    v          v          v          v          v
- Semantic   Cone       Bundle    Graph     Core
- Engine     Pipeline   Search    Edges     Blocks
- --------   --------   --------  ------    ----------
- Vector KNN L0(epi)   M-Flow    Typed     Key-value
- FTS5+RRF   L1(facet) retrieval relations  persistent
- Dedup      L2(scene) Dijkstra  neighbor  config
- Categorize L3(core)  ranking   traverse
- MMR        Warmup              lineage
-            schedule
-               |
-    +----------+----------+
-    |                     |
-    v                     v
- Brain 2              Sidecars
- Advisor              --------
- --------             TurboVec (FastAPI :8100)
- Drift detection      RLM Bridge (NDJSON)
- Session extract      Python venv @ ~/.hermes/noxem-venv
- Research (DDG)
-               |
-    +----------+----------+
-    |                     |
-    v                     v
- QwenProxy            Local LLM
- (:3000->cloud)       (Ollama/LM Studio/llama.cpp)
-               |
-               v
-         SQLite DB
-         (FTS5 + Vectors + Graph + Procedures)
+```mermaid
+graph TD
+    Agent["Hermes Agent / AI Agent"]
+    Plugin["Noxem Plugin<br/>(Python)"]
+    MCP["MCP Server<br/>(stdio)"]
+    Server["Noxem Server<br/>(Node.js :3001)"]
+    Semantic["Semantic Engine<br/>Vector KNN · FTS5+RRF<br/>Dedup · Categorize · MMR"]
+    Cone["Cone Pipeline<br/>L0 episode → L1 facet<br/>L2 scene → L3 core"]
+    Bundle["Bundle Search<br/>M-Flow · Dijkstra ranking"]
+    Graph["Graph Edges<br/>Typed relations · Traversal"]
+    Core["Core Blocks<br/>Key-value persistent config"]
+    Brain2["Brain 2 Sidecars<br/>Advisor · Drift detection<br/>Session extract · Research"]
+    SQLite["SQLite DB<br/>FTS5 + Vectors + Graph + Procedures"]
+    Cloud["Cloud Server"]
+    Local["Local LLM<br/>(Ollama / LM Studio / llama.cpp)"]
 
-    Tools: memory_search . memory_store . memory_sync .
-           memory_release . advisor_advice . search_web .
-           research_hints . memory_graph_traverse
-```
-
-----------------+----------------+
-|              |                                 |
-|     Semantic Engine                   LLM Adapter (:8000)
-|     ---------------                   ----------------
-|     Vector KNN                        Provider: qwenproxy | local
-|     Dedup/categorize                  QwenProxy: SSE <-> JSON bridge
-|     Importance score                  Local: direct passthrough
-|              |                        Model name normalization (QwenProxy)
-|              |                        API key forwarding
-|              |                                 |
-|              +----------------+----------------+
-|                               |
-|              Brain 2 Provider (chosen at launch)
-|              ----------------
-|              qwenproxy: QwenProxy Server (:3000) -> chat.qwen.ai (cloud)
-|              local:    Ollama / LM Studio / llama.cpp / any OpenAI API
-|                               |
-|              Qwen3.6-plus (cloud)  OR  Local model (offline)
-|                               |
-|              SQLite DB
-|              (FTS5 + Vectors)
-|
-+-- Tools: memory_search . memory_store .
-           memory_supersede . memory_lineage .
-           memory_contradiction_check . memory_feedback
+    Agent --> Plugin
+    Agent --> MCP
+    Plugin --> Server
+    MCP --> Server
+    Server --> Semantic
+    Server --> Cone
+    Server --> Bundle
+    Server --> Graph
+    Server --> Core
+    Semantic --> Brain2
+    Brain2 --> Cloud
+    Brain2 --> Local
+    Cone --> SQLite
+    Semantic --> SQLite
+    Graph --> SQLite
 ```
 
 ---
 
 ## Memory Lifecycle
 
-```
-Store --> Enrich --> Categorize --> Extract Entity --> Score Importance
-  |         |           |               |                 |
-  v         v           v               v                 v
-SQLite   Context    Auto-tag       Entity+attr        0.1 - 1.0
-+ FTS5   prefix     (12 types)      pairs           (type-based)
-  |
-  v
-+-------------------------------------------------------------+
-|             Background Maintenance (every 5 min)            |
-|  Dedup --> Contradict --> Consolidate --> Clean/Auto-correct |
-+-------------------------------------------------------------+
-  |
-  v
-+-------------------------------------------------------------+
-|             Cone Pipeline (warmup: 1,2,4,8 new memories)    |
-|  L0(episode) --> L1(facet) --> L2(scene) --> L3(persona)    |
-+-------------------------------------------------------------+
-  |
-  v
-Search --> Hybrid (KNN + FTS5) --> RRF merge --> MMR rerank --> Score
-  |                                                                |
-  v                                                                v
-Bundle Search --> Multi-layer vector --> Dijkstra ranking      Feedback
-```
+```mermaid
+flowchart TD
+    Store["Store"] --> Enrich["Enrich<br/>(context prefix)"]
+    Enrich --> Categorize["Categorize<br/>(12 types)"]
+    Categorize --> Extract["Extract Entity<br/>(entity+attr pairs)"]
+    Extract --> Score["Score Importance<br/>(0.1 - 1.0)"]
+    Score --> SQLite["SQLite + FTS5"]
 
--------------------------------------------------------------+
-| Background Maintenance (every 5 min)                        |
-| Dedup --> Contradict --> Consolidate --> Clean/Auto-correct |
-+-------------------------------------------------------------+
-|
-v
-Search --> Hybrid (KNN + FTS5) --> RRF merge --> MMR rerank --> Score
-|
-v
-Feedback: recalled memories get importance boost (+0.03)
-```
+    SQLite --> Maintenance["Background Maintenance<br/>(every 5 min)"]
+    Maintenance --> Dedup["Dedup"]
+    Dedup --> Contradict["Contradict"]
+    Contradict --> Consolidate["Consolidate"]
+    Consolidate --> ConePipe["Cone Pipeline<br/>(warmup: 1→2→4→8 new memories)"]
 
----
+    ConePipe --> L0["L0 Episode"]
+    L0 --> L1["L1 Facet"]
+    L1 --> L2["L2 Scene"]
+    L2 --> L3["L3 Persona"]
 
-## Commands
-
-```bash
-hermes-noxem                  # Launch with interactive selection
-hermes-noxem --qwenproxy      # Launch with cloud Brain 2
-hermes-noxem --local          # Launch with local Brain 2
-hermes-noxem --no-brain2      # Launch memory-only
-
-hermes noxem status           # Server health + memory stats
-hermes noxem search <query>   # Search stored memories
-hermes noxem run              # Run maintenance manually
-hermes noxem config           # Show current configuration
+    L3 --> Search["Hybrid Search<br/>(KNN + FTS5)"]
+    Search --> RRF["RRF Merge"]
+    RRF --> MMR["MMR Rerank"]
+    MMR --> Result["Scored Results"]
+    Result --> Feedback["Feedback Loop<br/>(+0.03 importance boost)"]
+    Feedback --> Search
+    Result --> BundleSearch["Bundle Search<br/>(Multi-layer vector → Dijkstra)"]
 ```
 
 ---
@@ -354,8 +281,8 @@ hermes noxem config           # Show current configuration
 | `search_web` | Search the web via DuckDuckGo |
 | `research_hints` | Get research status and hints |
 | `memory_graph_traverse` | Traverse memory graph edges |
-| `memory_learn` | Extract procedures from session (via /memory/learn) |
-| `memory_bundle_search` | M-Flow multi-layer retrieval (via /memory/bundle-search) |
+| `memory_learn` | Extract procedures from session |
+| `memory_bundle_search` | M-Flow multi-layer retrieval |
 
 ---
 
@@ -370,6 +297,7 @@ hermes noxem config           # Show current configuration
 | `ENABLE_MAINTENANCE` | `true` | Auto-cleanup every 5 minutes |
 | `PIPELINE_ENABLED` | `true` | Enable cone extraction pipeline |
 | `RLM_ENABLED` | `true` | Enable RLM Python sidecar bridge |
+| `NOXEM_CONTEXT_WINDOW` | `8192` | LLM context window size (tokens) — affects per-turn content limits |
 | `VECTOR_BACKEND` | `sqlite-vec` | Vector backend: `sqlite-vec` or `turbovec` |
 | `TURBOVEC_URL` | `http://127.0.0.1:8100` | TurboVec sidecar URL |
 | `NOXEM_PYTHON` | auto (venv preferred) | Python binary for sidecars |
@@ -381,13 +309,11 @@ hermes noxem config           # Show current configuration
 | `MEMORY_MAX_TOKENS` | `2000` | Token budget for context injection |
 | `RATE_LIMIT_MAX` | `120` | Max requests per minute per IP |
 | `AUTO_PURGE_DAYS` | `365` | Days before low-importance memories are purged |
-| `BRAIN2_PROVIDER` | `qwenproxy` | Brain 2 mode: `qwenproxy` or `local` |
+| `BRAIN2_PROVIDER` | `cloud` | Brain 2 mode: `cloud` or `local` |
 | `LOCAL_LLM_URL` | _(empty)_ | Local LLM base URL (e.g. `http://localhost:11434/v1`) |
-| `LLM_MODEL` | `qwen3.6-plus-no-thinking` | Model for Brain 2 calls |
+| `LLM_MODEL` | _(provider default)_ | Model for Brain 2 calls |
 | `LLM_API_KEY` | _(empty)_ | API key for local LLM (optional) |
 | `LLM_TIMEOUT` | `120000` | Brain 2 request timeout (ms) |
-| `QWENPROXY_PORT` | `3000` | QwenProxy server port (cloud mode only) |
-| `QWENPROXY_URL` | `http://127.0.0.1:3000` | QwenProxy upstream URL (cloud mode only) |
 
 <details>
 <summary>Full env variable list</summary>
@@ -402,7 +328,7 @@ hermes noxem config           # Show current configuration
 | `EMBEDDING_LOAD_RETRIES` | `2` | Brain 1 engine retry count |
 | `EMBEDDING_LOAD_TIMEOUT` | `300000` | Brain 1 engine load timeout (ms) |
 | `EMBEDDING_CLEAR_CACHE_ON_RETRY` | `false` | Clear engine cache on retry |
-| `LLM_URL` / `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | LLM API endpoint (adapter proxies to Brain 2) |
+| `LLM_URL` / `GEMMA_URL` | `http://127.0.0.1:8000/v1/chat/completions` | LLM API endpoint |
 | `LLM_PORT` / `GEMMA4_PORT` | `8000` | Adapter listening port |
 | `MEMORY_MAX_RESULTS` | `5` | Default search result limit |
 | `MEMORY_API_KEY` | _(empty)_ | Bearer token for API auth |
@@ -410,6 +336,9 @@ hermes noxem config           # Show current configuration
 | `LOG_LEVEL` | `info` | Log verbosity (`silent` to suppress) |
 | `HF_FETCH_TIMEOUT` | `180000` | Component download timeout (ms) |
 | `HF_FETCH_RETRIES` | `3` | Retry count for failed component downloads |
+| `RLM_MAX_SUB_CALLS` | `5` | Max RLM sub-calls per request |
+| `RLM_MAX_TOKENS` | `4096` | Max token budget per RLM request |
+| `RLM_TIMEOUT_MS` | `45000` | RLM request timeout (ms) |
 
 </details>
 

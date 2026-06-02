@@ -6,8 +6,9 @@
 function _getApiKey() { return process.env.LLM_API_KEY || ''; }
 
 export function llmHeaders(extra = {}) {
-  const h = { 'Content-Type': 'application/json', ...extra };
-  if (_getApiKey()) h['Authorization'] = `Bearer ${_getApiKey()}`;
+  const extraObj = extra instanceof Headers ? Object.fromEntries(extra.entries()) : extra;
+  const h = { 'Content-Type': 'application/json', ...extraObj };
+  if (_getApiKey() && !h['Authorization']) h['Authorization'] = `Bearer ${_getApiKey()}`;
   return h;
 }
 

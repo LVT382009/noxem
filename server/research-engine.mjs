@@ -205,7 +205,6 @@ async function callLLM(messages, maxTokens = 256, temperature = 0.1, timeout = 1
   try {
     const res = await llmFetch(LLM_URL, {
       method: 'POST',
-      headers: {},
       body: JSON.stringify({ model: LLM_MODEL, messages, max_tokens: maxTokens, temperature }),
       signal: AbortSignal.timeout(timeout),
     });

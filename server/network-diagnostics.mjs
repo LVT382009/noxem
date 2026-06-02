@@ -2,6 +2,7 @@
 // Run at startup to detect common problems and log actionable fixes
 
 import dns from 'dns';
+import { promises as dnsPromises } from 'dns';
 import { execSync } from 'child_process';
 
 export function runNetworkDiagnostics() {

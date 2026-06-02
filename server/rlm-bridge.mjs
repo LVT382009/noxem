@@ -19,9 +19,14 @@ const RLM_MAX_TOKENS = parseInt(process.env.RLM_MAX_TOKENS || '4096');
 const RLM_TIMEOUT_MS = parseInt(process.env.RLM_TIMEOUT_MS || '45000');
 const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192');
 
-// Resolve Python binary: venv python preferred (has httpx/numpy), system python3 as fallback
-const NOXEM_VENV_PY = fileURLToPath(new URL('../../.hermes/noxem-venv/bin/python3', import.meta.url));
-const NOXEM_PY = process.env.NOXEM_PYTHON || (existsSync(NOXEM_VENV_PY) ? NOXEM_VENV_PY : 'python3');
+// Resolve Python binary: venv python preferred (has httpx/numpy), system python as fallback
+const isWin = process.platform === 'win32';
+const venvPythonPath = isWin
+  ? '../../.hermes/noxem-venv/Scripts/python.exe'
+  : '../../.hermes/noxem-venv/bin/python3';
+const NOXEM_VENV_PY = fileURLToPath(new URL(venvPythonPath, import.meta.url));
+const SYSTEM_PYTHON = isWin ? 'python' : 'python3';
+const NOXEM_PY = process.env.NOXEM_PYTHON || (existsSync(NOXEM_VENV_PY) ? NOXEM_VENV_PY : SYSTEM_PYTHON);
 
 // Circuit breaker state
 let consecutiveFailures = 0;
@@ -70,6 +75,17 @@ function ensureProcess() {
     readline.on('line', (line) => {
       try {
         const resp = JSON.parse(line);
+        // Update circuit breaker state based on sidecar response status
+        if (resp.status === 'ok' || resp.status === 'degraded') {
+          consecutiveFailures = 0;
+          halfOpenProbe = false;
+        } else if (resp.status === 'error') {
+          consecutiveFailures++;
+          if (consecutiveFailures >= MAX_FAILURES) {
+            circuitOpenUntil = Date.now() + 60_000;
+            halfOpenProbe = false;
+          }
+        }
         const id = resp._reqId;
         if (id && pendingRequests.has(id)) {
           const { resolve, timer } = pendingRequests.get(id);
@@ -214,13 +230,20 @@ export function shutdownRLM() {
   const proc = childProc;
   if (proc) {
     childProc = null; // Prevent new calls from using this process
-    pendingRequests.clear(); // Reject won't fire since we null'd childProc
+    // Reject all pending requests so callers don't hang forever
+    for (const [id, { reject, timer }] of pendingRequests) {
+      clearTimeout(timer);
+      reject(new Error('RLM shutting down'));
+    }
+    pendingRequests.clear();
     try {
       // Close stdin first so Python reads EOF and exits its loop cleanly
       proc.stdin.end();
-      // Give it 2s to finish writing, then SIGTERM
-      const pid = proc.pid;
-      setTimeout(() => { try { process.kill(pid, 'SIGTERM'); } catch {} }, 2000);
+      // Use childProc.kill() — on Windows this uses taskkill /T /PID
+      // to kill the entire process tree (process.kill+SIGTERM leaks zombies)
+      const forceTimer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 5000);
+      forceTimer.unref();
+      setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, 2000).unref();
     } catch {}
   }
 }

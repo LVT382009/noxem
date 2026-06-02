@@ -272,7 +272,7 @@ Extract critical context, drift warnings, key facts, and advice:"""
     return {"critical_context": [extract_content], "task_drift_warnings": [], "key_facts": [], "advice": ""}
 
 
-async def get_advice(req, budget):
+async def get_advice(req, budget, turn_limit=1500):
     """
     Decompose: context_check → memory_relevance → advise.
     Sub-calls: 2 (check+relevance parallelized, advise=1)
@@ -290,7 +290,7 @@ async def get_advice(req, budget):
         return await _single_shot_advice(req, budget)
 
     recent_text = "\n".join(
-        f"{t.get('role', 'user').upper()}: {(t.get('content') or '')[:TURN_CONTENT_LIMIT]}"
+        f"{t.get('role', 'user').upper()}: {(t.get('content') or '')[:turn_limit]}"
         for t in (history or [])[-6:]
     )
 
@@ -334,7 +334,7 @@ Return JSON:
     return {"drift_detected": False, "drift_details": [], "relevant_memories": [], "advice_text": content, "severity": "none"}
 
 
-async def analyze_session_end(req, budget):
+async def analyze_session_end(req, budget, turn_limit=1500):
     """
     Decompose: partition → batch_extract → dedup.
     Sub-calls: 2-3 (1 batched extract + 1 dedup)
@@ -359,7 +359,7 @@ async def analyze_session_end(req, budget):
             break
 
         chunk_text = "\n".join(
-            f"{t.get('role', 'user').upper()}: {(t.get('content') or '')[:TURN_CONTENT_LIMIT]}"
+            f"{t.get('role', 'user').upper()}: {(t.get('content') or '')[:turn_limit]}"
             for t in chunk
         )
 
@@ -517,15 +517,15 @@ async def process_task(req):
     # Scale per-turn content limit based on LLM context window
     # 8192 context -> 1500 chars/turn; 32768 -> 6000 chars/turn; etc.
     _ctx_window = config.get("contextWindow", 8192)
-    TURN_CONTENT_LIMIT = min(int(_ctx_window * 0.18), 32000)
+    turn_limit = min(int(_ctx_window * 0.18), 32000)
 
     try:
         if task == "pre_compress_analysis":
             data = await analyze_before_compress(req, budget)
         elif task == "advice":
-            data = await get_advice(req, budget)
+            data = await get_advice(req, budget, turn_limit)
         elif task == "session_end_analysis":
-            data = await analyze_session_end(req, budget)
+            data = await analyze_session_end(req, budget, turn_limit)
         else:
             return {"status": "error", "error": f"unknown task: {task}", "metadata": budget.summary()}
 

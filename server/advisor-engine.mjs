@@ -18,6 +18,7 @@ import { callRLMWithFallback, getRLMStatus, shutdownRLM } from './rlm-bridge.mjs
 import { llmFetch } from './llm-fetch.mjs';
 
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
+const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192');
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
 

@@ -27,6 +27,7 @@ const L3_MIN_L1_MEMORIES = 50;
 
 // Track extraction state per session
 const sessionState = new Map();
+const extractingL1 = new Set(); // Per-session lock to prevent concurrent L1 extraction
 
 function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
@@ -50,9 +51,10 @@ export function onMemoryStored(sessionId) {
 
   const threshold = getWarmupThreshold(state.l1ExtractCount);
   const newSinceExtract = state.l0Count - state.lastL1Extract;
-  if (newSinceExtract >= threshold) {
+  if (newSinceExtract >= threshold && !extractingL1.has(sessionId)) {
     // Schedule L1 extraction (non-blocking)
-    extractL1FromL0(sessionId).catch(err => {
+    extractL1FromL0(sessionId).finally(() => extractingL1.delete(sessionId))
+      .catch(err => {
       LOG_DEBUG && console.error('[Pipeline] L1 extraction error:', err.message);
     });
   }

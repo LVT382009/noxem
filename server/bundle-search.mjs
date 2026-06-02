@@ -54,10 +54,10 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
     const neighbors = [];
     for (const edge of (edges || [])) {
       if (hitIds.has(edge.to_id)) {
-        neighbors.push({ targetId: edge.to_id, weight: 1 - (edge.strength || 0.5) });
+        neighbors.push({ targetId: edge.to_id, weight: Math.max(0, 1 - (edge.strength || 0.5)) });
       }
       if (hitIds.has(edge.from_id)) {
-        neighbors.push({ targetId: edge.from_id, weight: 1 - (edge.strength || 0.5) });
+        neighbors.push({ targetId: edge.from_id, weight: Math.max(0, 1 - (edge.strength || 0.5)) });
       }
     }
     graph.set(hit.id, neighbors);
@@ -66,7 +66,7 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
   // Step 3: Propagate cost — Dijkstra from query node (virtual source connected to all hits)
   // Query node = id 0; connect to each hit with weight = 1 - score
   for (const hit of allHits) {
-    const queryCost = 1 - hit.score;
+    const queryCost = Math.max(0, 1 - hit.score);
     if (!graph.has(0)) graph.set(0, []);
     graph.get(0).push({ targetId: hit.id, weight: queryCost });
   }
