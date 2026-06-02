@@ -657,7 +657,8 @@ app.get("/memory/search", async (req, res) => {
       // C-3: Skip cache for multi-query — cached single-query results would discard expansion
       const cached = queryVecs.length === 1 && findCachedResult(qVec);
       if (cached) {
-        searchResults = applyRecencyScore(cached.results).slice(0, limitNum);
+        // Cached results already have recency scoring applied; only slice
+        searchResults = cached.results.slice(0, limitNum);
         searchMethod = "cache+" + (cached.similarity).toFixed(3);
             // Cached results are final — skip live search
   try {

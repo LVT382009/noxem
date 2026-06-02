@@ -37,11 +37,12 @@ export async function runMaintenance() {
     // 1. Deduplication
     // For small sets (<500): brute-force O(n²) pairwise cosine
     // For large sets (>=500): KNN-based — find nearest neighbors per memory via index
-    try {
-      const withEmbedding = memories.filter(m => m.embedding);
-      const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
-      let dupes = [];
+    const withEmbedding = memories.filter(m => m.embedding);
+    const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
+    const alreadySuperseded = new Set(); // S-#28
+    let dupes = [];
 
+    try {
       if (withEmbedding.length < 500 || !vectorKnnSearch) {
         // Brute-force for small sets
         dupes = findDuplicates(memories);
@@ -64,7 +65,6 @@ export async function runMaintenance() {
         }
       }
 
-      const alreadySuperseded = new Set(); // S-#28
     for (const d of dupes) {
         const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
         if (alreadySuperseded.has(older.id)) continue;
@@ -273,7 +273,7 @@ async function consolidateMemories(memories) {
 
   const byEntity = new Map();
   for (const m of memories) {
-    if (m.importance >= CONSOLIDATION_MAX_IMPORTANCE) continue;
+    if ((m.importance ?? 0) >= CONSOLIDATION_MAX_IMPORTANCE) continue;
     if (!m.entity || !m.embedding) continue;
     const key = m.entity;
     if (!byEntity.has(key)) byEntity.set(key, []);
@@ -323,7 +323,7 @@ async function consolidateMemories(memories) {
           }
         }
 
-        const newImportance = Math.min(1.0, Math.max(...cluster.map(m => m.importance)) + 0.2);
+        const newImportance = Math.min(1.0, Math.max(...cluster.map(m => m.importance ?? 0)) + 0.2);
         const clusterIds = cluster.map(m => m.id);
 
         let embedding = null;
