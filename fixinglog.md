@@ -98,6 +98,55 @@ Source: 4 parallel sub-agent audits → BUGS-sidecars-infra-v2.md, BUGS-server-c
 - **Syntax check**: All .mjs and .py files pass `node --check` / `python -m py_compile`
 - **Integration tests**: 65 passed, 0 failed (run-test.sh in WSL Ubuntu-24.04)
 
-## Phase 6 — MEDIUM/LOW (deferred)
+## Phase 6 — 401 Auth Fix + FreeLLM Provider (2026-06-02)
 
-See individual BUGS-*-v2.md reports for remaining bugs across all 4 audit files.
+### CRITICAL
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| C7 | `callRLM()` missing `llmApiKey` in NDJSON request — 401 Unauthorized with every LLM provider that requires auth | rlm-bridge.mjs:150 | DONE — added `llmApiKey: process.env.LLM_API_KEY \|\| ''` |
+| C8 | `callRLM()` missing `contextWindow` in config — RLM sidecar can't calculate token budgets | rlm-bridge.mjs:156 | DONE — added `contextWindow: parseInt(process.env.NOXEM_CONTEXT_WINDOW \|\| '8192')` |
+
+### HIGH
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| H19 | `env_map` missing `context_window` → `NOXEM_CONTEXT_WINDOW` — child processes never get context window setting | __init__.py:122 | DONE — added to env_map |
+| H20 | FreeLLM provider option missing from `hermes memory setup`, launchers, and README | __init__.py, noxem-launcher.sh/bat, README.md | DONE — added as 3rd provider option |
+
+## Phase 7 — Silent Auto-Start (2026-06-02)
+
+**Goal**: When user runs `hermes` (not `hermes-noxem`), Noxem servers auto-start silently. Only shutdown summary appears on exit. All logs go to file.
+
+### CRITICAL
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| C9 | `_try_start_servers()` doesn't pass `LOG_LEVEL=quiet` to child env — server defaults to debug mode, logging every request | __init__.py:173 | DONE — added `env.setdefault("LOG_LEVEL", "quiet")` |
+
+### HIGH
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| H21 | `qwenproxy-adapter.mjs` never auto-started — cloud Brain 2 broken via auto-start path | __init__.py:214-246 | DONE — added adapter candidates block |
+| H22 | Two `sys.stderr.write()` calls leak to terminal during auto-start | __init__.py:207,238 | DONE — replaced with `logger.debug()` |
+| H23 | `shutdown()` prints nothing — user sees no feedback on exit | __init__.py:355 | DONE — added shutdown summary when `_silent_mode` |
+| H24 | Startup banner in memory-server.mjs prints unconditionally regardless of LOG_LEVEL | memory-server.mjs:2057-2069 | DONE — wrapped in `!LOG_QUIET` checks |
+| H25 | Shutdown messages in memory-server.mjs print unconditionally | memory-server.mjs:2074,2080 | DONE — wrapped in `!LOG_QUIET` checks |
+| H26 | `noxem-launcher.bat` missing `LOG_LEVEL=quiet` | noxem-launcher.bat:42 | DONE — added `set LOG_LEVEL=quiet` |
+
+### MEDIUM
+
+| # | Bug | File | Status |
+|---|-----|------|--------|
+| M1 | No `_silent_mode` flag — no way to distinguish auto-start vs manual start | __init__.py:81 | DONE — flag set True in `_try_start_servers_async()` |
+| M2 | `_server_procs` stores bare PIDs — no names for meaningful shutdown messages | __init__.py:204,236 | DONE — changed to `(proc, name)` tuples |
+
+## Verification (Phase 6-7)
+
+- **Syntax check**: All .mjs and .py files pass `node --check` / `python -m py_compile`
+- **Integration tests**: 65 passed, 0 failed (run-test.sh in WSL Ubuntu-24.04)
+
+## Phase 8 — MEDIUM/LOW (deferred)
+
+See individual BUGS-*-v2.md and BUGS-*-v3.md reports for remaining bugs.
