@@ -462,19 +462,19 @@ class NoxemMemoryProvider:
             },
             {
                 "key": "llm_url",
-                "description": "LLM API endpoint (for advisor + extraction)",
+            "description": "LLM API endpoint (for advisor + extraction). Auto-set for FreeLLM — you can skip this.",
                 "default": "http://127.0.0.1:8000/v1/chat/completions",
                 "required": False,
             },
             {
                 "key": "llm_model",
-                "description": "Model name for LLM calls (ignored for QwenProxy — auto-normalized)",
+            "description": "Model name for LLM calls (ignored for QwenProxy — auto-normalized). Required for FreeLLM/local — see freetheai.xyz/models",
                 "default": "qwen3.6-plus-no-thinking",
                 "required": False,
             },
             {
                 "key": "llm_api_key",
-                "description": "API key for LLM endpoint (optional, not needed for Ollama/llama.cpp)",
+            "description": "API key for LLM endpoint (required for FreeLLM/cloud, not needed for Ollama/llama.cpp)",
                 "default": "",
                 "required": False,
             },
@@ -504,6 +504,11 @@ class NoxemMemoryProvider:
                 existing = json.loads(config_path.read_text())
             except Exception:
                 pass
+        # FreeLLM preset: auto-set the fixed base URL
+        if values.get("brain2_provider") == "freellm":
+            existing["llm_url"] = "https://api.freetheai.xyz/v1/chat/completions"
+            if not values.get("llm_model"):
+                existing["llm_model"] = "fee/kimi-k2.6"
         existing.update(values)
         config_path.write_text(json.dumps(existing, indent=2))
         logger.info(f"Noxem config saved to {config_path}")
