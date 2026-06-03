@@ -1,4 +1,4 @@
-/**
+﻿/**
  * RLM Bridge — Node.js bridge to the Python RLM sidecar.
  *
  * Spawns rlm_sidecar.py as a long-lived child process.
@@ -193,7 +193,7 @@ export async function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
     context,
     llmUrl,
     llmModel,
-    // llmApiKey: sent via env, not repeated in NDJSON to avoid logging
+    llmApiKey: process.env.LLM_API_KEY || '',
     config: {
       maxSubCalls: RLM_MAX_SUB_CALLS,
       maxTokensBudget: RLM_MAX_TOKENS,
