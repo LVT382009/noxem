@@ -725,10 +725,25 @@ export function addVecsToIndex(ids, embeddings) {
   insertVecBatch(db, ids, embeddings);
   const tb = getVectorBackend();
   if (tb === 'turbovec' || tb === 'hybrid') {
-    const vecArrays = embeddings.map(e => e ? Array.from(bufferToFloat32(e)) : null).filter(Boolean);
-    const validIds = ids.filter((_, i) => embeddings[i]);
-    if (validIds.length > 0) {
-      addToTurboVec(validIds, vecArrays).catch(e => LOG_DEBUG && console.error('[addVecsToIndex] TurboVec batch add failed:', e.message));
+    const turboIds = [];
+    const turboVecs = [];
+    for (let i = 0; i < ids.length; i++) {
+      if (!embeddings[i]) continue;
+      let vec;
+      if (Buffer.isBuffer(embeddings[i])) {
+        vec = bufferToFloat32(embeddings[i]);
+      } else if (embeddings[i] instanceof Float32Array) {
+        vec = Array.from(embeddings[i]);
+      } else if (Array.isArray(embeddings[i])) {
+        vec = embeddings[i];
+      } else {
+        continue;
+      }
+      turboIds.push(ids[i]);
+      turboVecs.push(vec);
+    }
+    if (turboIds.length > 0) {
+      addToTurboVec(turboIds, turboVecs).catch(e => LOG_DEBUG && console.error('[addVecsToIndex] TurboVec batch add failed:', e.message));
     }
   }
 }
