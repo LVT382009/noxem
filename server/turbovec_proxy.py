@@ -91,6 +91,11 @@ async def lifespan(app):
 app = FastAPI(title="TurboVec Proxy", version="1.0.0", lifespan=lifespan)
 
 
+@app.get("/")
+async def root():
+    return {"ok": True, "service": "turbovec_proxy", "version": "1.0.0"}
+
+
 # ── Models ───────────────────────────────────────────────
 
 class AddRequest(BaseModel):
