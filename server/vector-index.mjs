@@ -116,7 +116,7 @@ export function deleteVec(db, memoryId) {
 // ── TurboVec Sidecar Integration ────────────────────────
 
 const TURBOVEC_URL = process.env.TURBOVEC_URL || 'http://127.0.0.1:3003';
-const VECTOR_BACKEND = process.env.VECTOR_BACKEND || 'sqlite'; // sqlite | turbovec | hybrid
+const VECTOR_BACKEND = process.env.VECTOR_BACKEND || 'hybrid'; // sqlite | turbovec | hybrid (default: hybrid for TurboVec + sqlite-vec)
 let turboVecHealthy = false;
 
 /**
@@ -146,6 +146,7 @@ export async function addToTurboVec(ids, vectors) {
       body: JSON.stringify({ ids, vectors: vectors.map(v => Array.from(v)) }),
       signal: AbortSignal.timeout(10000),
     });
+    if (!res.ok) throw new Error(`TurboVec add returned ${res.status}`);
     return await res.json();
   } catch (err) {
     LOG_DEBUG && console.error('[VectorIndex] addToTurboVec failed:', err.message);
@@ -170,8 +171,8 @@ export async function knnSearchTurbo(queryEmbedding, topK = 10, allowlist = null
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });
+    if (!res.ok) return null;
     const data = await res.json();
-    if (!data.ok) return null;
     return data.results || [];
   } catch (err) {
     LOG_DEBUG && console.error('[VectorIndex] knnSearchTurbo error:', err.message);

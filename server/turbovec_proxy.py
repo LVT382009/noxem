@@ -79,11 +79,16 @@ def ensure_tvim_dir():
 
 if not HAS_FASTAPI:
     print("[TurboVec] FastAPI not installed. Install: pip install fastapi uvicorn", file=sys.stderr)
-    # Fallback: simple HTTP server
-    # (skipped — FastAPI is the intended approach)
     sys.exit(1)
 
-app = FastAPI(title="TurboVec Proxy", version="1.0.0")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    ensure_index()
+    yield
+
+app = FastAPI(title="TurboVec Proxy", version="1.0.0", lifespan=lifespan)
 
 
 # ── Models ───────────────────────────────────────────────
@@ -104,11 +109,6 @@ class SaveResponse(BaseModel):
 
 
 # ── Endpoints ────────────────────────────────────────────
-
-@app.on_event("startup")
-async def startup():
-    ensure_index()
-
 
 @app.get("/health")
 async def health():

@@ -563,6 +563,10 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
     try {
       const vec = bufferToFloat32(embedding);
       insertVec(db, Number(result.lastInsertRowid), vec);
+      const tb = getVectorBackend();
+      if (tb === 'turbovec' || tb === 'hybrid') {
+        addToTurboVec([Number(result.lastInsertRowid)], [vec]).catch(e => LOG_DEBUG && console.error('[StoreMemory] TurboVec add failed:', e.message));
+      }
     } catch (e) { LOG_DEBUG && console.error('[StoreMemory] Vec insert failed:', e.message); }
   }
   return Number(result.lastInsertRowid);
@@ -593,7 +597,7 @@ export function storeMemories(items) {
                     try { insertVec(db, ids[i], vec); } catch (e) { LOG_DEBUG && console.error('[StoreMemories] Vec insert failed for', ids[i], e.message); }
                     const tb = getVectorBackend();
                     if ((tb === 'turbovec' || tb === 'hybrid')) {
-                        addToTurboVec(ids[i], vec).catch(e => LOG_DEBUG && console.error('[StoreMemories] TurboVec add failed:', e.message));
+                        addToTurboVec([ids[i]], [vec]).catch(e => LOG_DEBUG && console.error('[StoreMemories] TurboVec add failed:', e.message));
                     }
       }
     }
@@ -719,6 +723,14 @@ export function updateMemoryEmbedding(id, embedding) {
 
 export function addVecsToIndex(ids, embeddings) {
   insertVecBatch(db, ids, embeddings);
+  const tb = getVectorBackend();
+  if (tb === 'turbovec' || tb === 'hybrid') {
+    const vecArrays = embeddings.map(e => e ? Array.from(bufferToFloat32(e)) : null).filter(Boolean);
+    const validIds = ids.filter((_, i) => embeddings[i]);
+    if (validIds.length > 0) {
+      addToTurboVec(validIds, vecArrays).catch(e => LOG_DEBUG && console.error('[addVecsToIndex] TurboVec batch add failed:', e.message));
+    }
+  }
 }
 
 export function vectorKnnSearch(queryEmbedding, topK = 5) {

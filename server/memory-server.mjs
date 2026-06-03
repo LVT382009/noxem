@@ -2064,7 +2064,7 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   if (!LOG_QUIET) console.log(`  Port: ${PORT}`);
   if (!LOG_QUIET) console.log(`  Brain-1: ${ENABLE_EMBEDDING ? (isEmbeddingReady() ? 'Ready' : 'Loading...') : 'DISABLED'}`);
   if (!LOG_QUIET) console.log(`  Vector Index: ${isVecReady() ? 'sqlite-vec KNN' : 'JS cosine fallback'} (backend: ${getVectorBackend()})`)
-if (!LOG_QUIET && getVectorBackend() !== 'sqlite') { checkTurboVecHealth().then(h => console.log(`  TurboVec: ${h.ok ? `alive (${h.count} vectors)` : 'unavailable'}`)).catch(() => {}); };
+if (!LOG_QUIET && (getVectorBackend() === 'hybrid' || getVectorBackend() === 'turbovec')) { checkTurboVecHealth().then(h => console.log(`  TurboVec: ${h.ok ? `alive (${h.count} vectors)` : 'starting... (sqlite-vec fallback active)'}`)).catch(() => {}); };
   if (!LOG_QUIET) console.log(` Brain-2: ${ENABLE_ADVISOR ? 'ON' : 'OFF'}`);
   if (!LOG_QUIET) console.log(`  Web Search: ${ENABLE_ADVISOR && process.env.ADVISOR_WEB_SEARCH !== 'false' ? 'DDG' : 'DISABLED'}`);
   if (!LOG_QUIET) console.log(` Research: ${ENABLE_RESEARCH ? 'Background pipeline (topic -> DDG -> fetch -> extract)' : 'OFF (Brain 1 only)'}`);

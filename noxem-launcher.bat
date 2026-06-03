@@ -43,6 +43,8 @@ if not defined ENABLE_MAINTENANCE set ENABLE_MAINTENANCE=true
 if not defined LOG_LEVEL set LOG_LEVEL=quiet
 if not defined RLM_LLM_TIMEOUT set RLM_LLM_TIMEOUT=60
 if not defined EXTRACT_TIMEOUT_MS set EXTRACT_TIMEOUT_MS=60000
+if not defined VECTOR_BACKEND set VECTOR_BACKEND=hybrid
+if not defined TURBOVEC_URL set TURBOVEC_URL=http://127.0.0.1:3003
 set NODE_OPTIONS=--dns-result-order=ipv4first
 
 REM ── Read saved config from noxem.json ──

@@ -338,6 +338,9 @@ cleanup() {
   if [ -n "$MEMORY_PID" ]; then
     kill "$MEMORY_PID" 2>/dev/null && dim " Memory server stopping..." || true
   fi
+  if [ -n "$TURBOVEC_PID" ]; then
+    kill "$TURBOVEC_PID" 2>/dev/null && dim " TurboVec stopping..." || true
+  fi
   if [ "$BRAIN2_ENABLED" = "1" ]; then
     if [ -n "$ADAPTER_PID" ]; then
       kill "$ADAPTER_PID" 2>/dev/null && dim " LLM adapter stopping..." || true
@@ -545,11 +548,38 @@ export ENABLE_MAINTENANCE=${ENABLE_MAINTENANCE:-true}
 export LOG_LEVEL=${LOG_LEVEL:-quiet}
 export RLM_LLM_TIMEOUT=${RLM_LLM_TIMEOUT:-60}
 export EXTRACT_TIMEOUT_MS=${EXTRACT_TIMEOUT_MS:-60000}
+export VECTOR_BACKEND=${VECTOR_BACKEND:-hybrid}
+export TURBOVEC_URL=${TURBOVEC_URL:-http://127.0.0.1:3003}
 export BRAIN2_ENABLED
 export NODE_OPTIONS="${NODE_OPTIONS:-} --dns-result-order=ipv4first"
 node "$MEMORY_SERVER" &
 MEMORY_PID=$!
 wait_for_port $MEMORY_PORT "Memory server" 180
+
+# 1b. TurboVec sidecar (hybrid mode: TurboVec + sqlite-vec)
+NOXEM_PYTHON_BIN="${NOXEM_PYTHON:-}"
+if [ -z "$NOXEM_PYTHON_BIN" ]; then
+  if [ -f "${HOME}/.hermes/noxem-venv/bin/python" ]; then
+    NOXEM_PYTHON_BIN="${HOME}/.hermes/noxem-venv/bin/python"
+  elif command -v python3 &>/dev/null; then
+    NOXEM_PYTHON_BIN="python3"
+  elif command -v python &>/dev/null; then
+    NOXEM_PYTHON_BIN="python"
+  fi
+fi
+TURBOVEC_PORT=${TURBOVEC_PORT:-3003}
+if [ -n "$NOXEM_PYTHON_BIN" ] && [ -f "$NOXEM_DIR/server/turbovec_proxy.py" ]; then
+  dim " Starting TurboVec sidecar (port $TURBOVEC_PORT)..."
+  "$NOXEM_PYTHON_BIN" "$NOXEM_DIR/server/turbovec_proxy.py" &
+  TURBOVEC_PID=$!
+  wait_for_port $TURBOVEC_PORT "TurboVec" 10 || {
+    dim " TurboVec unavailable — using sqlite-vec fallback"
+    TURBOVEC_PID=""
+  }
+else
+  dim " TurboVec sidecar skipped (python or turbovec_proxy.py not found)"
+  TURBOVEC_PID=""
+fi
 
 # 2. Brain 2 — QwenProxy + adapter, or local model adapter
 if [ "$BRAIN2_ENABLED" = '1' ]; then

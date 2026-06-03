@@ -320,8 +320,8 @@ flowchart TD
 | `PIPELINE_ENABLED` | `true` | Enable cone extraction pipeline |
 | `RLM_ENABLED` | `true` | Enable RLM Python sidecar bridge |
 | `NOXEM_CONTEXT_WINDOW` | `8192` | LLM context window size (tokens) — affects per-turn content limits |
-| `VECTOR_BACKEND` | `sqlite-vec` | Vector backend: `sqlite-vec` or `turbovec` |
-| `TURBOVEC_URL` | `http://127.0.0.1:8100` | TurboVec sidecar URL |
+| `VECTOR_BACKEND` | `hybrid` | Vector backend: `hybrid` (TurboVec+sqlite), `turbovec`, or `sqlite` |
+| `TURBOVEC_URL` | `http://127.0.0.1:3003` | TurboVec sidecar URL |
 | `NOXEM_PYTHON` | auto (venv preferred) | Python binary for sidecars |
 | `BUNDLE_TOP_K` | `5` | Top-K hits per cone layer in bundle search |
 | `BUNDLE_MIN_SCORE` | `0.15` | Minimum similarity for bundle search |
@@ -360,7 +360,9 @@ flowchart TD
 | `HF_FETCH_RETRIES` | `3` | Retry count for failed component downloads |
 | `RLM_MAX_SUB_CALLS` | `5` | Max RLM sub-calls per request |
 | `RLM_MAX_TOKENS` | `4096` | Max token budget per RLM request |
-| `RLM_TIMEOUT_MS` | `45000` | RLM request timeout (ms) |
+| `RLM_TIMEOUT_MS` | `120000` | RLM request timeout (ms) |
+| `RLM_LLM_TIMEOUT` | `60` | RLM per-call LLM timeout (seconds) |
+| `EXTRACT_TIMEOUT_MS` | `60000` | Memory extraction timeout (ms) |
 
 </details>
 

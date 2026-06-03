@@ -133,6 +133,8 @@ class NoxemMemoryProvider:
         "context_window": "NOXEM_CONTEXT_WINDOW",
             "rlm_llm_timeout": "RLM_LLM_TIMEOUT",
             "extract_timeout_ms": "EXTRACT_TIMEOUT_MS",
+            "vector_backend": "VECTOR_BACKEND",
+            "turbovec_url": "TURBOVEC_URL",
         }
         # Store API key separately — only pass to child server processes, not global env
         self._llm_api_key = cfg.get("llm_api_key", "")
@@ -191,6 +193,7 @@ class NoxemMemoryProvider:
         env.setdefault("LOG_LEVEL", "quiet")
         env.setdefault("RLM_LLM_TIMEOUT", "60")
         env.setdefault("EXTRACT_TIMEOUT_MS", "60000")
+        env.setdefault("VECTOR_BACKEND", "hybrid")
         # Pass API key only to child server processes, not global env
         if self._llm_api_key:
             env["LLM_API_KEY"] = self._llm_api_key
@@ -295,6 +298,43 @@ class NoxemMemoryProvider:
 
         if not started:
             return False
+
+        # Start TurboVec sidecar if hybrid/turbovec backend
+        vector_backend = env.get("VECTOR_BACKEND", "hybrid")
+        if vector_backend in ("hybrid", "turbovec"):
+            python_bin = env.get("NOXEM_PYTHON", "python3")
+            # Resolve venv python
+            venv_python = str(Path(self._hermes_home).expanduser() / "noxem-venv" / "bin" / "python")
+            if os.path.exists(venv_python):
+                python_bin = venv_python
+            turbovec_candidates = [
+                home / "noxem-server" / "server" / "turbovec_proxy.py",
+                home / ".hermes" / "noxem-server" / "server" / "turbovec_proxy.py",
+            ]
+            for tv_path in turbovec_candidates:
+                if tv_path.exists():
+                    try:
+                        _tv_stderr_log = open(home / "noxem-turbovec-stderr.log", "a")
+                        self._stderr_logs.append(_tv_stderr_log)
+                        popen_kwargs = {
+                            "cwd": str(tv_path.parent),
+                            "env": env,
+                            "stdout": subprocess.DEVNULL,
+                            "stderr": _tv_stderr_log,
+                            "start_new_session": True,
+                        }
+                        if platform.system() == "Windows":
+                            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                        proc = subprocess.Popen(
+                            [python_bin, str(tv_path)],
+                            **popen_kwargs,
+                        )
+                        self._server_procs.append((proc, "TurboVec"))
+                        self._write_pid_file(home / "noxem-turbovec.pid", proc.pid)
+                        logger.debug(f"Auto-starting TurboVec sidecar (PID {proc.pid})")
+                    except Exception as e:
+                        logger.debug(f"Failed to auto-start TurboVec: {e}")
+                    break
 
         # Wait up to 90s for memory server to become ready
         # LLM server takes longer but we don't block on it — the advisor gracefully handles it
@@ -457,6 +497,7 @@ class NoxemMemoryProvider:
         self._clean_pid_file(home / "noxem-server.pid")
         self._clean_pid_file(home / "noxem-memory.pid")
         self._clean_pid_file(home / "noxem-adapter.pid")
+        self._clean_pid_file(home / "noxem-turbovec.pid")
         for log_fh in self._stderr_logs:
             try:
                 log_fh.close()
