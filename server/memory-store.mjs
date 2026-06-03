@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, knnSearchHybrid, deleteVec, getVectorBackend, addToTurboVec } from './vector-index.mjs';
+import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, knnSearchHybrid, deleteVec, getVectorBackend, addToTurboVec, removeFromTurboVec } from './vector-index.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
@@ -74,6 +74,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 const DB_VERSION = 5;
 
 function addColumn(table, column, def) {
+	if (!/^[a-zA-Z_]\w*$/.test(column)) throw new Error(`Invalid column name: ${column}`);
+	if (!/^[a-zA-Z_]\w*$/.test(table)) throw new Error(`Invalid table name: ${table}`);
 	try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`); } catch (e) {
 		if (!e.message.includes('duplicate column') && !e.message.includes('already exists')) throw e;
 	}
@@ -329,15 +331,17 @@ const touchProcedure = db.prepare("UPDATE procedures SET use_count = use_count +
 const deleteProcedure = db.prepare('DELETE FROM procedures WHERE id = ?');
 
 export function storeProcedure({ name, description = '', trigger_context = '', session_id = '', steps = [], context_points = [] }) {
-  const procId = Number(insertProcedure.run(name, description, trigger_context, session_id).lastInsertRowid);
-  for (let i = 0; i < steps.length; i++) {
-    const s = steps[i];
-    insertStep.run(procId, i, s.text || '', s.step_type || 'action', s.expected_outcome || '', s.step_context || '');
-  }
-  for (const cp of context_points) {
-    insertContextPoint.run(procId, cp.context_type || '', cp.context_value || '', cp.source_memory_id || null);
-  }
-  return procId;
+	return db.transaction(() => {
+		const procId = Number(insertProcedure.run(name, description, trigger_context, session_id).lastInsertRowid);
+		for (let i = 0; i < steps.length; i++) {
+			const s = steps[i];
+			insertStep.run(procId, i, s.text || '', s.step_type || 'action', s.expected_outcome || '', s.step_context || '');
+		}
+		for (const cp of context_points) {
+			insertContextPoint.run(procId, cp.context_type || '', cp.context_value || '', cp.source_memory_id || null);
+		}
+		return procId;
+	})();
 }
 
 export function getProcedure(id) {
@@ -521,7 +525,7 @@ const getCitationsBySession = db.prepare('SELECT memory_id, COUNT(*) as count FR
 // Convert SQLite BLOB (Node Buffer) to a regular JS array of float32 values
 function bufferToFloat32(buf) {
   if (!buf) return null;
-  if (buf.byteLength % 4 !== 0) console.warn("[bufferToFloat32] misaligned buffer:", buf.byteLength);  // S-#43
+  if (buf.byteLength % 4 !== 0) throw new Error(`[bufferToFloat32] misaligned buffer: ${buf.byteLength} bytes is not a multiple of 4`);
   return Array.from(new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / Float32Array.BYTES_PER_ELEMENT)));
 }
 
@@ -614,13 +618,21 @@ export function updateMemoryType(id, type) {
 }
 
 export function deleteMemory(id) {
-  removeById.run(id);
-  try { deleteVec(db, id); } catch (e) { LOG_DEBUG && console.error('[DeleteMemory] Vec cleanup failed:', e.message); }
+	removeById.run(id);
+	const tb = getVectorBackend();
+	if (tb === 'turbovec' || tb === 'hybrid') removeFromTurboVec(id).catch(() => {});
+	deleteVec(db, id);
 }
 
 export function deleteInvalid() {
-  const result = removeByStatus.run();
-  return result.changes;
+	const invalidRows = db.prepare("SELECT id FROM memories WHERE status = 'invalid'").all();
+	for (const row of invalidRows) {
+		removeById.run(row.id);
+		const tb = getVectorBackend();
+		if (tb === 'turbovec' || tb === 'hybrid') removeFromTurboVec(row.id).catch(() => {});
+		deleteVec(db, row.id);
+	}
+	return invalidRows.length;
 }
 
 export function searchMemories({ query, limit = 10 }) {

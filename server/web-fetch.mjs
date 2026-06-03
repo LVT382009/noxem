@@ -11,10 +11,15 @@ const MAX_BODY_SIZE = 1_048_576; // 1 MiB — abort if response exceeds this
 const MAX_TEXT_LENGTH = 2000; // Truncate extracted text to this many chars
 const SERVO_FETCH_URL = process.env.SERVO_FETCH_URL || 'http://127.0.0.1:3002';
 const SERVO_FETCH_TIMEOUT_MS = 8_000;
+import * as dns from 'node:dns/promises';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 // v2: SSRF protection — private IP ranges
 const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?fc00:/i];
+
+function isPrivateIp(ip) {
+  return PRIVATE_IP_RANGES.some(r => r.test(ip));
+}
 
 export function isPrivateUrl(urlStr) {
   try {
@@ -23,7 +28,18 @@ export function isPrivateUrl(urlStr) {
     const hostname = parsed.hostname || '';
     const ipv4mapped = hostname.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
     const checkHost = ipv4mapped ? ipv4mapped[1] : hostname.replace(/[\[\]]/g, '');
-    return PRIVATE_IP_RANGES.some(r => r.test(checkHost));
+    return isPrivateIp(checkHost);
+  } catch { return true; }
+}
+
+export async function isPrivateUrlAfterDns(urlStr) {
+  if (isPrivateUrl(urlStr)) return true;
+  try {
+    const parsed = new URL(urlStr);
+    const hostname = parsed.hostname || '';
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return isPrivateIp(hostname);
+    const addresses = await dns.resolve4(hostname);
+    return addresses.some(ip => isPrivateIp(ip));
   } catch { return true; }
 }
 
@@ -113,8 +129,8 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
     return { url, title: '', text: '', error: 'non-html-url' };
   }
 
-  // v2: SSRF protection
-  if (isPrivateUrl(url)) {
+  // v2: SSRF protection with DNS rebinding check
+  if (await isPrivateUrlAfterDns(url)) {
     return { url, title: '', text: '', error: 'blocked-private-url' };
   }
 
@@ -226,6 +242,19 @@ function extractText(html, maxLength = MAX_TEXT_LENGTH) {
 }
 
 /**
+ * Extract links from raw HTML (before tag stripping).
+ */
+function extractLinks(html) {
+  const links = [];
+  const regex = /href=["'](https?:\/\/[^"'\s]+)["']/gi;
+  let match;
+  while ((match = regex.exec(html)) !== null) {
+    links.push(match[1]);
+  }
+  return links;
+}
+
+/**
  * Decode common HTML entities without external deps.
  */
 function decodeHtmlEntities(str) {
@@ -247,7 +276,7 @@ function decodeHtmlEntities(str) {
  * Per-domain rate limiting (500ms). URL dedup via Set.
  */
 export async function crawlDomain(seedUrl, { maxDepth = 2, maxPages = 5, sameDomainOnly = true } = {}) {
-  if (isPrivateUrl(seedUrl)) return [];
+  if (await isPrivateUrlAfterDns(seedUrl)) return [];
   if (!isFetchableUrl(seedUrl)) return [];
 
   // v2: Try servo-fetch crawl endpoint first
@@ -302,13 +331,11 @@ export async function crawlDomain(seedUrl, { maxDepth = 2, maxPages = 5, sameDom
 
     // Extract links from the page (simple regex, not full HTML parsing)
     if (depth < maxDepth && results.length < maxPages) {
-      const linkRegex = /href=["'](https?:\/\/[^"']+)["']/gi;
-      let match;
-      while ((match = linkRegex.exec(page.text)) !== null) {
+      const pageLinks = page.links || [];
+      for (const linkUrl of pageLinks) {
         try {
-          const linkUrl = match[1];
           if (sameDomainOnly && new URL(linkUrl).origin !== seedOrigin) continue;
-          if (!visited.has(linkUrl) && isFetchableUrl(linkUrl) && !isPrivateUrl(linkUrl)) {
+          if (!visited.has(linkUrl) && isFetchableUrl(linkUrl) && !(await isPrivateUrlAfterDns(linkUrl))) {
             queue.push({ url: linkUrl, depth: depth + 1 });
           }
         } catch {}

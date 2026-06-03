@@ -108,6 +108,7 @@ let model = null;
 let modelReady = false;
 let loadError = null;
 let loadPromise = null;
+let loadFailed = false;
 
 // Concurrency semaphore: serialize inference calls (transformers.js is NOT thread-safe)
 let inferenceLock = Promise.resolve();
@@ -224,6 +225,7 @@ function validateCacheDir(cacheDir) {
 
 export async function initEmbeddingEngine() {
   if (modelReady) return;
+  if (loadFailed) throw new Error('Embedding engine failed to initialize');
   // S-#39: Guard against race — if a concurrent caller already started loading, reuse their promise
   if (loadPromise) { await loadPromise; return; }
   validateCacheDir(EMBED_CACHE_DIR);
@@ -294,7 +296,7 @@ export async function initEmbeddingEngine() {
       }
     }
     LOG_DEBUG && console.error('Brain-1: all load attempts failed. Vector search will be unavailable.');
-	loadPromise = null; // Allow retry on next initEmbeddingEngine() call
+	loadFailed = true; // Prevent re-init after permanent failure
   })();
 
   return loadPromise;
@@ -382,11 +384,12 @@ export function searchByEmbedding(queryEmbedding, storedMemories, topK = 5, inte
 }
 
 // Find duplicates: memories with similarity > threshold
-export function findDuplicates(memories) {
+export function findDuplicates(memories, maxPairs = 5000) {
+  if (memories.length > 1000) memories = memories.slice(0, 1000);
   const dupes = [];
-  for (let i = 0; i < memories.length; i++) {
+  for (let i = 0; i < memories.length && dupes.length < maxPairs; i++) {
     if (!memories[i].embedding) continue;
-    for (let j = i + 1; j < memories.length; j++) {
+    for (let j = i + 1; j < memories.length && dupes.length < maxPairs; j++) {
       if (!memories[j].embedding) continue;
       const sim = cosineSimilarity(memories[i].embedding, memories[j].embedding);
       if (sim > SIMILARITY_THRESHOLD) {

@@ -316,14 +316,20 @@ async function consolidateMemories(memories) {
         const summaryText = texts.join(' | ');
 
         const typePriority = ['profile', 'preference', 'setup', 'project', 'goal', 'pattern', 'entity', 'learning', 'issue', 'fact', 'event', 'request'];
+        const typePriorityMap = new Map(typePriority.map((t, i) => [t, i]));
+        const getPriority = (type) => typePriorityMap.has(type) ? typePriorityMap.get(type) : typePriority.length;
         let bestType = 'fact';
         for (const m of cluster) {
-          if (typePriority.indexOf(m.type) < typePriority.indexOf(bestType)) {
+          if (getPriority(m.type) < getPriority(bestType)) {
             bestType = m.type;
           }
         }
 
-        const newImportance = Math.min(1.0, Math.max(...cluster.map(m => m.importance)) + 0.2);
+        let maxImportance = cluster[0].importance;
+      for (let i = 1; i < cluster.length; i++) {
+        if (cluster[i].importance > maxImportance) maxImportance = cluster[i].importance;
+      }
+      const newImportance = Math.min(1.0, maxImportance + 0.2);
         const clusterIds = cluster.map(m => m.id);
 
         let embedding = null;

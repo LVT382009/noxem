@@ -18,6 +18,7 @@ import { vectorKnnSearchAsync } from './memory-store.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const BUNDLE_TOP_K = parseInt(process.env.BUNDLE_TOP_K || '5');
 const BUNDLE_MIN_SCORE = parseFloat(process.env.BUNDLE_MIN_SCORE || '0.15');
+const QUERY_NODE_ID = '__query_tip__';
 
 /**
  * Perform Bundle Search: search across all cone layers, build hit graph,
@@ -67,11 +68,11 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
   // Query node = id 0; connect to each hit with weight = 1 - score
   for (const hit of allHits) {
     const queryCost = Math.max(0, 1 - hit.score);
-    if (!graph.has(0)) graph.set(0, []);
-    graph.get(0).push({ targetId: hit.id, weight: queryCost });
+    if (!graph.has(QUERY_NODE_ID)) graph.set(QUERY_NODE_ID, []);
+    graph.get(QUERY_NODE_ID).push({ targetId: hit.id, weight: queryCost });
   }
 
-  const costs = dijkstra(graph, 0, allHits.map(h => h.id));
+  const costs = dijkstra(graph, QUERY_NODE_ID, allHits.map(h => h.id));
 
   // Step 4: Rank L0 episodes by minimum cost path
   const l0ById = new Map(l0Hits.map(h => [h.id, h]));
@@ -111,15 +112,8 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
 async function searchLayer(queryVec, layer, limit) {
   try {
     // Use sqlite-vec KNN and filter by cone_layer
-    const allVecResults = knnSearch(db, Array.from(queryVec), limit * 3);
+    const allVecResults = knnSearch(db, Array.from(queryVec), limit * 10);
     if (!allVecResults) return [];
-
-    // Filter to specific layer
-    const layerIds = allVecResults
-      .filter(r => r.score >= BUNDLE_MIN_SCORE)
-      .map(r => r.id);
-
-    if (layerIds.length === 0) return [];
 
     // Fetch memories and filter by cone_layer
     const { getMemory } = await import('./memory-store.mjs');
@@ -176,11 +170,12 @@ function dijkstra(graph, source, targets) {
  * Build evidence path for an episode: which higher-layer memories support it.
  */
 function buildEvidencePath(episodeId, allHits, graph) {
+  const hitById = new Map(allHits.map(h => [h.id, h]));
   const evidence = [];
   const connected = graph.get(episodeId) || [];
   for (const { targetId } of connected) {
-    if (targetId === 0) continue; // Skip virtual query node
-    const hit = allHits.find(h => h.id === targetId);
+    if (targetId === '__query_tip__') continue; // Skip virtual query node
+    const hit = hitById.get(targetId);
     if (hit && hit.cone_layer > 0) {
       evidence.push({
         id: hit.id,

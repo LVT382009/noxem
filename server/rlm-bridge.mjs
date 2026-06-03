@@ -127,10 +127,26 @@ function ensureProcess() {
 }
 
 /**
+ * Write to child process stdin with backpressure handling.
+ * Waits for 'drain' event if the write returns false.
+ */
+function writeToStdin(data) {
+  return new Promise((resolve, reject) => {
+    if (!childProc?.stdin?.writable) return reject(new Error('stdin not writable'));
+    const canWrite = childProc.stdin.write(data);
+    if (!canWrite) {
+      childProc.stdin.once('drain', resolve);
+    } else {
+      resolve();
+    }
+  });
+}
+
+/**
  * Send a request to the RLM sidecar and wait for the response.
  * Returns the parsed JSON response or throws on timeout/error.
  */
-export function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
+export async function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
   if (!RLM_ENABLED) {
     return Promise.reject(new Error('RLM disabled'));
   }
@@ -171,13 +187,11 @@ export function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
 
     pendingRequests.set(id, { resolve, reject, timer });
 
-    try {
-      childProc.stdin.write(JSON.stringify(request) + '\n');
-    } catch (err) {
+    writeToStdin(JSON.stringify(request) + '\n').catch(err => {
       clearTimeout(timer);
       pendingRequests.delete(id);
       reject(new Error(`RLM write error: ${err.message}`));
-    }
+    });
   });
 }
 
@@ -189,22 +203,11 @@ export async function callRLMWithFallback({ task, context, fallbackFn, timeout =
   try {
     const resp = await callRLM({ task, context, timeout });
     if (resp.status === 'ok' || resp.status === 'degraded') {
-      consecutiveFailures = 0; // Reset circuit breaker
-    halfOpenProbe = false;   // Probe succeeded, allow more calls
       return { data: resp.data, source: 'rlm', metadata: resp.metadata };
     }
-    // Error from sidecar
-    consecutiveFailures++;
-    if (consecutiveFailures >= MAX_FAILURES) {
-      circuitOpenUntil = Date.now() + 60_000;
-    halfOpenProbe = false;
-    }
+    // Error from sidecar - circuit breaker state managed by readline handler
   } catch (err) {
-    consecutiveFailures++;
-    if (consecutiveFailures >= MAX_FAILURES) {
-      circuitOpenUntil = Date.now() + 60_000;
-    halfOpenProbe = false;
-    }
+    // Circuit breaker state managed by readline handler (single source of truth)
     LOG_DEBUG && console.error(`[RLM] ${task} failed, using fallback:`, err.message);
   }
 
@@ -243,11 +246,14 @@ export function shutdownRLM() {
     try {
       // Close stdin first so Python reads EOF and exits its loop cleanly
       proc.stdin.end();
-      // Use childProc.kill() — on Windows this uses taskkill /T /PID
-      // to kill the entire process tree (process.kill+SIGTERM leaks zombies)
-      const forceTimer = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 5000);
-      forceTimer.unref();
-      setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, 2000).unref();
+      // On Windows, proc.kill() calls TerminateProcess which kills the entire tree.
+      // On Unix, send SIGTERM first, then SIGKILL after 3s if still alive.
+      if (process.platform === 'win32') {
+        try { proc.kill(); } catch {} // TerminateProcess on Windows
+      } else {
+        proc.kill('SIGTERM');
+        setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 3000).unref();
+      }
     } catch {}
   }
 }

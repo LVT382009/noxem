@@ -59,7 +59,7 @@ function rateLimiter(req, res, next) {
 }
 // Periodic cleanup of stale rate limit buckets
 const RATE_LIMIT_MAX_BUCKETS = 10_000;
-setInterval(() => {
+const _rateLimitCleanupInterval = setInterval(() => {
   const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS * 2;
   for (const [ip, bucket] of rateLimitBuckets) {
     if (bucket.start < cutoff) rateLimitBuckets.delete(ip);
@@ -87,6 +87,7 @@ app.use((req, res, next) => {
 
 app.use(rateLimiter);
 
+
 // Optional API key authentication — enable by setting MEMORY_API_KEY env var
 const MEMORY_API_KEY = process.env.MEMORY_API_KEY || '';
 if (MEMORY_API_KEY) {
@@ -97,7 +98,11 @@ if (MEMORY_API_KEY) {
     const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : req.query.api_key || '';
     const tokenBuf = Buffer.from(String(token));
     const keyBuf = Buffer.from(String(MEMORY_API_KEY));
-    if (tokenBuf.length !== keyBuf.length || !timingSafeEqual(tokenBuf, keyBuf)) {
+    const maxLen = Math.max(tokenBuf.length, keyBuf.length);
+    if (maxLen === 0) return res.status(401).json({ error: 'Unauthorized' });
+    const paddedToken = Buffer.alloc(maxLen); tokenBuf.copy(paddedToken);
+    const paddedKey = Buffer.alloc(maxLen); keyBuf.copy(paddedKey);
+    if (!timingSafeEqual(paddedToken, paddedKey)) {
       return res.status(401).json({ error: 'Unauthorized: invalid or missing API key' });
     }
 const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
@@ -216,7 +221,7 @@ function processEmbedQueue() {
             const vec = new Float32Array(embeddings[i]);
             updateMemoryEmbedding(batch[i].id, vec);
             addVecsToIndex([batch[i].id], [embeddings[i]]);
-          } catch {}
+          } catch (embedErr) { LOG_DEBUG && console.error(`[EmbedQueue] Failed for ${batch[i]?.id}:`, embedErr.message); }
         }
       } catch (err) {
         LOG_DEBUG && console.error('[EmbedQueue] Batch error:', err.message);
@@ -910,6 +915,7 @@ app.get("/memory/search", async (req, res) => {
           const content = expandData.choices?.[0]?.message?.content || "";
           const match = content.match(/\[.*?\]/s);
           if (match) {
+            if (match[0].length > 500) return;
             const alternates = JSON.parse(match[0]);
             if (Array.isArray(alternates)) queries = [q.trim(), ...alternates.slice(0, 2)];
           }
@@ -1570,8 +1576,8 @@ app.get('/memory/:id', (req, res, next) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/memory/:id', (req, res) => {
-  if (!/^\d+$/.test(req.params.id)) return res.status(404).json({ error: 'not found' });
+app.delete('/memory/:id', (req, res, next) => {
+  if (!/^\d+$/.test(req.params.id)) return next();
   try {
     const id = parseInt(req.params.id);
     const mem = getMemory(id);
@@ -2077,6 +2083,7 @@ if (!LOG_QUIET && (getVectorBackend() === 'hybrid' || getVectorBackend() === 'tu
 function shutdown(signal) {
   if (!LOG_QUIET) console.log(`\n${signal} received — shutting down gracefully...`);
   if (_errorLogInterval) clearInterval(_errorLogInterval);
+  if (_rateLimitCleanupInterval) clearInterval(_rateLimitCleanupInterval);
   stopMaintenanceCron();
   shutdownRLM(); // Stop Brain 2 sidecar before closing server
   server.close(() => {

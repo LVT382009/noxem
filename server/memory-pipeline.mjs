@@ -44,7 +44,7 @@ setInterval(() => {
 
 function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
-    sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0 });
+    sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0, consecutiveFailures: 0 });
   }
   return sessionState.get(sessionId);
 }
@@ -80,6 +80,10 @@ export function onMemoryStored(sessionId) {
  */
 export async function extractL1FromL0(sessionId) {
   const state = getSessionState(sessionId);
+  if (state.consecutiveFailures > 0) {
+    const cooldownMs = Math.min(30_000 * state.consecutiveFailures, 300_000);
+    if (Date.now() - state.lastL1Extract < cooldownMs) return;
+  }
   const episodeMems = getSessionMemories(sessionId)
     .filter(m => m.cone_layer === 0 || !m.cone_layer)
     .slice(-20); // Process last 20 episode memories
@@ -104,13 +108,18 @@ export async function extractL1FromL0(sessionId) {
       signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
     });
 
-    if (!res.ok) return;
+    if (!res.ok) { state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++; return; }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '';
     const jsonMatch = content.match(/\[[\s\S]*?\]/);
-    if (!jsonMatch) return;
+    if (!jsonMatch) { state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++; return; }
 
-    const atoms = JSON.parse(jsonMatch[0]);
+    let atoms;
+    try { atoms = JSON.parse(jsonMatch[0]); } catch (parseErr) {
+      LOG_DEBUG && console.error('[Pipeline] L1 JSON parse error:', parseErr.message);
+      state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++;
+      return;
+    }
     for (const atom of atoms.slice(0, 10)) {
       if (!atom.text || !atom.type) continue;
       let embedding = null;
@@ -130,10 +139,11 @@ export async function extractL1FromL0(sessionId) {
       });
     }
 
-    state.lastL1Extract = state.l0Count; state.l1ExtractCount++;
+    state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures = 0;
     LOG_DEBUG && console.log(`[Pipeline] L1 extraction: ${atoms.length} atoms from ${episodeMems.length} episodes`);
   } catch (err) {
-    LOG_DEBUG && console.error('[Pipeline] L1 LLM error:', err.message);
+    state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++;
+  LOG_DEBUG && console.error('[Pipeline] L1 LLM error:', err.message);
   }
 }
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * LLM Adapter — universal OpenAI-compatible API proxy.
+ * LLM Adapter â€” universal OpenAI-compatible API proxy.
  *
  * Supports two Brain 2 provider modes:
- * 1. **qwenproxy** — Proxies through QwenProxy (chat.qwen.ai scraper).
+ * 1. **qwenproxy** â€” Proxies through QwenProxy (chat.qwen.ai scraper).
  *    QwenProxy only supports SSE streaming, so the adapter collects SSE
  *    for non-streaming requests and normalizes model names.
- * 2. **local** — Passes through directly to any OpenAI-compatible endpoint
- *    (Ollama, LM Studio, llama.cpp, etc.). No SSE buffering needed —
+ * 2. **local** â€” Passes through directly to any OpenAI-compatible endpoint
+ *    (Ollama, LM Studio, llama.cpp, etc.). No SSE buffering needed â€”
  *    local endpoints natively support both streaming and non-streaming.
  *
  * OpenAI-compatible base URL: http://127.0.0.1:{ADAPTER_PORT}/v1
@@ -23,7 +23,7 @@ const DEFAULT_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3
 const LLM_API_KEY = process.env.LLM_API_KEY || '';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
-// ── Model normalization (QwenProxy only) ─────────────────────
+// â”€â”€ Model normalization (QwenProxy only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // QwenProxy only accepts "qwen3.6-plus" or "qwen3.6-plus-no-thinking"
 function normalizeModel(requestedModel) {
   if (!requestedModel) return DEFAULT_MODEL;
@@ -32,14 +32,14 @@ function normalizeModel(requestedModel) {
   return 'qwen3.6-plus-no-thinking';
 }
 
-// ── Build upstream headers ────────────────────────────────────
+// â”€â”€ Build upstream headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function upstreamHeaders() {
   const h = { 'Content-Type': 'application/json' };
   if (LLM_API_KEY) h['Authorization'] = `Bearer ${LLM_API_KEY}`;
   return h;
 }
 
-// ── SSE collection (for QwenProxy non-streaming mode) ────────
+// â”€â”€ SSE collection (for QwenProxy non-streaming mode) â”€â”€â”€â”€â”€â”€â”€â”€
 
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 2000;
@@ -57,7 +57,7 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
     const text = await res.text().catch(() => '');
     if ((res.status === 429 || res.status === 502) && attempt < MAX_RETRIES) {
       const delay = RETRY_BASE_MS * Math.pow(2, attempt);
-      console.error(`[Adapter] ${res.status} — retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+      console.error(`[Adapter] ${res.status} â€” retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
       continue;
     }
@@ -77,7 +77,9 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
     if (!trimmed.startsWith('data: ')) continue;
 
     try {
-      const chunk = JSON.parse(trimmed.slice(6));
+      let value = trimmed.slice(5); // strip "data:"
+  if (value.startsWith(' ')) value = value.slice(1); // strip optional space per WHATWG
+  const chunk = JSON.parse(value);
       const delta = chunk.choices?.[0]?.delta;
       if (delta) {
         if (delta.content) content += delta.content;
@@ -91,13 +93,13 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
     } catch { /* skip malformed lines */ }
   }
 
-  if (!content && reasoning) content = reasoning;
+  if (!content && reasoning) { content = reasoning; reasoning = ''; }
 
   return { content, reasoning, model, finishReason, usage };
   } // end retry loop
 }
 
-// ── SSE streaming passthrough ─────────────────────────────────
+// â”€â”€ SSE streaming passthrough â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 120000) {
   const upstream = await fetch(upstreamUrl, {
@@ -136,7 +138,7 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
   }
 }
 
-// ── Read request body ────────────────────────────────────────
+// â”€â”€ Read request body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -147,7 +149,7 @@ function readBody(req) {
   });
 }
 
-// ── Determine upstream URL based on provider mode ─────────────
+// â”€â”€ Determine upstream URL based on provider mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function getUpstreamUrl(path) {
   if (BRAIN2_PROVIDER === 'local' && LOCAL_LLM_URL) {
@@ -158,7 +160,7 @@ function getUpstreamUrl(path) {
   return `${QWENPROXY_URL}${path}`;
 }
 
-// ── HTTP server ──────────────────────────────────────────────
+// â”€â”€ HTTP server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const server = createServer(async (req, res) => {
   // CORS
@@ -234,7 +236,7 @@ const server = createServer(async (req, res) => {
 
     try {
       if (BRAIN2_PROVIDER === 'local' && LOCAL_LLM_URL) {
-        // ── Local mode: pass through directly ──────────────────
+        // â”€â”€ Local mode: pass through directly â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Local endpoints (Ollama, LM Studio, llama.cpp) natively
         // support both streaming and non-streaming. No SSE buffering needed.
         const upstreamUrl = LOCAL_LLM_URL.includes('/v1/chat/completions')
@@ -261,7 +263,7 @@ const server = createServer(async (req, res) => {
           return res.end(JSON.stringify(await upstreamRes.json()));
         }
       } else {
-        // ── QwenProxy mode: SSE bridge ─────────────────────────
+        // â”€â”€ QwenProxy mode: SSE bridge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // QwenProxy only supports streaming. For non-streaming requests,
         // we buffer SSE and return a single JSON response.
         const model = normalizeModel(reqObj.model);
@@ -293,23 +295,11 @@ const server = createServer(async (req, res) => {
         }
       }
     } catch (err) {
-      LOG_DEBUG && console.error(`[llm-adapter] Error: ${err.message}`);
-      const fallback = {
-        id: `chatcmpl-fallback-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: reqObj.model || DEFAULT_MODEL,
-        choices: [{
-          index: 0,
-          message: { role: 'assistant', content: '[LLM unavailable]' },
-          finish_reason: 'stop',
-        }],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-      };
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify(fallback));
-    }
-  }
+ LOG_DEBUG && console.error(`[llm-adapter] Error: ${err.message}`);
+ res.writeHead(502, { 'Content-Type': 'application/json' });
+ return res.end(JSON.stringify({ error: { message: `LLM unavailable: ${err.message}`, type: 'upstream_error' } }));
+ }
+ }
 
   // 404
   res.writeHead(404, { 'Content-Type': 'application/json' });

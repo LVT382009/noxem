@@ -67,29 +67,51 @@ export function insertVecBatch(db, ids, embeddings) {
   batch();
 }
 
+// One-time detection: true = 'AND k = ?' syntax, false = 'LIMIT ?' syntax
+let knnSyntaxUsesK = null;
+
 // KNN search using sqlite-vec — returns [{id, distance, score}]
 // distance is cosine distance (1 - similarity), convert to similarity score
 export function knnSearch(db, queryEmbedding, topK = 5) {
   if (!vecTableReady) return null;
   try {
     const vec = new Float32Array(queryEmbedding.slice(0, EMBED_DIM));
-    // Some sqlite-vec builds require AND k = ?; others work with LIMIT ?
     let results;
-    try {
-      results = db.prepare(`
-  SELECT rowid as id, distance
-  FROM memory_vecs
-  WHERE embedding MATCH ? AND k = ?
-  ORDER BY distance
-`).all(vec, topK);
-    } catch {
-      results = db.prepare(`
-  SELECT rowid as id, distance
-  FROM memory_vecs
-  WHERE embedding MATCH ?
-  ORDER BY distance
-  LIMIT ?
-`).all(vec, topK);
+    // One-time syntax detection: which KNN variant does this sqlite-vec build support?
+    if (knnSyntaxUsesK === null) {
+      try {
+        results = db.prepare(`
+          SELECT rowid as id, distance
+          FROM memory_vecs
+          WHERE embedding MATCH ? AND k = ?
+          ORDER BY distance
+        `).all(vec, topK);
+        knnSyntaxUsesK = true;
+      } catch {
+        results = db.prepare(`
+          SELECT rowid as id, distance
+          FROM memory_vecs
+          WHERE embedding MATCH ?
+          ORDER BY distance
+          LIMIT ?
+        `).all(vec, topK);
+        knnSyntaxUsesK = false;
+      }
+    } else {
+      results = knnSyntaxUsesK
+        ? db.prepare(`
+          SELECT rowid as id, distance
+          FROM memory_vecs
+          WHERE embedding MATCH ? AND k = ?
+          ORDER BY distance
+        `).all(vec, topK)
+        : db.prepare(`
+          SELECT rowid as id, distance
+          FROM memory_vecs
+          WHERE embedding MATCH ?
+          ORDER BY distance
+          LIMIT ?
+        `).all(vec, topK);
     }
     // sqlite-vec returns cosine distance (0 = identical, 2 = opposite)
     // Convert to similarity: score = 1 - distance
@@ -239,11 +261,11 @@ export async function knnSearchHybrid(db, queryEmbedding, topK = 10, allowlist =
     // Merge by ID, keeping best score per ID
     const byId = new Map();
     for (const r of (sqliteResults || [])) {
-      if (allowlist && !allowlist.includes(r.id)) continue;
+      if (allowlist && !allowlist.includes(Number(r.id))) continue;
       byId.set(r.id, r.score);
     }
     for (const r of (turboResults || [])) {
-      if (allowlist && !allowlist.includes(r.id)) continue;
+      if (allowlist && !allowlist.includes(Number(r.id))) continue;
       const existing = byId.get(r.id);
       if (existing === undefined || r.score > existing) {
         byId.set(r.id, r.score);
@@ -259,7 +281,7 @@ export async function knnSearchHybrid(db, queryEmbedding, topK = 10, allowlist =
   // Default: sqlite only
   const results = knnSearch(db, queryEmbedding, topK);
   if (allowlist && results) {
-    return results.filter(r => allowlist.includes(r.id));
+    return results.filter(r => allowlist.includes(Number(r.id)));
   }
   return results || [];
 }
