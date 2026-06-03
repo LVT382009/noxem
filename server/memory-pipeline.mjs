@@ -12,7 +12,7 @@
  * L3 persona is generated when 50+ L1 memories exist.
  */
 
-import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr } from './memory-store.mjs';
+import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, updateMemoryStatus, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr } from './memory-store.mjs';
 import { llmFetch } from './llm-fetch.mjs';
 import { isEmbeddingReady, embed, categorizeText, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
 
@@ -35,7 +35,7 @@ const extractingL1 = new Set(); // Per-session lock to prevent concurrent L1 ext
 setInterval(() => {
   const now = Date.now();
   for (const [sid, state] of sessionState) {
-    if (now - state.lastL1Extract > 3_600_000) {
+    if (now - state.lastActivity > 3_600_000) { // BUG-13 fix: use lastActivity, not lastL1Extract
       sessionState.delete(sid);
       extractingL1.delete(sid);
     }
@@ -44,7 +44,7 @@ setInterval(() => {
 
 function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
-    sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0, consecutiveFailures: 0 });
+    sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0, consecutiveFailures: 0, lastActivity: Date.now() });
   }
   return sessionState.get(sessionId);
 }
@@ -60,7 +60,7 @@ function getWarmupThreshold(extractionIndex) {
 export function onMemoryStored(sessionId) {
   if (!PIPELINE_ENABLED) return;
   const state = getSessionState(sessionId);
-  state.l0Count++;
+  state.l0Count++; state.lastActivity = Date.now(); // BUG-13 fix: track last activity
 
   const threshold = getWarmupThreshold(state.l1ExtractCount);
   const newSinceExtract = state.l0Count - state.lastL1Extract;
@@ -124,7 +124,7 @@ export async function extractL1FromL0(sessionId) {
       if (!atom.text || !atom.type) continue;
       let embedding = null;
       if (isEmbeddingReady()) {
-        try { embedding = new Float32Array(await embed(atom.text)); } catch {}
+        try { embedding = new Float32Array(await embed(atom.text)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L1 embedding failed:', e.message); }
       }
       storeMemory({
         text: atom.text,
@@ -151,7 +151,9 @@ export async function extractL1FromL0(sessionId) {
  * L2 Scene Extraction: group L1 memories by entity, create scene summaries.
  */
 export async function extractL2Scenes() {
-  const l1Mems = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 1);
+  // BUG-7 fix: single call to getAllActiveMemoriesNoEmbed, filter locally
+  const allActive = getAllActiveMemoriesNoEmbed();
+  const l1Mems = allActive.filter(m => m.cone_layer === 1);
   if (l1Mems.length < 5) return;
 
   // Group by entity
@@ -167,9 +169,15 @@ export async function extractL2Scenes() {
     if (mems.length < 3) continue;
 
  // Skip if scene already exists for this entity
- const existing = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 2 && m.entity === entity);
- if (existing.length > 0) continue;
-
+ const existing = allActive.filter(m => m.cone_layer === 2 && m.entity === entity); // BUG-7 fix: reuse cached allActive
+    // BUG-17 fix: skip only if scene is recent (< 7 days old)
+    if (existing.length > 0) {
+      const lastScene = existing[existing.length - 1];
+      const daysSinceExtract = (Date.now() - new Date(lastScene.created_at).getTime()) / 86400000;
+      if (daysSinceExtract < 7) continue; // skip if recent
+      // Supersede the stale scene and re-extract
+      for (const sc of existing) updateMemoryStatus(sc.id, 'superseded', -1);
+    }
     const sceneText = mems.map(m => `- [${m.type}] ${m.text}`).join('\n');
     try {
       const res = await llmFetch(LLM_URL, {
@@ -194,7 +202,7 @@ export async function extractL2Scenes() {
 
       let embedding = null;
       if (isEmbeddingReady()) {
-        try { embedding = new Float32Array(await embed(summary)); } catch {}
+        try { embedding = new Float32Array(await embed(summary)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L2 embedding failed:', e.message); }
       }
       storeMemory({
         text: summary,
@@ -223,9 +231,16 @@ export async function extractL3Persona() {
   const l1Mems = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 1);
   if (l1Mems.length < L3_MIN_L1_MEMORIES) return;
 
- // Skip if persona already exists
- const existingPersona = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 3);
- if (existingPersona.length > 0) return;
+  // BUG-17 fix: Skip only if persona is recent (< 7 days old)
+  const existingPersona = l1Mems; // reuse already-fetched L1 data for counting
+  const existingP = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 3);
+  if (existingP.length > 0) {
+    const lastPersona = existingP[existingP.length - 1];
+    const daysSinceExtract = existingP.length > 0 ? (Date.now() - new Date(lastPersona.created_at).getTime()) / 86400000 : Infinity;
+    if (daysSinceExtract < 7) return; // skip if recent
+    // Supersede the stale persona and re-extract
+    for (const p of existingP) updateMemoryStatus(p.id, 'superseded', -1);
+  }
 
   const textBlock = l1Mems.slice(0, 80).map(m => `[${m.type}] ${m.text}`).join('\n');
 
@@ -252,7 +267,7 @@ export async function extractL3Persona() {
 
     let embedding = null;
     if (isEmbeddingReady()) {
-      try { embedding = new Float32Array(await embed(persona)); } catch {}
+      try { embedding = new Float32Array(await embed(persona)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L3 embedding failed:', e.message); }
     }
     storeMemory({
       text: persona,

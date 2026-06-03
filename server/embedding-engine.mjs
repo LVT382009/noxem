@@ -52,14 +52,19 @@ async function fetchWithRetry(url, opts, retries = HF_FETCH_RETRIES) {
 }
 
 globalThis.fetch = function patchedFetch(url, opts = {}) {
+  // BUG-24: Use proper hostname check instead of substring match to avoid false positives (e.g. shelf.corps.com)
+  // Must be evaluated BEFORE mirror rewrite so isHF is available for the hf.co mirror path
+  let isHF = false;
+  try {
+    const u = new URL(String(url));
+    const hostname = u.hostname.toLowerCase();
+    isHF = hostname === 'huggingface.co' || hostname.endsWith('.huggingface.co') || hostname === 'hf.co' || hostname.endsWith('.hf.co');
+  } catch { /* not a valid URL - not an HF request */ }
   // Rewrite HF URLs to mirror if env.remoteHost has been switched
   let fetchUrl = url;
-  if (typeof url === 'string' && env.remoteHost && env.remoteHost !== 'https://huggingface.co/' && url.startsWith('https://huggingface.co/')) {
-    fetchUrl = url.replace('https://huggingface.co/', env.remoteHost);
-  } else if (typeof url === 'string' && env.remoteHost && env.remoteHost !== 'https://huggingface.co/' && url.includes('hf.co')) {
-      fetchUrl = url.replace(/https?:\/\/[^/]*hf\.co/, env.remoteHost.replace(/\/$/, ''));
+  if (isHF && typeof url === 'string' && env.remoteHost && env.remoteHost !== 'https://huggingface.co/') {
+    fetchUrl = url.replace(/https?:\/\/[^/]*(?:huggingface\.co|hf\.co)/, env.remoteHost.replace(/\/$/, ''));
   }
-  const isHF = typeof fetchUrl === 'string' && (fetchUrl.includes('huggingface') || fetchUrl.includes('hf.co'));
   if (isHF) {
     if (_hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) {
       return new Promise((resolve, reject) => {
@@ -112,6 +117,8 @@ let loadFailed = false;
 
 // Concurrency semaphore: serialize inference calls (transformers.js is NOT thread-safe)
 let inferenceLock = Promise.resolve();
+const MAX_LOCK_HOLD_MS = 120_000; // BUG-25: Force-release lock after 2 min to prevent deadlock if inference hangs
+let _consecutiveTimeouts = 0;
 function withLock(fn) {
   let release;
   const next = new Promise(r => { release = r; });
@@ -128,12 +135,23 @@ function withLock(fn) {
     // Timeout returns error to caller but does NOT release the lock —
     // the inference may still be running in transformers.js (not thread-safe).
     // Release only when the actual inference completes.
+    // BUG-25: Add maximum lock hold time — force-release if inference hangs beyond MAX_LOCK_HOLD_MS
     let _inferenceTimer; const timeout = new Promise((_, reject) => { _inferenceTimer = setTimeout(() => reject(new Error("Inference timeout")), 60000); });
-    return Promise.race([result, timeout]).catch(err => {
+    let _maxHoldTimer; const maxHold = new Promise((_, reject) => { _maxHoldTimer = setTimeout(() => reject(new Error("Inference deadlock: lock held too long")), MAX_LOCK_HOLD_MS); });
+    return Promise.race([result, timeout, maxHold]).catch(err => {
       // On timeout, caller gets error but lock stays held until inference finishes
-      result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); release(); });
+      result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); clearTimeout(_maxHoldTimer); release(); });
+      // BUG-25: On max hold timeout, force-release the lock to prevent permanent deadlock
+      if (err.message && err.message.includes('lock held too long')) {
+        _consecutiveTimeouts++;
+        clearTimeout(_inferenceTimer); clearTimeout(_maxHoldTimer); release();
+        if (_consecutiveTimeouts >= 3) {
+          LOG_DEBUG && console.error('[Brain-1] 3 consecutive lock timeouts — disabling engine');
+          modelReady = false; loadError = new Error('Engine disabled after repeated inference timeouts');
+        }
+      }
       throw err;
-    }).then(val => { clearTimeout(_inferenceTimer); release(); return val; });
+    }).then(val => { clearTimeout(_inferenceTimer); clearTimeout(_maxHoldTimer); _consecutiveTimeouts = 0; release(); return val; });
   });
 }
 
@@ -227,7 +245,12 @@ export async function initEmbeddingEngine() {
   if (modelReady) return;
   if (loadFailed) throw new Error('Embedding engine failed to initialize');
   // S-#39: Guard against race — if a concurrent caller already started loading, reuse their promise
-  if (loadPromise) { await loadPromise; return; }
+  if (loadPromise) {
+    await loadPromise;
+    // BUG-31: Verify model actually loaded after awaiting shared promise
+    if (!modelReady) throw new Error(loadError?.message || 'Embedding engine not ready after initialization');
+    return;
+  }
   validateCacheDir(EMBED_CACHE_DIR);
 
   loadPromise = (async () => {
@@ -324,7 +347,15 @@ function cosineSimilarity(a, b) {
     nb += b[i] * b[i];
   }
   const denom = Math.sqrt(na) * Math.sqrt(nb);
-  return denom < 1e-10 ? 0 : dot / denom;
+  // BUG-29: Return NaN for zero vectors to distinguish from genuine dissimilarity
+  if (denom < 1e-10) {
+    if (na < 1e-10 || nb < 1e-10) {
+      LOG_DEBUG && console.warn('[cosineSimilarity] Zero-norm vector detected — possible broken embedding');
+      return NaN;
+    }
+    return 0;
+  }
+  return dot / denom;
 }
 
 export async function embed(text, role = 'document', sessionMemories = null) {
@@ -335,8 +366,11 @@ export async function embed(text, role = 'document', sessionMemories = null) {
 	const inputs = await tokenizer(prefix + resolvedText, { padding: true });
     const { sentence_embedding } = await model(inputs);
     const arr = Array.from(sentence_embedding.data);
-    const result = normalize(arr.slice(0, EMBED_DIM));
-  return result || arr.slice(0, EMBED_DIM); // fallback to unnormalized if zero vector
+    // BUG-26: Guard against EMBED_DIM > model output dimension (causes NaN in normalize)
+    const dim = sentence_embedding.dims?.[1] || EMBED_DIM;
+    const truncDim = Math.min(EMBED_DIM, dim);
+    const result = normalize(arr.slice(0, truncDim));
+    return result || arr.slice(0, truncDim); // fallback to unnormalized if zero vector
   });
 }
 
@@ -385,7 +419,10 @@ export function searchByEmbedding(queryEmbedding, storedMemories, topK = 5, inte
 
 // Find duplicates: memories with similarity > threshold
 export function findDuplicates(memories, maxPairs = 5000) {
-  if (memories.length > 1000) memories = memories.slice(0, 1000);
+  if (memories.length > 1000) {
+    LOG_DEBUG && console.warn('[findDuplicates] Truncating from', memories.length, 'to 1000');
+    memories = memories.slice(0, 1000);
+  }
   const dupes = [];
   for (let i = 0; i < memories.length && dupes.length < maxPairs; i++) {
     if (!memories[i].embedding) continue;
@@ -406,11 +443,11 @@ export function findDuplicates(memories, maxPairs = 5000) {
 
 // Find contradictions: memories with similarity above contradiction threshold
 // that express opposite preferences/opinions about the same entity
-export function findContradictions(memories) {
+export function findContradictions(memories, maxPairs = 5000) {
   const contradictions = [];
-  for (let i = 0; i < memories.length; i++) {
+  for (let i = 0; i < memories.length && contradictions.length < maxPairs; i++) {
     if (!memories[i].embedding || memories[i].type === 'general') continue;
-    for (let j = i + 1; j < memories.length; j++) {
+    for (let j = i + 1; j < memories.length && contradictions.length < maxPairs; j++) {
       if (!memories[j].embedding || memories[j].type === 'general') continue;
       const sim = cosineSimilarity(memories[i].embedding, memories[j].embedding);
       if (sim > CONTRADICTION_THRESHOLD) {
@@ -435,17 +472,18 @@ export function findContradictions(memories) {
 export function categorizeText(text) {
   const lower = text.toLowerCase();
 
-  if (/prefer|like |love |hate |dislike|favorite|enjoy|don't like|not a fan/i.test(lower)) return 'preference';
-  if (/project|building|working on|creating|app |tool |system |repo|github/i.test(lower)) return 'project';
+  // BUG-30: Reordered from most specific to least specific to prevent regex shadowing
   if (/name is|my name|called|i am |i'm |works as|role |job /i.test(lower)) return 'profile';
-  if (/need |want |please |can you|could you|help me/i.test(lower)) return 'request';
-  if (/learn|studying|studied|reading|research|course|tutorial|guide/i.test(lower)) return 'learning';
   if (/tech |stack|language|framework|library|tool |using |installed|setup|config/i.test(lower)) return 'setup';
+  if (/project|building|working on|creating|app |system |repo|github/i.test(lower)) return 'project';
+  if (/prefer|like |love |hate |dislike|favorite|enjoy|don't like|not a fan/i.test(lower)) return 'preference';
   if (/goal |aim |plan |want to|going to|will |future/i.test(lower)) return 'goal';
   if (/error|bug|issue|problem|fail|crash|broken|fix/i.test(lower)) return 'issue';
+  if (/learn|studying|studied|reading|research|course|tutorial|guide/i.test(lower)) return 'learning';
   if (/workflow|habit|always|usually|typically|every |each /i.test(lower)) return 'pattern';
   if (/entity|person|company|website|product|service/i.test(lower)) return 'entity';
   if (/yesterday|today|tomorrow|last week|meeting|call |event|schedule/i.test(lower)) return 'event';
+  if (/need |want |please |can you|could you|help me/i.test(lower)) return 'request';
 
   return 'fact';
 }

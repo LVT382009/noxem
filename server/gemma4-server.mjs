@@ -19,10 +19,17 @@ const HF_FETCH_BACKOFF_MS = parseInt(process.env.HF_FETCH_BACKOFF || '2000');
 const _origFetch = globalThis.fetch;
 let _hfActiveFetches = 0;
 const _hfFetchQueue = [];
+let _hfQueueHead = 0; // index pointer for O(1) dequeue instead of O(n) shift
+const MAX_HF_QUEUE_SIZE = 100;
 
 function dequeueFetch() {
-  if (_hfFetchQueue.length === 0 || _hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) return;
-  const { url, opts, resolve, reject } = _hfFetchQueue.shift();
+  if (_hfQueueHead >= _hfFetchQueue.length || _hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) return;
+  const { url, opts, resolve, reject } = _hfFetchQueue[_hfQueueHead++];
+  // Compact queue when head drifts too far
+  if (_hfQueueHead > 50) {
+    _hfFetchQueue.splice(0, _hfQueueHead);
+    _hfQueueHead = 0;
+  }
   _hfActiveFetches++;
   _origFetch(url, opts)
   .then(resolve)
@@ -67,7 +74,11 @@ globalThis.fetch = function patchedFetch(url, opts = {}) {
   if (isHF) {
     if (_hfActiveFetches >= MAX_CONCURRENT_DOWNLOADS) {
       return new Promise((resolve, reject) => {
-        _hfFetchQueue.push({ url: fetchUrl, opts, resolve, reject });
+        if (_hfFetchQueue.length - _hfQueueHead >= MAX_HF_QUEUE_SIZE) {
+        reject(new Error('HF fetch queue overflow'));
+        return;
+      }
+      _hfFetchQueue.push({ url: fetchUrl, opts, resolve, reject });
       });
     }
     _hfActiveFetches++;
@@ -147,11 +158,15 @@ function validateCacheDir(cacheDir) {
   // Since .tmp files may be incomplete (download interrupted mid-write), we can't
   // safely rename them — clearing the entire cache is the only safe recovery.
   const tmpFiles = [];
-  function findTmpFiles(dir) {
+  function findTmpFiles(dir, depth = 10) {
+    if (depth <= 0) return;
     try {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = join(dir, entry.name);
-        if (entry.isDirectory()) findTmpFiles(full);
+        if (entry.isDirectory()) {
+          try { if (fs.lstatSync(full).isSymbolicLink()) continue; } catch {}
+          findTmpFiles(full, depth - 1);
+        }
         else if (/\.tmp\.[a-z0-9]+\.[a-z0-9]+$/i.test(entry.name)) tmpFiles.push(full);
       }
     } catch {}
@@ -165,10 +180,12 @@ function validateCacheDir(cacheDir) {
   }
 
     // 2. Walk directories looking for empty or corrupt tokenizer_config.json
-    function checkDir(dir) {
+    function checkDir(dir, depth = 10) {
+ if (depth <= 0) return false;
       try {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           if (!entry.isDirectory()) continue;
+ try { if (fs.lstatSync(join(dir, entry.name)).isSymbolicLink()) continue; } catch {}
           const tcPath = join(dir, entry.name, 'tokenizer_config.json');
           if (fs.existsSync(tcPath)) {
             const stat = fs.statSync(tcPath);
@@ -205,7 +222,7 @@ function validateCacheDir(cacheDir) {
               }
             }
           }
-          if (checkDir(join(dir, entry.name))) return true;
+          if (checkDir(join(dir, entry.name), depth - 1)) return true;
         }
       } catch {}
       return false;
@@ -218,7 +235,7 @@ function validateCacheDir(cacheDir) {
 
 async function loadModel() {
   if (loadPromise) return loadPromise;
-  runNetworkDiagnostics();
+  runNetworkDiagnostics().catch(() => {});
   validateCacheDir(CACHE_DIR);
   loadPromise = (async () => {
   // Dynamic import — pipeline() is the standard transformers.js API
@@ -304,6 +321,8 @@ async function loadModel() {
     }
 
     console.error('Brain-2: all load attempts failed. Advisor will use fallback mode.');
+  // Clear loadPromise so subsequent calls can retry after cooldown
+  setTimeout(() => { loadPromise = null; }, 60000);
   })();
   return loadPromise;
 }
@@ -351,7 +370,10 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 
     const messages = req.body?.messages || [];
-      const maxTokens = req.body?.max_tokens || MAX_NEW_TOKENS;
+      if (!Array.isArray(messages) || messages.length === 0) {
+   return res.status(400).json({ error: "messages must be a non-empty array" });
+ }
+ const maxTokens = Math.min(Math.max(1, parseInt(req.body?.max_tokens) || MAX_NEW_TOKENS), MAX_NEW_TOKENS);
 
       // pipeline() handles chat template + tokenization + generation internally
       const output = await generator(messages, {
@@ -399,14 +421,29 @@ function shutdown(signal) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Don't crash on uncaught exceptions — debounce and count repeated errors
+// Handle uncaught exceptions: only suppress known non-fatal errors (e.g., HuggingFace download errors).
+// Unknown/programming errors must crash the process — continuing in undefined state risks data corruption.
+const NON_FATAL_PATTERNS = [
+  /fetch failed/i,
+  /ECONNREFUSED/i,
+  /ECONNRESET/i,
+  /ETIMEDOUT/i,
+  /ConnectTimeoutError/i,
+  /AbortError/i,
+];
+
 process.on('uncaughtException', (err) => {
   const msg = err.message || String(err);
-  const count = (errorCounts.get(msg) || 0) + 1;
-  errorCounts.set(msg, count);
-  if (count === 1) {
-    console.error(`Uncaught exception (non-fatal): ${msg}`);
-    startErrorLogger();
+  const isKnownNonFatal = NON_FATAL_PATTERNS.some(p => p.test(msg) || p.test(err.name));
+  if (isKnownNonFatal) {
+    const count = (errorCounts.get(msg) || 0) + 1;
+    errorCounts.set(msg, count);
+    if (count === 1) {
+      console.error(`Uncaught exception (non-fatal): ${msg}`);
+      startErrorLogger();
+    }
+  } else {
+    console.error('Fatal uncaught exception:', err);
+    process.exit(1);
   }
-  // Repeated errors are batch-logged every 5s by the interval
 });

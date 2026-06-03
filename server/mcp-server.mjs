@@ -91,7 +91,7 @@ server.registerTool(
         content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
       };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }
   }
 );
@@ -131,7 +131,7 @@ server.registerTool(
         content: [{ type: 'text', text: JSON.stringify({ ok: true, id, type: memType, importance: imp, entity: ent, attribute: attr }) }],
       };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }
   }
 );
@@ -162,7 +162,7 @@ const bullets = memories.slice(0, maxMems).map(m => {
         content: [{ type: 'text', text: bullets.join('\n') || 'No active memories.' }],
       };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }
   }
 );
@@ -207,7 +207,7 @@ server.registerTool(
         content: [{ type: 'text', text: JSON.stringify({ ok: true, stored: results.length, results }) }],
       };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }
   }
 );
@@ -240,7 +240,7 @@ server.registerTool(
         content: [{ type: 'text', text: typeof advice === 'string' ? advice : JSON.stringify(advice) }],
       };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }
   }
 );
@@ -264,7 +264,7 @@ server.registerTool(
         content: [{ type: 'text', text: formatted }],
       };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }
   }
 );
@@ -290,7 +290,7 @@ server.registerTool(
         content: [{ type: 'text', text: JSON.stringify({ status, recent_research: recent }) }],
       };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }
   }
 );
@@ -302,11 +302,11 @@ server.registerTool(
   {
     description: 'Traverse the memory graph — find related memories via edges (references, implements, derives_from, contradicts, etc.).',
     inputSchema: {
-      memory_id: z.number().describe('Starting memory ID'),
+      memory_id: z.number().int().positive().describe('Starting memory ID (positive integer)'),
       direction: z.enum(['outgoing', 'incoming', 'both']).optional().default('both').describe('Edge direction to follow'),
       relation: z.string().optional().describe('Filter by relation type (references, implements, derives_from, contradicts, clarifies, supersedes)'),
-      max_depth: z.number().optional().default(2).describe('Max traversal depth'),
-      limit: z.number().optional().default(20).describe('Max results'),
+      max_depth: z.number().int().positive().optional().default(2).describe('Max traversal depth'),
+      limit: z.number().int().positive().optional().default(20).describe('Max results'),
     },
   },
   async ({ memory_id, direction = 'both', relation, max_depth = 2, limit = 20 }) => {
@@ -316,7 +316,7 @@ server.registerTool(
         content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
       };
     } catch (err) {
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }
   }
 );

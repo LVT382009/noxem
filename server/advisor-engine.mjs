@@ -18,7 +18,7 @@ import { callRLMWithFallback, getRLMStatus, shutdownRLM } from './rlm-bridge.mjs
 import { llmFetch } from './llm-fetch.mjs';
 
 const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192');
+const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW ?? '8192');
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
 
@@ -163,6 +163,7 @@ Stay factual and concise. Only flag real issues, not hypothetical ones.`,
 
   try {
     const res = await callLLM(messages, 1024, 0.2);
+    if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text().catch(() => '')).substring(0, 200)}`);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || fallbackCompressAnalysis(conversationHistory, sessionMemories);
   } catch (err) {
@@ -205,6 +206,7 @@ Respond concisely. If everything looks fine, say "All good — no issues detecte
 
   try {
     const res = await callLLM(messages, 800, 0.2);
+    if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text().catch(() => '')).substring(0, 200)}`);
     const data = await res.json();
     return data?.choices?.[0]?.message?.content || fallbackAdvice();
   } catch (err) {
@@ -222,7 +224,7 @@ async function _singleShotSessionEnd(conversationHistory) {
   // Fallback for short sessions: process in one call
   if (fullHistory.length <= 20) {
     const convoText = fullHistory.map(t =>
-      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 32000))}`
+      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.max(200, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 32000)))}`
     ).join('\n\n');
 
     const messages = [
@@ -241,6 +243,7 @@ Rules:
 
     try {
       const res = await callLLM(messages, 1024, 0.1);
+      if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text().catch(() => '')).substring(0, 200)}`);
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content || '';
       if (!content || content.startsWith('[LLM un')) return [];
@@ -260,9 +263,10 @@ Rules:
     chunks.push(fullHistory.slice(i, i + CHUNK_SIZE));
   }
 
-  for (const chunk of chunks.slice(0, 10)) {
+  // BUG-17: Process chunks in parallel with concurrency limit (3 concurrent LLM calls)
+  const chunkTasks = chunks.slice(0, 10).map(chunk => async () => {
     const chunkText = chunk.map(t =>
-      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 32000))}`
+      `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.max(200, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 32000)))}`
     ).join('\n\n');
 
     const messages = [
@@ -276,16 +280,32 @@ Rules: Extract only non-obvious, durable facts. Omit greetings, small talk.`,
 
     try {
       const res = await callLLM(messages, 1024, 0.1);
+      if (!res.ok) { LOG_DEBUG && console.error(`LLM HTTP ${res.status} for session-end chunk`); return []; }
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content || '';
-      if (!content) continue;
+      if (!content) return [];
       const jsonMatch = content.match(/\[[\s\S]*?\]/);
-      if (!jsonMatch) continue;
+      if (!jsonMatch) return [];
       const chunkMems = JSON.parse(jsonMatch[0]);
-      if (Array.isArray(chunkMems)) allMemories.push(...chunkMems.filter(m => m.text && m.type));
+      return Array.isArray(chunkMems) ? chunkMems.filter(m => m.text && m.type) : [];
     } catch (err) {
       LOG_DEBUG && console.error('Chunk extraction error:', err.message);
+      return [];
     }
+  });
+
+  const CONCURRENCY_LIMIT = 3;
+  const executing = new Set();
+  const results = [];
+  for (const task of chunkTasks) {
+    const p = task().then(r => { executing.delete(p); return r; });
+    executing.add(p);
+    results.push(p);
+    if (executing.size >= CONCURRENCY_LIMIT) await Promise.race(executing);
+  }
+  const allChunkResults = await Promise.all(results);
+  for (const r of allChunkResults) {
+    if (Array.isArray(r)) allMemories.push(...r);
   }
 
   // Simple dedup by text prefix

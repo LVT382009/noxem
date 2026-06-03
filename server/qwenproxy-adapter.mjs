@@ -33,6 +33,11 @@ function normalizeModel(requestedModel) {
 }
 
 // â”€â”€ Build upstream headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// BUG-22: Sanitize error text to prevent API key leaks
+function sanitizeErrorText(text) {
+  return text.replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]');
+}
+
 function upstreamHeaders() {
   const h = { 'Content-Type': 'application/json' };
   if (LLM_API_KEY) h['Authorization'] = `Bearer ${LLM_API_KEY}`;
@@ -45,7 +50,7 @@ const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 2000;
 
 async function collectSSE(url, bodyObj, timeoutMs = 60000) {
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
   const res = await fetch(url, {
     method: 'POST',
     headers: upstreamHeaders(),
@@ -61,7 +66,7 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
       await new Promise(r => setTimeout(r, delay));
       continue;
     }
-    throw new Error(`QwenProxy returned ${res.status}: ${text.substring(0, 500)}`);
+    throw new Error(`QwenProxy returned ${res.status}: ${sanitizeErrorText(text.substring(0, 500))}`);
   }
 
   let content = '';
@@ -71,7 +76,7 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
   let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
   const text = await res.text();
-  for (const line of text.split('\n')) {
+  for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed === 'data: [DONE]') continue;
     if (!trimmed.startsWith('data: ')) continue;
@@ -110,9 +115,18 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
   });
 
   if (!upstream.ok) {
-    const text = await upstream.text().catch(() => '');
+    // BUG-21: Cancel the body after reading a small prefix for error message
+    let errText = '';
+    try {
+      const reader = upstream.body?.getReader();
+      if (reader) {
+        const { value } = await reader.read();
+        errText = new TextDecoder().decode(value || new Uint8Array()).substring(0, 300);
+        reader.cancel();
+      }
+    } catch { errText = upstream.statusText || ''; }
     clientRes.writeHead(upstream.status, { 'Content-Type': 'application/json' });
-    return clientRes.end(JSON.stringify({ error: { message: `Upstream error: ${text.substring(0, 300)}`, type: 'upstream_error' } }));
+    return clientRes.end(JSON.stringify({ error: { message: `Upstream error: ${sanitizeErrorText(errText)}`, type: 'upstream_error' } }));
   }
 
   clientRes.writeHead(200, {
@@ -140,10 +154,19 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
 
 // â”€â”€ Read request body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+const MAX_REQUEST_BODY_SIZE = 1_048_576; // 1 MiB — BUG-18: prevent OOM from oversized request bodies
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > MAX_REQUEST_BODY_SIZE) {
+        reject(new Error('Request body too large'));
+        req.destroy();
+        return;
+      }
+    });
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
@@ -163,8 +186,12 @@ function getUpstreamUrl(path) {
 // â”€â”€ HTTP server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const server = createServer(async (req, res) => {
-  // CORS
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // BUG-17: CORS — restrict to localhost origins only (local proxy, not public API)
+  const origin = req.headers.origin;
+  const allowedOrigins = ['http://127.0.0.1', 'http://localhost', 'http://127.0.0.1:' + ADAPTER_PORT, 'http://localhost:' + ADAPTER_PORT];
+  if (origin && allowedOrigins.some(o => origin.startsWith(o))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
@@ -256,7 +283,7 @@ const server = createServer(async (req, res) => {
 
           if (!upstreamRes.ok) {
             const text = await upstreamRes.text().catch(() => '');
-            throw new Error(`Local LLM returned ${upstreamRes.status}: ${text.substring(0, 500)}`);
+            throw new Error(`Local LLM returned ${upstreamRes.status}: ${sanitizeErrorText(text.substring(0, 500))}`);
           }
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -305,6 +332,10 @@ const server = createServer(async (req, res) => {
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: { message: 'Not found', type: 'not_found' } }));
 });
+
+// BUG-23: Protect against slowloris attacks with request/header timeouts
+server.requestTimeout = 30000;
+server.headersTimeout = 31000;
 
 server.listen(ADAPTER_PORT, '127.0.0.1', () => {
   const mode = BRAIN2_PROVIDER === 'local' ? `local (${LOCAL_LLM_URL})` : `qwenproxy (${QWENPROXY_URL})`;

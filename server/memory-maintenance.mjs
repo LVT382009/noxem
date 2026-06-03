@@ -52,7 +52,7 @@ export async function runMaintenance() {
         for (const m of withEmbedding) {
           if (seen.has(m.id)) continue;
           const neighbors = vectorKnnSearch(m.embedding, 20);
-          if (!neighbors) { dupes = findDuplicates(memories); break; }
+          if (!neighbors) { dupes.push(...findDuplicates(withEmbedding.filter(m => !seen.has(m.id)))); break; } // BUG-8 fix: use filtered list, preserve progress
           for (const n of neighbors) {
             if (n.id === m.id || seen.has(n.id)) continue;
             if (n.score > DUP_THRESHOLD) {
@@ -70,7 +70,7 @@ export async function runMaintenance() {
         if (alreadySuperseded.has(older.id)) continue;
         if (alreadySuperseded.has(newer.id)) continue;
         updateMemoryStatus(older.id, 'superseded', newer.id);
-        alreadySuperseded.add(older.id);
+        alreadySuperseded.add(older.id); alreadySuperseded.add(newer.id); // BUG-14 fix: prevent newer from being superseded in another pair
         results.duplicates++;
       }
       if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] Marked ${dupes.length} duplicates as superseded`);
@@ -311,7 +311,11 @@ async function consolidateMemories(memories) {
     const clusters = [...groups.values()].filter(c => c.length >= CONSOLIDATION_MIN_CLUSTER);
     for (const cluster of clusters) {
       try {
-        cluster.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        cluster.sort((a, b) => { // BUG-9 fix: null-safe date sort
+        const da = a.created_at ? new Date(a.created_at.replace(' ', 'T')).getTime() : 0;
+        const db2 = b.created_at ? new Date(b.created_at.replace(' ', 'T')).getTime() : 0;
+        return (da || 0) - (db2 || 0);
+      });
         const texts = cluster.map(m => m.text);
         const summaryText = texts.join(' | ');
 

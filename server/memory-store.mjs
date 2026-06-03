@@ -14,11 +14,9 @@ const DB_PATH = path.join(DB_DIR, 'hermes-memory.db');
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
-const isNewDb = !fs.existsSync(DB_PATH);
 const db = new Database(DB_PATH);
-if (isNewDb) {
-  db.pragma('page_size = 32768'); // Optimal for BLOB/vector I/O — must set before first table
-}
+// BUG-4 fix: Set page_size unconditionally — SQLite ignores it if tables already exist, safe to always set
+db.pragma('page_size = 32768'); // Optimal for BLOB/vector I/O — must set before first table
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 db.pragma('synchronous = NORMAL');
@@ -373,6 +371,9 @@ export function searchProcedures(query, limit = 10) {
   `).all(q, q, q, Math.min(limit, 50));
 }
 
+// BUG-5 fix: Rebuild FTS after migrations to ensure content table consistency
+try { db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')"); } catch (e) { /* FTS table may not exist yet */ }
+
 initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
 
 const insert = db.prepare(
@@ -534,7 +535,8 @@ function bufferToFloat32(buf) {
 function ensureEmbeddingBuffer(embedding) {
   if (!embedding) return null;
   if (Buffer.isBuffer(embedding)) return embedding;
-  if (embedding instanceof Float32Array) return Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength);
+  // BUG-11 fix: copy data to avoid shared ArrayBuffer mutation
+	if (embedding instanceof Float32Array) { const copy = new Float32Array(embedding); return Buffer.from(copy.buffer, copy.byteOffset, copy.byteLength); }
   if (embedding instanceof ArrayBuffer) return Buffer.from(embedding);
   if (Array.isArray(embedding)) {
     if (embedding.some(v => typeof v !== 'number' || !Number.isFinite(v))) {
@@ -558,8 +560,8 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
     context_prefix,
     entity,
     attribute,
-    valid_from: valid_from || new Date().toISOString(),
- summary: summary || null,
+    valid_from: valid_from ?? new Date().toISOString(),
+ summary: summary ?? null,
  cone_layer,
  });
   // Update vector index if embedding provided
@@ -588,8 +590,8 @@ export function storeMemories(items) {
     context_prefix: m.context_prefix || '',
     entity: m.entity || '',
     attribute: m.attribute || '',
-    valid_from: m.valid_from || now,
-    summary: m.summary || null,
+    valid_from: m.valid_from ?? now,
+    summary: m.summary ?? null,
     cone_layer: m.cone_layer ?? 0,
   }));
   const ids = insertTx(prepared);
@@ -626,13 +628,16 @@ export function deleteMemory(id) {
 
 export function deleteInvalid() {
 	const invalidRows = db.prepare("SELECT id FROM memories WHERE status = 'invalid'").all();
-	for (const row of invalidRows) {
-		removeById.run(row.id);
+	const ids = invalidRows.map(r => r.id);
+	// BUG-2 fix: wrap DELETE loop in transaction for atomicity
+	db.transaction(() => { for (const id of ids) removeById.run(id); })();
+	// Vector index cleanup post-commit (non-transactional by nature)
+	for (const id of ids) {
 		const tb = getVectorBackend();
-		if (tb === 'turbovec' || tb === 'hybrid') removeFromTurboVec(row.id).catch(() => {});
-		deleteVec(db, row.id);
+		if (tb === 'turbovec' || tb === 'hybrid') removeFromTurboVec(id).catch(() => {});
+		deleteVec(db, id);
 	}
-	return invalidRows.length;
+	return ids.length;
 }
 
 export function searchMemories({ query, limit = 10 }) {
@@ -644,7 +649,7 @@ export function searchMemories({ query, limit = 10 }) {
       .replace(/(?:\w+:)/g, '')           // strip column: prefixes
       .replace(/\b(?:AND|OR|NOT|NEAR)\b/gi, '') // strip FTS5 operators
       .replace(/['"*^$]/g, '')            // strip quotes and FTS5 modifiers
-      .replace(/[^\w\s]/g, ' ')           // strip remaining non-word chars
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ') // BUG-15 fix: Unicode-aware — preserves CJK and accented
       .replace(/\s+/g, ' ')               // collapse whitespace
       .trim();
     if (!sanitized) return searchRecent.all({ query: `%${query.replace(/[%_]/g, '\\$&')}%`, limit: limitNum });
@@ -657,6 +662,12 @@ export function searchMemories({ query, limit = 10 }) {
 
 export function getMemory(id) {
   return getById.get(id);
+}
+
+export function getMemoriesByIds(ids) {
+  if (!ids || ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  return db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`).all(...ids);
 }
 
 export function getActiveMemories(limit = 50) {
@@ -698,11 +709,11 @@ export function getMemoryStats() {
 }
 
 export function getSessionMemoryCount(sessionId) {
-  return countBySession.get(sessionId).count;
+  return countBySession.get(sessionId)?.count ?? 0;
 }
 
 export function getTypeMemoryCount(type) {
-  return countByType.get(type).count;
+  return countByType.get(type)?.count ?? 0;
 }
 
 export function getSupersededMemories() {
@@ -810,7 +821,8 @@ export function getMemoriesByEntityAttr(entity, attribute) {
 
 // Graph edge operations
 export function storeEdge({ from_id, to_id, relation, valid_from = null, valid_until = null, strength = 1.0, source_session_id = '', metadata = {} }) {
-  return Number(insertEdge.run({ from_id, to_id, relation, valid_from: valid_from || new Date().toISOString(), valid_until, strength, source_session_id, metadata: JSON.stringify(metadata) }).lastInsertRowid);
+	if (from_id === to_id) throw new Error('Self-referential edge not allowed');
+  return Number(insertEdge.run({ from_id, to_id, relation, valid_from: valid_from ?? new Date().toISOString(), valid_until, strength, source_session_id, metadata: JSON.stringify(metadata) }).lastInsertRowid);
 }
 
 export function getEdgesFromMemory(memoryId) { return getEdgesFrom.all(memoryId); }
@@ -844,7 +856,8 @@ export function traverseMemoryGraph(fromId, maxDepth = 3, limit = 20, direction 
 
 // Core memory operations
 export function upsertCoreBlock({ key, value, description = '', char_limit = 500 }) {
-  const truncated = value.length > char_limit ? value.substring(0, char_limit) : value;
+  // BUG-12 fix: Unicode-safe truncation by code points, + warning on truncation
+	const truncated = value.length > char_limit ? (() => { console.warn(`[upsertCoreBlock] Value for key '${key}' truncated from ${value.length} to ${char_limit} chars`); return [...value].slice(0, char_limit).join(''); })() : value;
   upsertCoreMemory.run({ key, value: truncated, description, char_limit });
   return getCoreMemory.get(key);
 }
@@ -866,7 +879,8 @@ export function getRawText(memoryId) {
   return raw ? raw.raw_text : null;
 }
 export function getCompressibleMemories(maxLevel, olderThanDays, limit = 50) {
-  return getCompressible.all(maxLevel, olderThanDays, Math.min(limit, 200));
+  const days = Math.max(1, Math.floor(olderThanDays)); // BUG-16 fix: validate integer
+  return getCompressible.all(maxLevel, days, Math.min(limit, 200));
 }
 
 
@@ -952,5 +966,9 @@ export function getEntitiesForMemory(memoryId) { return getEntitiesByMemory.all(
 export { db };
 
 export function close() {
-  db.close();
+	db.close();
 }
+
+// BUG-19 fix: Graceful DB close on process shutdown signals
+process.on('SIGTERM', () => { close(); process.exit(0); });
+process.on('SIGINT', () => { close(); process.exit(0); });

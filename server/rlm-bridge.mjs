@@ -14,11 +14,11 @@ import { fileURLToPath } from 'url';
 
 const RLM_ENABLED = process.env.RLM_ENABLED !== 'false';
 const RLM_SCRIPT = process.env.RLM_SCRIPT || fileURLToPath(new URL('./rlm_sidecar.py', import.meta.url));
-const RLM_MAX_SUB_CALLS = parseInt(process.env.RLM_MAX_SUB_CALLS || '5');
-const RLM_MAX_TOKENS = parseInt(process.env.RLM_MAX_TOKENS || '4096');
-const RLM_TIMEOUT_MS = parseInt(process.env.RLM_TIMEOUT_MS || '120000');
-const RLM_LLM_TIMEOUT = parseInt(process.env.RLM_LLM_TIMEOUT || '60');
-const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192');
+const RLM_MAX_SUB_CALLS = parseInt(process.env.RLM_MAX_SUB_CALLS ?? '5');
+const RLM_MAX_TOKENS = parseInt(process.env.RLM_MAX_TOKENS ?? '4096');
+const RLM_TIMEOUT_MS = parseInt(process.env.RLM_TIMEOUT_MS ?? '120000');
+const RLM_LLM_TIMEOUT = parseInt(process.env.RLM_LLM_TIMEOUT ?? '60');
+const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW ?? '8192');
 
 // Resolve Python binary: venv python preferred (has httpx/numpy), system python as fallback
 const isWin = process.platform === 'win32';
@@ -68,7 +68,16 @@ function ensureProcess() {
   try {
     childProc = spawn(NOXEM_PY, [RLM_SCRIPT], {
       stdio: ['pipe', 'pipe', 'inherit'],
-      env: { ...process.env },
+      env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
+      LLM_URL: process.env.LLM_URL || process.env.GEMMA_URL || '',
+      LLM_MODEL: process.env.LLM_MODEL || process.env.GEMMA_MODEL || '',
+      LLM_API_KEY: process.env.LLM_API_KEY || '',
+      NOXEM_CONTEXT_WINDOW: process.env.NOXEM_CONTEXT_WINDOW || '',
+      VIRTUAL_ENV: process.env.VIRTUAL_ENV || '',
+    },
     });
 
     readline = createInterface({ input: childProc.stdout });
@@ -111,6 +120,9 @@ function ensureProcess() {
 
     childProc.on('exit', (code) => {
       LOG_DEBUG && console.error(`[RLM] Process exited with code ${code}`);
+      // Reset circuit breaker state - process restart is a clean slate
+      consecutiveFailures = 0;
+      halfOpenProbe = false;
       // Reject all pending requests
       for (const [id, { reject }] of pendingRequests) {
         reject(new Error(`RLM process exited: code ${code}`));
@@ -132,10 +144,21 @@ function ensureProcess() {
  */
 function writeToStdin(data) {
   return new Promise((resolve, reject) => {
-    if (!childProc?.stdin?.writable) return reject(new Error('stdin not writable'));
+    if (!childProc?.stdin?.writable || childProc.stdin.destroyed) return reject(new Error('stdin not writable'));
     const canWrite = childProc.stdin.write(data);
     if (!canWrite) {
-      childProc.stdin.once('drain', resolve);
+      const drainTimeout = setTimeout(() => reject(new Error('stdin drain timeout')), 5000);
+      const onDrain = () => { clearTimeout(drainTimeout); cleanup(); resolve(); };
+      const onError = (err) => { clearTimeout(drainTimeout); cleanup(); reject(new Error(`stdin error: ${err.message}`)); };
+      const onClose = () => { clearTimeout(drainTimeout); cleanup(); reject(new Error('stdin closed')); };
+      const cleanup = () => {
+        childProc?.stdin?.removeListener('drain', onDrain);
+        childProc?.stdin?.removeListener('error', onError);
+        childProc?.stdin?.removeListener('close', onClose);
+      };
+      childProc.stdin.once('drain', onDrain);
+      childProc.stdin.once('error', onError);
+      childProc.stdin.once('close', onClose);
     } else {
       resolve();
     }
@@ -170,11 +193,11 @@ export async function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
     context,
     llmUrl,
     llmModel,
- llmApiKey: process.env.LLM_API_KEY || '',
+    // llmApiKey: sent via env, not repeated in NDJSON to avoid logging
     config: {
       maxSubCalls: RLM_MAX_SUB_CALLS,
       maxTokensBudget: RLM_MAX_TOKENS,
-   contextWindow: parseInt(process.env.NOXEM_CONTEXT_WINDOW || '8192'),
+   contextWindow: parseInt(process.env.NOXEM_CONTEXT_WINDOW ?? '8192'),
     llmTimeout: RLM_LLM_TIMEOUT,
     },
   };
@@ -212,8 +235,9 @@ export async function callRLMWithFallback({ task, context, fallbackFn, timeout =
   }
 
   // Fallback to single-shot
+  const _fallStart = Date.now();
   const fallbackResult = await fallbackFn();
-  return { data: fallbackResult, source: 'fallback', metadata: { calls: 1, tokens: 0, elapsed_ms: 0 } };
+  return { data: fallbackResult, source: 'fallback', metadata: { calls: 1, tokens: 0, elapsed_ms: Date.now() - _fallStart } };
 }
 
 /**

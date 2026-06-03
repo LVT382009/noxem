@@ -10,7 +10,7 @@
  */
 
 
-import { storeMemory, getAllActiveMemoriesNoEmbed, getMemoriesByEntityAttr, traverseMemoryGraph, getActiveMemories, db } from './memory-store.mjs';
+import { storeMemory, getAllActiveMemoriesNoEmbed, getMemoriesByEntityAttr, traverseMemoryGraph, getActiveMemories, getMemoriesByIds, db } from './memory-store.mjs';
 import { isEmbeddingReady, embed, searchByEmbedding } from './embedding-engine.mjs';
 import { knnSearch, knnSearchHybrid, getVectorBackend } from './vector-index.mjs';
 import { vectorKnnSearchAsync } from './memory-store.mjs';
@@ -47,38 +47,41 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
   if (allHits.length === 0) return { episodes: [], layers_searched: { L0: 0, L1: 0, L2: 0, L3: 0 } };
 
   // Step 2: Build hit graph — connect hits via memory edges
-  const hitIds = new Set(allHits.map(h => h.id));
-  const graph = new Map(); // id -> [{targetId, edgeWeight}]
+  // Normalize all IDs to String to avoid BigInt/Number/String mismatch
+  const hitIds = new Set(allHits.map(h => String(h.id)));
+  const graph = new Map(); // id (String) -> [{targetId, edgeWeight}]
 
   for (const hit of allHits) {
+    const hitKey = String(hit.id);
     const edges = traverseMemoryGraph(hit.id, 1, 10);
     const neighbors = [];
     for (const edge of (edges || [])) {
-      if (hitIds.has(edge.to_id)) {
-        neighbors.push({ targetId: edge.to_id, weight: Math.max(0, 1 - (edge.strength || 0.5)) });
+      if (hitIds.has(String(edge.to_id))) {
+        neighbors.push({ targetId: String(edge.to_id), weight: Math.max(0, 1 - (edge.strength || 0.5)) });
       }
-      if (hitIds.has(edge.from_id)) {
-        neighbors.push({ targetId: edge.from_id, weight: Math.max(0, 1 - (edge.strength || 0.5)) });
+      if (hitIds.has(String(edge.from_id))) {
+        neighbors.push({ targetId: String(edge.from_id), weight: Math.max(0, 1 - (edge.strength || 0.5)) });
       }
     }
-    graph.set(hit.id, neighbors);
+    graph.set(hitKey, neighbors);
   }
 
   // Step 3: Propagate cost — Dijkstra from query node (virtual source connected to all hits)
   // Query node = id 0; connect to each hit with weight = 1 - score
   for (const hit of allHits) {
+    const hitKey = String(hit.id);
     const queryCost = Math.max(0, 1 - hit.score);
     if (!graph.has(QUERY_NODE_ID)) graph.set(QUERY_NODE_ID, []);
-    graph.get(QUERY_NODE_ID).push({ targetId: hit.id, weight: queryCost });
+    graph.get(QUERY_NODE_ID).push({ targetId: hitKey, weight: queryCost });
   }
 
-  const costs = dijkstra(graph, QUERY_NODE_ID, allHits.map(h => h.id));
+  const costs = dijkstra(graph, QUERY_NODE_ID, allHits.map(h => String(h.id)));
 
   // Step 4: Rank L0 episodes by minimum cost path
-  const l0ById = new Map(l0Hits.map(h => [h.id, h]));
+  const l0ById = new Map(l0Hits.map(h => [String(h.id), h]));
   const rankedEpisodes = [];
   for (const hit of l0Hits) {
-    const cost = costs.get(hit.id);
+    const cost = costs.get(String(hit.id));
     if (cost !== undefined && cost < Infinity) {
       rankedEpisodes.push({
         id: hit.id,
@@ -87,7 +90,7 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
         entity: hit.entity,
         cost,
         score: 1 / (1 + cost),
-        evidence: buildEvidencePath(hit.id, allHits, graph),
+        evidence: buildEvidencePath(String(hit.id), allHits, graph),
       });
     }
   }
@@ -115,11 +118,14 @@ async function searchLayer(queryVec, layer, limit) {
     const allVecResults = knnSearch(db, Array.from(queryVec), limit * 10);
     if (!allVecResults) return [];
 
-    // Fetch memories and filter by cone_layer
-    const { getMemory } = await import('./memory-store.mjs');
+    // Batch fetch memories and filter by cone_layer (avoids N+1 queries)
+    const scored = allVecResults.filter(r => r.score >= BUNDLE_MIN_SCORE);
+    const ids = scored.map(r => r.id);
+    const mems = ids.length > 0 ? getMemoriesByIds(ids) : [];
+    const memById = new Map(mems.map(m => [String(m.id), m]));
     const results = [];
-    for (const r of allVecResults.filter(r => r.score >= BUNDLE_MIN_SCORE)) {
-      const mem = getMemory(r.id);
+    for (const r of scored) {
+      const mem = memById.get(String(r.id));
       if (mem && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer))) {
         results.push({ ...mem, score: r.score });
         if (results.length >= limit) break;
@@ -133,19 +139,55 @@ async function searchLayer(queryVec, layer, limit) {
 }
 
 /**
- * Simple Dijkstra shortest path from source to targets.
+ * Simple min-heap priority queue for Dijkstra.
+ * O(log n) push/pop instead of O(n log n) sort + O(n) shift.
+ */
+class MinHeap {
+  constructor() { this._h = []; }
+  get length() { return this._h.length; }
+  push(item) {
+    this._h.push(item);
+    let i = this._h.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this._h[p].cost <= this._h[i].cost) break;
+      [this._h[p], this._h[i]] = [this._h[i], this._h[p]];
+      i = p;
+    }
+  }
+  pop() {
+    const top = this._h[0];
+    const last = this._h.pop();
+    if (this._h.length > 0) {
+      this._h[0] = last;
+      let i = 0;
+      while (true) {
+        let smallest = i;
+        const l = 2 * i + 1, r = 2 * i + 2;
+        if (l < this._h.length && this._h[l].cost < this._h[smallest].cost) smallest = l;
+        if (r < this._h.length && this._h[r].cost < this._h[smallest].cost) smallest = r;
+        if (smallest === i) break;
+        [this._h[i], this._h[smallest]] = [this._h[smallest], this._h[i]];
+        i = smallest;
+      }
+    }
+    return top;
+  }
+}
+
+/**
+ * Dijkstra shortest path from source to targets using min-heap.
  */
 function dijkstra(graph, source, targets) {
   const dist = new Map();
   dist.set(source, 0);
   const targetSet = new Set(targets);
   const visited = new Set();
-  // Simple priority queue via sorted array (sufficient for small graphs)
-  const pq = [{ id: source, cost: 0 }];
+  const pq = new MinHeap();
+  pq.push({ id: source, cost: 0 });
 
   while (pq.length > 0) {
-    pq.sort((a, b) => a.cost - b.cost);
-    const { id, cost } = pq.shift();
+    const { id, cost } = pq.pop();
     if (visited.has(id)) continue;
     visited.add(id);
 
@@ -170,7 +212,7 @@ function dijkstra(graph, source, targets) {
  * Build evidence path for an episode: which higher-layer memories support it.
  */
 function buildEvidencePath(episodeId, allHits, graph) {
-  const hitById = new Map(allHits.map(h => [h.id, h]));
+  const hitById = new Map(allHits.map(h => [String(h.id), h]));
   const evidence = [];
   const connected = graph.get(episodeId) || [];
   for (const { targetId } of connected) {

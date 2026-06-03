@@ -116,7 +116,7 @@ export function knnSearch(db, queryEmbedding, topK = 5) {
     // sqlite-vec returns cosine distance (0 = identical, 2 = opposite)
     // Convert to similarity: score = 1 - distance
     return results.map(r => ({
-      id: Number(r.id),
+      id: typeof r.id === 'bigint' ? r.id.toString() : r.id,
       score: Math.max(0, Math.round((1 - r.distance) * 1000) / 1000),
     }));
   } catch (err) {
@@ -260,12 +260,13 @@ export async function knnSearchHybrid(db, queryEmbedding, topK = 10, allowlist =
 
     // Merge by ID, keeping best score per ID
     const byId = new Map();
+    const allowSet = allowlist ? new Set(allowlist.map(String)) : null;
     for (const r of (sqliteResults || [])) {
-      if (allowlist && !allowlist.includes(Number(r.id))) continue;
+      if (allowSet && !allowSet.has(String(r.id))) continue;
       byId.set(r.id, r.score);
     }
     for (const r of (turboResults || [])) {
-      if (allowlist && !allowlist.includes(Number(r.id))) continue;
+      if (allowSet && !allowSet.has(String(r.id))) continue;
       const existing = byId.get(r.id);
       if (existing === undefined || r.score > existing) {
         byId.set(r.id, r.score);
@@ -281,7 +282,8 @@ export async function knnSearchHybrid(db, queryEmbedding, topK = 10, allowlist =
   // Default: sqlite only
   const results = knnSearch(db, queryEmbedding, topK);
   if (allowlist && results) {
-    return results.filter(r => allowlist.includes(Number(r.id)));
+    const allowSet = new Set(allowlist.map(String));
+    return results.filter(r => allowSet.has(String(r.id)));
   }
   return results || [];
 }

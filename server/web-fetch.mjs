@@ -15,7 +15,7 @@ import * as dns from 'node:dns/promises';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 // v2: SSRF protection — private IP ranges
-const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?fc00:/i];
+const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?f[c-d]00:/i];
 
 function isPrivateIp(ip) {
   return PRIVATE_IP_RANGES.some(r => r.test(ip));
@@ -38,7 +38,8 @@ export async function isPrivateUrlAfterDns(urlStr) {
     const parsed = new URL(urlStr);
     const hostname = parsed.hostname || '';
     if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return isPrivateIp(hostname);
-    const addresses = await dns.resolve4(hostname);
+    const [v4, v6] = await Promise.all([dns.resolve4(hostname).catch(() => []), dns.resolve6(hostname).catch(() => [])]);
+    const addresses = [...v4, ...v6];
     return addresses.some(ip => isPrivateIp(ip));
   } catch { return true; }
 }
@@ -64,17 +65,29 @@ export async function checkServoFetchLiveness() {
 // Skip these URL extensions (non-HTML content)
 const SKIP_EXTENSIONS = /\.(pdf|png|jpg|jpeg|gif|svg|webp|ico|zip|tar|gz|bz2|7z|exe|dmg|mp3|mp4|avi|mov|wav|ogg|flac|doc|docx|xls|xlsx|ppt|pptx|apk|iso|bin|dat)$/i;
 
-// Rate limiter: max N fetches per minute
-const fetchTimestamps = [];
-const FETCH_RATE_LIMIT = 10; // max 10 page fetches per minute
+// BUG-13: Per-domain rate limiter — max N fetches per minute per domain, global cap as overflow guard
+const domainTimestamps = new Map();
+const FETCH_RATE_LIMIT = 10; // max 10 page fetches per minute per domain
+const FETCH_GLOBAL_RATE_LIMIT = 30; // global cap across all domains
 
-function canFetch() {
+function canFetch(url) {
   const now = Date.now();
-  while (fetchTimestamps.length && now - fetchTimestamps[0] > 60_000) {
-    fetchTimestamps.shift();
+  let domain = '';
+  try { domain = new URL(url).hostname; } catch { domain = '_unknown'; }
+  // Per-domain limit
+  let timestamps = domainTimestamps.get(domain);
+  if (!timestamps) { timestamps = []; domainTimestamps.set(domain, timestamps); }
+  while (timestamps.length && now - timestamps[0] > 60_000) timestamps.shift();
+  if (timestamps.length >= FETCH_RATE_LIMIT) return false;
+  timestamps.push(now);
+  // Global overflow guard — prevent unbounded domain map growth and total request flood
+  let globalCount = 0;
+  for (const ts of domainTimestamps.values()) globalCount += ts.length;
+  if (globalCount > FETCH_GLOBAL_RATE_LIMIT) return false;
+  // Eager cleanup: remove empty domain entries
+  if (domainTimestamps.size > 200) {
+    for (const [d, ts] of domainTimestamps) { if (ts.length === 0) domainTimestamps.delete(d); }
   }
-  if (fetchTimestamps.length >= FETCH_RATE_LIMIT) return false;
-  fetchTimestamps.push(now);
   return true;
 }
 
@@ -134,7 +147,7 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
     return { url, title: '', text: '', error: 'blocked-private-url' };
   }
 
-  if (!canFetch()) {
+  if (!canFetch(url)) {
     return { url, title: '', text: '', error: 'rate-limited' };
   }
 
@@ -146,11 +159,8 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
 
   // Fallback: regex-based extraction
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-
     const response = await fetch(url, {
-      signal: controller.signal,
+      signal: AbortSignal.timeout(timeout),
       redirect: 'follow',
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; NoxemResearch/1.0)',
@@ -158,8 +168,6 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
         'Accept-Language': 'en-US,en;q=0.5',
       },
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       return { url, title: '', text: '', error: `http-${response.status}` };
@@ -189,8 +197,9 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
 
     const title = extractTitle(html);
     const text = extractText(html, maxText);
+    const links = extractLinks(html);
 
-    return { url, title, text, error: null };
+    return { url, title, text, error: null, links };
   } catch (err) {
     if (err.name === 'AbortError') {
       return { url, title: '', text: '', error: 'timeout' };
@@ -257,16 +266,15 @@ function extractLinks(html) {
 /**
  * Decode common HTML entities without external deps.
  */
+// BUG-15: Single-pass decode prevents double-decode; BUG-16: separate hex/decimal regexes
+const WEBFETCH_ENTITY_MAP = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ' };
 function decodeHtmlEntities(str) {
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#x?([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
+  return str.replace(/&(amp|lt|gt|quot|#39|nbsp);|&#x([0-9a-fA-F]+);|&#(\d+);/g, (m, name, hex, dec) => {
+    if (name) return WEBFETCH_ENTITY_MAP[name] || m;
+    if (hex) return String.fromCodePoint(parseInt(hex, 16));
+    if (dec) return String.fromCodePoint(parseInt(dec, 10));
+    return m;
+  });
 }
 
 

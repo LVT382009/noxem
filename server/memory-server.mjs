@@ -1,7 +1,8 @@
 import express from 'express';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import cors from 'cors';
 import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
+let _isShuttingDown = false; // Hoisted: needed by shutdown-aware middleware
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const LOG_QUIET = process.env.LOG_LEVEL === 'quiet';
 
@@ -33,19 +34,35 @@ import { storeProcedure, getProcedure, listAllProcedures, searchProcedures, dele
 
 const app = express();
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || true, // Allow all origins in dev; set CORS_ORIGIN for prod
+  origin: process.env.CORS_ORIGIN ? (process.env.CORS_ORIGIN === '*' ? true : process.env.CORS_ORIGIN) : (process.env.NODE_ENV === 'production' ? false : true),
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
 app.use(express.json({ limit: '10mb' }));
+// Reject new requests during graceful shutdown (BUG-21: prevent DB ops after close())
+app.use((req, res, next) => {
+  if (_isShuttingDown) return res.status(503).json({ error: 'Server is shutting down' });
+  next();
+});
+// Trust first proxy only when explicitly enabled — prevents X-Forwarded-For spoofing
+if (process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1);
+}
 
 // Simple sliding-window rate limiter (in-memory, per-IP)
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '120');
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX ?? '120');
 const rateLimitBuckets = new Map();
 function rateLimiter(req, res, next) {
   if (RATE_LIMIT_MAX <= 0) return next();
-  const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+  const ip = req.ip || req.socket?.remoteAddress || req.connection?.remoteAddress;
+  if (!ip) return next(); // Skip rate limiting if no IP identifiable (e.g., Unix domain socket without proxy)
   const now = Date.now();
+  // Eagerly evict if at capacity before inserting new entries (BUG-9: prevent unbounded growth)
+  if (!rateLimitBuckets.has(ip) && rateLimitBuckets.size >= RATE_LIMIT_MAX_BUCKETS) {
+    const entries = [...rateLimitBuckets.entries()].sort((a, b) => a[1].start - b[1].start);
+    const toRemove = rateLimitBuckets.size - RATE_LIMIT_MAX_BUCKETS + 1;
+    for (let i = 0; i < toRemove; i++) rateLimitBuckets.delete(entries[i][0]);
+  }
   let bucket = rateLimitBuckets.get(ip);
   if (!bucket || now - bucket.start > RATE_LIMIT_WINDOW_MS) {
     bucket = { start: now, count: 0 };
@@ -70,7 +87,7 @@ const _rateLimitCleanupInterval = setInterval(() => {
     const toRemove = rateLimitBuckets.size - RATE_LIMIT_MAX_BUCKETS;
     for (let i = 0; i < toRemove; i++) rateLimitBuckets.delete(entries[i][0]);
   }
-}, 120_000);
+}, 120_000).unref();
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -96,20 +113,19 @@ if (MEMORY_API_KEY) {
     if (EXEMPT_PATHS.some(p => req.path === p)) return next();
     const auth = req.headers.authorization || '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : req.query.api_key || '';
-    const tokenBuf = Buffer.from(String(token));
-    const keyBuf = Buffer.from(String(MEMORY_API_KEY));
-    const maxLen = Math.max(tokenBuf.length, keyBuf.length);
-    if (maxLen === 0) return res.status(401).json({ error: 'Unauthorized' });
-    const paddedToken = Buffer.alloc(maxLen); tokenBuf.copy(paddedToken);
-    const paddedKey = Buffer.alloc(maxLen); keyBuf.copy(paddedKey);
-    if (!timingSafeEqual(paddedToken, paddedKey)) {
-      return res.status(401).json({ error: 'Unauthorized: invalid or missing API key' });
-    }
-const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  const tokenHash = createHash("sha256").update(String(token)).digest();
+  const keyHash = createHash("sha256").update(String(MEMORY_API_KEY)).digest();
+  if (!timingSafeEqual(tokenHash, keyHash)) {
+    return res.status(401).json({ error: "Unauthorized: invalid or missing API key" });
+  }
     next();
   });
   LOG_DEBUG && console.log('API key authentication: ENABLED');
 }
+
+const _EXTRACT_TIMEOUT_RAW = parseInt(process.env.EXTRACT_TIMEOUT_MS ?? '60000');
+const EXTRACT_TIMEOUT_MS = Number.isFinite(_EXTRACT_TIMEOUT_RAW) && _EXTRACT_TIMEOUT_RAW >= 1000 ? _EXTRACT_TIMEOUT_RAW : 60000;
 
 const PORT = process.env.MEMORY_PORT || 3001;
 const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
@@ -195,7 +211,7 @@ let _embedLock = Promise.resolve(); // C-1: promise-chain mutex replaces boolean
 
 function processEmbedQueue() {
   _embedLock = _embedLock.then(async () => {
-    while (_embedQueue.length > 0) {
+    while (_embedQueue.length > 0 && !_isShuttingDown) {
       const batch = _embedQueue.splice(0, 10);
       if (!isEmbeddingReady()) {
         for (const item of batch) {
@@ -267,7 +283,7 @@ function enqueueEmbedding(id, text, contextPrefix) {
 const _queryCache = new Map(); // key → { queryVec, queryNorm, keywords, results, resultIds, timestamp, resultEntities }
 const _queryCacheNorm = new Map(); // normalizedQuery → cache key (Tier 1 fast path)
 const QUERY_CACHE_MAX = 500;
-const QUERY_CACHE_TTL_MS = parseInt(process.env.QUERY_CACHE_TTL_MIN || '120') * 60 * 1000; // 2h default (personal memory is stable)
+const QUERY_CACHE_TTL_MS = parseInt(process.env.QUERY_CACHE_TTL_MIN ?? '120') * 60 * 1000; // 2h default (personal memory is stable)
 const QUERY_CACHE_TIER2_THRESHOLD = 0.92; // Tier 2: high-confidence embedding match
 let _cacheHits = 0;
 let _cacheMisses = 0;
@@ -388,8 +404,10 @@ function findCachedResult(queryVec, rawQuery) {
   }
 
   // Tier 2: High-confidence embedding match (cosine >= 0.92)
+  // Scan only most recent entries to avoid O(n) cost on large caches
   let bestMatch = null, bestSim = 0;
-  for (const [key, entry] of _queryCache) {
+  const recentEntries = [..._queryCache.entries()].slice(-50);
+  for (const [key, entry] of recentEntries) {
     if (now - entry.timestamp > QUERY_CACHE_TTL_MS) {
       _queryCache.delete(key);
       _queryCacheNorm.delete(entry.queryNorm);
@@ -446,22 +464,26 @@ function invalidateQueryCacheForEntity(entity, attribute) {
   if (!entity) { _queryCache.clear(); _queryCacheNorm.clear(); return; }
   const key = `${entity}::${attribute || ''}`;
   let removed = 0;
+  const keysToDelete = [];
   for (const [cacheKey, entry] of _queryCache) {
     if (entry.resultEntities?.some(e => e.startsWith(`${entity}::`))) {
-      _queryCache.delete(cacheKey);
+      keysToDelete.push(cacheKey);
       _queryCacheNorm.delete(entry.queryNorm);
       removed++;
     }
   }
+  for (const k of keysToDelete) _queryCache.delete(k);
   // Also remove any expired entries
   const now = Date.now();
+  const expiredKeys = [];
   for (const [cacheKey, entry] of _queryCache) {
     if (now - entry.timestamp > QUERY_CACHE_TTL_MS) {
-      _queryCache.delete(cacheKey);
+      expiredKeys.push(cacheKey);
       _queryCacheNorm.delete(entry.queryNorm);
       removed++;
     }
   }
+  for (const k of expiredKeys) _queryCache.delete(k);
   if (removed > 0) LOG_DEBUG && console.log(`[Cache] Selective invalidation: removed ${removed} entries for ${key}`);
 }
 
@@ -619,13 +641,21 @@ function ruleBasedCompress(text, targetLevel) {
 }
 
 // ─── Health ───────────────────────────────────────────────────────
+// Cache LLM health status to avoid probing on every /health request
+let _llmHealthCache = { ok: false, timestamp: 0 };
+const _LLM_HEALTH_TTL_MS = 30_000; // 30 seconds
+
 app.get('/health', async (_req, res) => {
   const stats = getMemoryStats();
-  let llmOk = false;
-  try {
-    const r = await llmFetch(`${process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000'}/v1/models`, { signal: AbortSignal.timeout(2000) });
-    llmOk = r.ok;
-  } catch {}
+  const now = Date.now();
+  let llmOk = _llmHealthCache.ok;
+  if (now - _llmHealthCache.timestamp > _LLM_HEALTH_TTL_MS) {
+    try {
+      const r = await llmFetch(`${process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000'}/v1/models`, { signal: AbortSignal.timeout(2000) });
+      llmOk = r.ok;
+    } catch { llmOk = false; }
+    _llmHealthCache = { ok: llmOk, timestamp: now };
+  }
   res.json({
     ok: true,
     version: '2.1.0',
@@ -722,11 +752,16 @@ function classifyQueryIntent(query) {
   if (isIdentifier) return { fts_weight: 0.85, vec_weight: 0.15, intent: 'identifier' };
 
   // Exact match signals: quoted strings, specific names, technical terms
-  const hasExactSignals = /["'`]/.test(q) // quoted strings
-    || /(GET|POST|PUT|DELETE|PATCH|API|URL|HTTP|CSS|HTML|SQL|JSON|YAML)/i.test(q)
-    || /(error|exception|stack|trace|debug|crash|fail|broken)/i.test(q)
-    || /(fix|bug|issue|ticket|PR|commit|merge|branch)/i.test(q);
-  if (hasExactSignals) return { fts_weight: 0.7, vec_weight: 0.3, intent: 'exact' };
+  // Exact match signals: quoted strings, specific names, technical terms
+  // Require at least 2 technical-code terms OR quoted string to reduce false positives
+  const httpMethodMatch = q.match(/(GET|POST|PUT|DELETE|PATCH|API|URL|HTTP|CSS|HTML|SQL|JSON|YAML)/gi);
+  const codeTermMatch = q.match(/(error|exception|stack|trace|debug|crash|fail|broken)/gi);
+  const devTermMatch = q.match(/(fix|bug|issue|ticket|PR|commit|merge|branch)/gi);
+  const techCount = (httpMethodMatch?.length || 0) + (codeTermMatch?.length || 0) + (devTermMatch?.length || 0);
+  const hasExactSignals = /["`']/.test(q) // quoted strings
+    || techCount >= 2 // Multiple technical terms = strong signal
+    || ((httpMethodMatch?.length || 0) >= 1 && /[/.]/.test(q)) // HTTP method near path-like chars
+    || ((devTermMatch?.length || 0) >= 1 && /(https?:|git|repo|code|build|test|deploy)/i.test(q)); // Dev term + dev context
 
   // Conceptual/vague queries: preferences, opinions, concepts, short natural language
   const isConceptual = q.split(/\s+/).length <= 3 // very short
@@ -914,16 +949,16 @@ app.get("/memory/search", async (req, res) => {
           const expandData = await expandRes.json();
           const content = expandData.choices?.[0]?.message?.content || "";
           const match = content.match(/\[.*?\]/s);
-          if (match) {
-            if (match[0].length > 500) return;
+        if (match && match[0].length <= 500) {
+          try {
             const alternates = JSON.parse(match[0]);
             if (Array.isArray(alternates)) queries = [q.trim(), ...alternates.slice(0, 2)];
-          }
-        }
-      } catch { /* expansion is optional */ }
-    }
+          } catch { /* malformed LLM JSON — skip expansion */ }
+      }
+      }
+    } catch { /* expansion is optional */ }
+  }
 
-    // Embedding search (primary) - try KNN first, fall back to JS cosine
     if ((!method || method === "hybrid" || method === "embedding") && isEmbeddingReady()) {
       try {
         const queryVecs = await Promise.all(queries.map(qq => embed(qq, "query")));
@@ -1011,16 +1046,15 @@ app.get("/memory/search", async (req, res) => {
       }
     }
 
-    // v2: Apply code-aware reranking + entity saturation decay
-if (searchResults.length > 0) {
+  // v2: Apply code-aware reranking + entity saturation decay
+  if (searchResults.length > 0) {
 	const intent = classifyQueryIntent(q);
 	searchResults = applyCodeRerank(searchResults, q, intent);
 	searchResults = applyEntitySaturationDecay(searchResults);
+	// Apply session filter BEFORE final limit to avoid returning fewer results than requested
+	if (session_id) searchResults = searchResults.filter(r => r.session_id === session_id);
 	searchResults = searchResults.slice(0, limitNum);
-}
-
-// Apply session filter to all search methods
-    if (session_id) searchResults = searchResults.filter(r => r.session_id === session_id);
+  }
 
     // Store in semantic cache if we got results from embedding search
     if (queryVecForCache && searchResults.length > 0 && !searchMethod.startsWith("cache")) {
@@ -1196,7 +1230,7 @@ app.get('/memory/type/:type', (req, res) => {
 
 app.get('/memory/export', (_req, res) => {
   try {
-    const memories = getAllActiveMemories();
+    const memories = getAllActiveMemoriesNoEmbed();
     const stats = getMemoryStats();
     res.json({ ok: true, version: '2.1.0', exported_at: new Date().toISOString(), stats, memories });
   } catch (err) {
@@ -1212,7 +1246,7 @@ app.post('/memory/import', async (req, res) => {
 
     const imported = [];
     for (const m of memories) {
-      if (!m.text || typeof m.text !== 'string') continue;
+      if (!m.text || typeof m.text !== 'string' || m.text.length > 10000) continue;
       const embedding = m.embedding ? new Float32Array(m.embedding) : null;
       const id = storeMemory({
         session_id: m.session_id || '',
@@ -1362,6 +1396,17 @@ app.post('/fetch/screenshot', async (req, res) => {
   try {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'url required' });
+    const { isPrivateUrlAfterDns } = await import('./web-fetch.mjs');
+    const isPrivate = await isPrivateUrlAfterDns(url);
+    if (isPrivate) return res.status(403).json({ error: 'URL resolves to private/internal network — not allowed' });
+    // Block same-origin requests (to own server port)
+    try {
+      const parsed = new URL(url);
+      const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+      if ((parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') && port === String(PORT)) {
+        return res.status(403).json({ error: 'URL points to this server — not allowed' });
+      }
+    } catch {}
     const SERVO_FETCH_URL = process.env.SERVO_FETCH_URL || 'http://127.0.0.1:3002';
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
@@ -1428,8 +1473,8 @@ Extract procedure:` },
     const jsonMatch = procContent.match(/\{[\s\S]*\}/);
     if (!jsonMatch) return res.json({ ok: true, procedure_id: null, message: 'No procedure could be extracted' });
 
-    const procData = JSON.parse(jsonMatch[0]);
-    if (!procData.steps?.length) return res.json({ ok: true, procedure_id: null, message: 'No steps extracted' });
+  let procData;
+  try { procData = JSON.parse(jsonMatch[0]); } catch { return res.json({ ok: true, procedure_id: null, message: "LLM returned invalid JSON" }); }
 
     const procId = storeProcedure({
       name: procData.name || 'Unnamed Procedure',
@@ -1758,39 +1803,31 @@ app.post('/memory/sync', async (req, res) => {
       const userText = user_message.trim().substring(0, 2000);
       const { entity: userEntity, attribute: userAttr } = extractEntityAttribute(userText);
       const userPrefix = generateContextPrefix(userText, type, session_id);
-      let embedding = null;
-      if (isEmbeddingReady()) {
-        try {
-          const embedText = userPrefix ? userPrefix + " " + userText : userText;
-          embedding = new Float32Array(await embed(embedText));
-        } catch {}
-      }
-      memories.push({ session_id, type, text: userText, embedding, metadata: { source: "user", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr, summary: ruleBasedCompress(userText, 2) });
-    }
+    memories.push({ session_id, type, text: userText, embedding: null, metadata: { source: "user", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr, summary: ruleBasedCompress(userText, 2) });
+  }
 
-    // Store assistant response — skip very short responses
-      if (assistant_response?.trim() && !shouldSkipMessage(assistant_response)) {
-      const asstText = assistant_response.trim().substring(0, 4000);
-      const { entity: asstEntity, attribute: asstAttr } = extractEntityAttribute(asstText);
-      const asstPrefix = generateContextPrefix(asstText, "fact", session_id);
-      let embedding = null;
-      if (isEmbeddingReady()) {
-        try {
-          const embedText = asstPrefix ? asstPrefix + " " + asstText : asstText;
-          embedding = new Float32Array(await embed(embedText));
-        } catch {}
-      }
-      memories.push({ session_id, type: "fact", text: asstText, embedding, metadata: { source: "assistant", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr, summary: ruleBasedCompress(asstText, 2) });
-    }
+  // Store assistant response — skip very short responses
+  if (assistant_response?.trim() && !shouldSkipMessage(assistant_response)) {
+    const asstText = assistant_response.trim().substring(0, 4000);
+    const { entity: asstEntity, attribute: asstAttr } = extractEntityAttribute(asstText);
+    const asstPrefix = generateContextPrefix(asstText, "fact", session_id);
+    memories.push({ session_id, type: "fact", text: asstText, embedding: null, metadata: { source: "assistant", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr, summary: ruleBasedCompress(asstText, 2) });
+  }
 
-    const ids = memories.length > 0 ? storeMemories(memories) : [];
- res.json({ ok: true, stored: ids.length, ids });
-    for (const m of memories) { if (m.entity) invalidateQueryCacheForEntity(m.entity, m.attribute); }
+  const ids = memories.length > 0 ? storeMemories(memories) : [];
+  // Queue background embedding (consistent with /memory/store — avoids inline await)
+  for (let i = 0; i < ids.length; i++) {
+    enqueueEmbedding(ids[i], memories[i].text, memories[i].context_prefix);
+  }
+  for (const m of memories) { if (m.entity) invalidateQueryCacheForEntity(m.entity, m.attribute); }
 
-	// v2: Wire graph edge extraction for each stored memory
+	// v2: Wire graph edge extraction (fire-and-forget to avoid headers-already-sent)
 	for (let i = 0; i < ids.length; i++) {
-  await extractAndStoreEdges(ids[i], memories[i].text, session_id);
+		extractAndStoreEdges(ids[i], memories[i].text, session_id).catch(() => {});
 	}
+
+  // Respond AFTER enqueue but BEFORE async edge extraction completes
+  res.json({ ok: true, stored: ids.length, ids });
 
  // Trigger background research pipeline (non-blocking, async)
  if (ENABLE_ADVISOR && user_message?.trim()) {
@@ -2019,7 +2056,8 @@ app.post('/memory/maintenance/stop', (_req, res) => {
 });
 
 // Purge low-importance old memories
-const AUTO_PURGE_DAYS = parseInt(process.env.AUTO_PURGE_DAYS || '365');
+const _AUTO_PURGE_DAYS_RAW = parseInt(process.env.AUTO_PURGE_DAYS ?? '365');
+const AUTO_PURGE_DAYS = Number.isFinite(_AUTO_PURGE_DAYS_RAW) && _AUTO_PURGE_DAYS_RAW > 0 ? _AUTO_PURGE_DAYS_RAW : 365;
 app.post('/memory/purge', (req, res) => {
   if (req.body?.confirm !== true) {
     return res.status(400).json({ error: 'Purge requires confirm=true in request body' });
@@ -2081,11 +2119,18 @@ if (!LOG_QUIET && (getVectorBackend() === 'hybrid' || getVectorBackend() === 'tu
 
 // Graceful shutdown
 function shutdown(signal) {
+  if (_isShuttingDown) return; // Prevent double-shutdown
+  _isShuttingDown = true;
   if (!LOG_QUIET) console.log(`\n${signal} received — shutting down gracefully...`);
   if (_errorLogInterval) clearInterval(_errorLogInterval);
   if (_rateLimitCleanupInterval) clearInterval(_rateLimitCleanupInterval);
   stopMaintenanceCron();
   shutdownRLM(); // Stop Brain 2 sidecar before closing server
+  // Flush embed queue: reject pending items so DB close doesn't orphan them
+  if (_embedQueue.length > 0) {
+    LOG_DEBUG && console.log(`[EmbedQueue] Shutdown: dropping ${_embedQueue.length} pending items`);
+    _embedQueue.length = 0;
+  }
   server.close(() => {
     close(); // close SQLite
     if (!LOG_QUIET) console.log('Memory server stopped.');

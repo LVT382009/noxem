@@ -16,9 +16,9 @@ Rules:
 
 Example output:
 [
-  {"text": "User prefers Python over JavaScript for backend development.", "type": "preference"},
-  {"text": "User is building a Hermes Agent memory system with local AI.", "type": "project"},
-  {"text": "User's name is Tam.", "type": "entity"}
+{"text": "User prefers Python over JavaScript for backend development.", "type": "preference"},
+{"text": "User is building a Hermes Agent memory system with local AI.", "type": "project"},
+{"text": "User's name is Tam.", "type": "entity"}
 ]
 
 Conversation:
@@ -29,22 +29,25 @@ Memories:`;
 
 // Extract a balanced JSON array from LLM output (handles nested brackets)
 function extractBalancedArray(text) {
- const start = text.indexOf('[');
- if (start === -1) return null;
- let depth = 0;
- let inStr = false;
- let escape = false;
- for (let i = start; i < text.length; i++) {
- const ch = text[i];
+  // Strip CR to handle CRLF line endings on Windows
+  // (bare \r is invalid in JSON strings per RFC 8259 section 7)
+  text = text.replace(/\r/g, '');
+  const start = text.indexOf('[');
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
     if (ch === '\\' && inStr) { escape = !escape; continue; }
     if (ch === '"' && inStr) { if (!escape) { inStr = false; } escape = false; continue; }
     if (ch === '"' && !inStr) { inStr = true; escape = false; continue; }
     escape = false;
     if (inStr) continue;
- if (ch === '[') depth++;
- if (ch === ']') { depth--; if (depth === 0) return text.substring(start, i + 1); }
- }
- return null;
+    if (ch === '[') depth++;
+    if (ch === ']') { depth--; if (depth === 0) return text.substring(start, i + 1); }
+  }
+  return null;
 }
 
 export async function extractMemories({ userMessage, assistantResponse, llmUrl, llmModel }) {
@@ -77,18 +80,18 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '[]';
 
- // Extract JSON array — find balanced brackets to handle nested content
- const arrayStr = extractBalancedArray(content);
- if (!arrayStr) return [];
- try {
- const memories = JSON.parse(arrayStr);
- if (Array.isArray(memories) && memories.length > 0) {
- return memories.filter(m => m.text && m.type).map(m => ({
- text: m.text.trim().substring(0, 500),
- type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
- }));
- }
- } catch {}
+    // Extract JSON array — find balanced brackets to handle nested content
+    const arrayStr = extractBalancedArray(content);
+    if (!arrayStr) return [];
+    try {
+      const memories = JSON.parse(arrayStr);
+      if (Array.isArray(memories) && memories.length > 0) {
+        return memories.filter(m => m.text && m.type).map(m => ({
+          text: m.text.trim().substring(0, 500),
+          type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
+        }));
+      }
+    } catch {}
   } catch (err) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
       console.error('Extraction timed out (LLM too slow)');

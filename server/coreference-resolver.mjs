@@ -21,7 +21,12 @@ export function resolveCoreference(text, sessionMemories = []) {
 
   // Replace pronouns with resolved antecedents
  // Replace pronouns right-to-left to avoid offset drift
- const matches = [...text.matchAll(PRONOUNS)];
+ const matches = [...text.matchAll(PRONOUNS)].filter(m => {
+    // BUG-14: Skip matches where preceding char is a letter (e.g. "it" in "git")
+    const charBefore = m.index > 0 ? text[m.index - 1] : '';
+    if (charBefore && /[a-z]/i.test(charBefore)) return false;
+    return true;
+  });
  let result = text;
  for (let i = matches.length - 1; i >= 0; i--) {
  const [match, pronoun] = matches[i];
@@ -33,6 +38,8 @@ export function resolveCoreference(text, sessionMemories = []) {
  }
  return result;
 }
+
+const ENTITY_INDEX_MAX = 50;
 
 function buildEntityIndex(memories) {
   const index = new Map(); // lowercase entity -> { name, count, lastSeen }
@@ -58,6 +65,13 @@ function buildEntityIndex(memories) {
         index.set(key, { name, count: 1 });
       }
     }
+  }
+  // BUG-18: Cap entity index size to prevent O(n) blowup
+  if (index.size > ENTITY_INDEX_MAX) {
+    // Keep the most frequently mentioned entities
+    const entries = [...index.entries()].sort((a, b) => b[1].count - a[1].count);
+    const kept = new Map(entries.slice(0, ENTITY_INDEX_MAX));
+    return kept;
   }
   return index;
 }
@@ -106,8 +120,8 @@ function resolvePronoun(pronoun, offset, text, entityIndex) {
     if (preceding.toLowerCase().includes(info.name.toLowerCase())) {
       score += 5;
     }
-    // Boost entities whose gender matches the pronoun
-    if (entityGender === gender) score += 3;
+    // Boost entities whose gender matches the pronoun (skip for neuter - no discriminative value in tech contexts)
+    if (entityGender === gender && gender !== 'neuter') score += 3;
     if (score > bestScore) {
       bestScore = score;
       bestEntity = info.name;
