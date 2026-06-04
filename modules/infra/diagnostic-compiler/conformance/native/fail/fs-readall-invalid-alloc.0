@@ -1,0 +1,7 @@
+pub fn main(world: World) -> Void raises {
+    let fs: Fs = std.fs.host()
+    let body: i32 = std.fs.readAll(fs, fs, ".zero/missing.txt", 64)
+    if body.has {
+        check world.out.write("unexpected\n")
+    }
+}

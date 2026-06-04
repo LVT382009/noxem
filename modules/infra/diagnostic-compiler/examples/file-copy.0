@@ -1,0 +1,19 @@
+fn seed_input(fs: Fs) -> Bool {
+    let created: Maybe<owned<File>> = std.fs.create(fs, ".zero/file-copy-input.txt")
+    if created.has {
+        var file: owned<File> = created.value
+        let bytes: Span<u8> = std.mem.span("zero file copy\n")
+        return std.fs.writeAll(&mut file, bytes)
+    }
+    return false
+}
+
+pub fn main(world: World) -> Void raises {
+    let fs: Fs = std.fs.host()
+    if seed_input(fs) {
+        var buf: [4]u8 = [0, 0, 0, 0]
+        if std.fs.copyFile(".zero/file-copy-input.txt", ".zero/file-copy-output.txt", buf) {
+            check world.out.write("file copy ok\n")
+        }
+    }
+}

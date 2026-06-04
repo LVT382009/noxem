@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leann"
+version = "0.3.8"
+description = "LEANN - The smallest vector index in the world. RAG Everything with LEANN!"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "LEANN Team" }
+]
+keywords = ["vector-database", "rag", "embeddings", "search", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+# Default installation: core + hnsw + diskann + ivf (incremental updates)
+dependencies = [
+    "leann-core>=0.1.0",
+    "leann-backend-hnsw>=0.1.0",
+    "leann-backend-diskann>=0.1.0",
+    "leann-backend-ivf>=0.3.6",
+]
+
+[project.optional-dependencies]
+cpu = [
+    "leann-core[cpu]>=0.1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/yichuan-w/LEANN"
+Issues = "https://github.com/yichuan-w/LEANN/issues"

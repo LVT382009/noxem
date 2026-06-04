@@ -1,0 +1,20 @@
+const Foo: usize = 3
+
+type Foo {
+    value: i32,
+}
+
+fn read(value: ref<Foo>) -> i32 {
+    return value.value
+}
+
+fn pass(value: Maybe<Foo>) -> Maybe<Foo> {
+    return value
+}
+
+pub fn main() -> Void {
+    let foo: Foo = Foo { value: 7 }
+    let maybe: Maybe<Foo> = null
+    let result: Maybe<Foo> = pass(maybe)
+    expect (read(&foo) == 7 && !result.has)
+}

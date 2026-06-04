@@ -1,0 +1,7 @@
+pub fn main() -> Void {
+    var values: [3]i32 = [2, 1, 0]
+    let dst: MutSpan<i32> = values
+    let live: Span<i32> = values[..2]
+    std.sort.insertionI32(dst)
+    expect std.mem.len(live) == 2
+}

@@ -1,0 +1,9 @@
+type Point {
+    x: i32,
+}
+
+pub fn main(world: World) -> Void raises {
+    var point: Point = Point { x: 1 }
+    point.x = "bad"
+    check world.out.write("bad nested lvalue\n")
+}

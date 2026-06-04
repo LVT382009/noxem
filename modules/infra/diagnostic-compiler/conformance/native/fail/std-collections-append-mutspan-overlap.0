@@ -1,0 +1,6 @@
+pub fn main() -> Void {
+    var values: [4]u8 = [1, 2, 0, 0]
+    let dst: MutSpan<u8> = values
+    let source: Span<u8> = values[..2]
+    let _len: usize = std.collections.append(dst, 1_usize, source)
+}

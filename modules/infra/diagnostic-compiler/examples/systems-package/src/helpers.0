@@ -1,0 +1,7 @@
+fn cleanup() -> Void {
+    return
+}
+
+fn status() -> Status {
+    return Status.ready
+}

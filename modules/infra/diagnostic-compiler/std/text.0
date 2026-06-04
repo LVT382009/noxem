@@ -1,0 +1,112 @@
+fn __zero_std_text_is_ascii(text: Span<u8>) -> Bool {
+    var index: usize = 0
+    while index < std.mem.len(text) {
+        if text[index] >= 128_u8 {
+            return false
+        }
+        index = index + 1
+    }
+    return true
+}
+
+fn __zero_std_text_utf8_sequence_len(first: u8) -> usize {
+    if first < 128_u8 {
+        return 1
+    }
+    if first >= 194_u8 && first <= 223_u8 {
+        return 2
+    }
+    if first >= 224_u8 && first <= 239_u8 {
+        return 3
+    }
+    if first >= 240_u8 && first <= 244_u8 {
+        return 4
+    }
+    return 0
+}
+
+fn __zero_std_text_is_cont(byte: u8) -> Bool {
+    return byte >= 128_u8 && byte <= 191_u8
+}
+
+fn __zero_std_text_utf8_valid(text: Span<u8>) -> Bool {
+    var index: usize = 0
+    while index < std.mem.len(text) {
+        let first: u8 = text[index]
+        let width: usize = __zero_std_text_utf8_sequence_len(first)
+        if width == 0 || index + width > std.mem.len(text) {
+            return false
+        }
+        if width == 2 {
+            if !__zero_std_text_is_cont(text[index + 1]) {
+                return false
+            }
+        } else if width == 3 {
+            let second: u8 = text[index + 1]
+            if !__zero_std_text_is_cont(second) || !__zero_std_text_is_cont(text[index + 2]) {
+                return false
+            }
+            if first == 224_u8 && second < 160_u8 {
+                return false
+            }
+            if first == 237_u8 && second > 159_u8 {
+                return false
+            }
+        } else if width == 4 {
+            let second: u8 = text[index + 1]
+            if !__zero_std_text_is_cont(second) || !__zero_std_text_is_cont(text[index + 2]) || !__zero_std_text_is_cont(text[index + 3]) {
+                return false
+            }
+            if first == 240_u8 && second < 144_u8 {
+                return false
+            }
+            if first == 244_u8 && second > 143_u8 {
+                return false
+            }
+        }
+        index = index + width
+    }
+    return true
+}
+
+fn __zero_std_text_utf8_len(text: Span<u8>) -> Maybe<usize> {
+    var index: usize = 0
+    var count: usize = 0
+    while index < std.mem.len(text) {
+        let first: u8 = text[index]
+        let width: usize = __zero_std_text_utf8_sequence_len(first)
+        if width == 0 || index + width > std.mem.len(text) {
+            return null
+        }
+        if width == 2 {
+            if !__zero_std_text_is_cont(text[index + 1]) {
+                return null
+            }
+        } else if width == 3 {
+            let second: u8 = text[index + 1]
+            if !__zero_std_text_is_cont(second) || !__zero_std_text_is_cont(text[index + 2]) {
+                return null
+            }
+            if first == 224_u8 && second < 160_u8 {
+                return null
+            }
+            if first == 237_u8 && second > 159_u8 {
+                return null
+            }
+        } else if width == 4 {
+            let second: u8 = text[index + 1]
+            if !__zero_std_text_is_cont(second) || !__zero_std_text_is_cont(text[index + 2]) || !__zero_std_text_is_cont(text[index + 3]) {
+                return null
+            }
+            if first == 240_u8 && second < 144_u8 {
+                return null
+            }
+            if first == 244_u8 && second > 143_u8 {
+                return null
+            }
+        }
+        index = index + width
+        count = count + 1
+    }
+    return count
+}

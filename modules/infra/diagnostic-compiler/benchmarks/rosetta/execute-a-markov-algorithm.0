@@ -1,0 +1,16 @@
+fn replaceFirst(text: Span<u8>, from: u8) -> u32 {
+    var i: usize = 0
+    while i < std.mem.len(text) {
+        if text[i] == from {
+            return i as u32
+        }
+        i = i + 1
+    }
+    return 999
+}
+
+pub fn main(world: World) -> Void raises {
+    if replaceFirst(std.mem.span("abca"), 99) == 2 {
+        check world.out.write("markov ok\n")
+    }
+}

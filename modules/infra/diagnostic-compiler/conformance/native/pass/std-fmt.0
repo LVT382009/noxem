@@ -1,0 +1,19 @@
+pub fn main(world: World) -> Void raises {
+    var bool_buf: [5]u8 = [0_u8; 5]
+    var u32_buf: [10]u8 = [0_u8; 10]
+    var usize_buf: [8]u8 = [0_u8; 8]
+    var i32_buf: [12]u8 = [0_u8; 12]
+    var min_buf: [12]u8 = [0_u8; 12]
+    var hex_buf: [8]u8 = [0_u8; 8]
+    var small: [2]u8 = [0_u8; 2]
+    let bool_text: Maybe<Span<u8>> = std.fmt.bool(bool_buf, false)
+    let u32_text: Maybe<Span<u8>> = std.fmt.u32(u32_buf, 4294967295_u32)
+    let usize_text: Maybe<Span<u8>> = std.fmt.usize(usize_buf, 12345)
+    let i32_text: Maybe<Span<u8>> = std.fmt.i32(i32_buf, -42)
+    let min_text: Maybe<Span<u8>> = std.fmt.i32(min_buf, 0 - 2147483647 - 1)
+    let hex_text: Maybe<Span<u8>> = std.fmt.hexLowerU32(hex_buf, 48879_u32)
+    let overflow: Maybe<Span<u8>> = std.fmt.u32(small, 1000_u32)
+    if bool_text.has && u32_text.has && usize_text.has && i32_text.has && min_text.has && hex_text.has && !overflow.has && std.mem.eql(bool_text.value, "false") && std.mem.eql(u32_text.value, "4294967295") && std.mem.eql(usize_text.value, "12345") && std.mem.eql(i32_text.value, "-42") && std.mem.eql(min_text.value, "-2147483648") && std.mem.eql(hex_text.value, "beef") {
+        check world.out.write("std fmt ok\n")
+    }
+}

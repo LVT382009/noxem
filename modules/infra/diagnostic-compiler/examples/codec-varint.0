@@ -1,0 +1,9 @@
+use std.codec
+
+pub fn main(world: World) -> Void raises {
+    let len: usize = std.codec.encodedVarintLen(300)
+    let checksum: u32 = std.codec.crc32("zero")
+    if len == 2 && checksum > 0 {
+        check world.out.write("codec primitives ok\n")
+    }
+}

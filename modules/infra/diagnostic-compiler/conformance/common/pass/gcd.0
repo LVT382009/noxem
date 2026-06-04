@@ -1,0 +1,16 @@
+fn gcd(a: u32, b: u32) -> u32 {
+    var left: u32 = a
+    var right: u32 = b
+    while right != 0 {
+        let next: u32 = left % right
+        left = right
+        right = next
+    }
+    return left
+}
+
+pub fn main(world: World) -> Void raises {
+    if gcd(84, 30) == 6 {
+        check world.out.write("gcd ok\n")
+    }
+}

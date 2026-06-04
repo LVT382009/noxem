@@ -1,0 +1,6 @@
+alias A = B
+
+alias B = A
+
+pub fn main() -> Void {
+}

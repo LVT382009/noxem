@@ -1,0 +1,13 @@
+fn lower() -> i32 {
+    return 20
+}
+
+fn upper() -> i32 {
+    return 22
+}
+
+pub fn main(world: World) -> Void raises {
+    if lower() + upper() == 42 {
+        check world.out.write("case sensitivity ok\n")
+    }
+}

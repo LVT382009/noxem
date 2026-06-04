@@ -1,0 +1,7 @@
+type BadDefault {
+    count: usize = "nope",
+}
+
+pub fn main() -> Void {
+    let value: BadDefault = BadDefault {}
+}

@@ -1,0 +1,13 @@
+type Box {
+    value: ref<i32>,
+}
+
+fn id(value: ref<i32>) -> ref<i32> {
+    return value
+}
+
+pub fn main() -> ref<i32> {
+    let value: i32 = 1
+    let box: Box = Box { value: &value }
+    return id(box.value)
+}

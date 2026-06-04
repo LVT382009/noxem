@@ -1,0 +1,26 @@
+fn maybeValue(bytes: Span<u8>, index: usize) -> Maybe<u8> raises {
+    check std.mem.get(bytes, index)
+    return std.mem.get(bytes, index)
+}
+
+fn privateFail(flag: Bool) -> i32 raises {
+    if flag {
+        raise Hidden
+    }
+    return 7
+}
+
+fn namedFail(flag: Bool) -> i32 raises [Hidden] {
+    let value: i32 = check privateFail(flag)
+    return value
+}
+
+pub fn main(world: World) -> Void raises {
+    let bytes: [1]u8 = [42]
+    let found: u8 = check maybeValue(bytes, 0)
+    let fallback: u8 = rescue maybeValue(bytes, 3) err 5_u8
+    let recovered: i32 = rescue namedFail(true) err 9
+    if found == 42_u8 && fallback == 5_u8 && recovered == 9 {
+        check world.out.write("maybe error flow ok\n")
+    }
+}

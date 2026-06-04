@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    let text: String = "zero"
+    if std.mem.len(text) == 4 {
+        check world.out.write("string length ok\n")
+    }
+}

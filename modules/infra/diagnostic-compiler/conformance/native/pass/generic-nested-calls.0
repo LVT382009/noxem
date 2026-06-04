@@ -1,0 +1,16 @@
+fn identity<T: Type>(value: T) -> T {
+    return value
+}
+
+fn choose<T: Type>(left: T, right: T) -> T {
+    return left
+}
+
+pub fn main(world: World) -> Void raises {
+    let value: i32 = identity<i32>(choose(identity(21), identity(22)))
+    if value == 21 {
+        check world.out.write("generic nested calls ok\n")
+    } else {
+        check world.out.write("generic nested calls broke\n")
+    }
+}

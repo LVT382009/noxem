@@ -1,0 +1,16 @@
+fn nextPrime(after: u32) -> u32 {
+    var n: u32 = after + 1
+    while true {
+        if std.math.isPrimeU32(n) {
+            return n
+        }
+        n = n + 1
+    }
+    return 0
+}
+
+pub fn main(world: World) -> Void raises {
+    if nextPrime(30) == 31 {
+        check world.out.write("prime generator ok\n")
+    }
+}

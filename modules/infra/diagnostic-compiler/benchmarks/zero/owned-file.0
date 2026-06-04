@@ -1,0 +1,18 @@
+pub fn main(world: World) -> Void raises {
+    let fs: Fs = std.fs.host()
+    let created: Maybe<owned<File>> = std.fs.create(fs, ".zero/bench/zero-owned-file.txt")
+    if created.has {
+        var file: owned<File> = created.value
+        if !std.fs.writeAll(&mut file, std.mem.span("owned file payload\n")) {
+            return
+        }
+    }
+    let opened: Maybe<owned<File>> = std.fs.open(fs, ".zero/bench/zero-owned-file.txt")
+    if opened.has {
+        var file: owned<File> = opened.value
+        let size: Maybe<usize> = std.fs.fileLen(&mut file)
+        if size.has && size.value > 0 {
+            check world.out.write("owned file\n")
+        }
+    }
+}

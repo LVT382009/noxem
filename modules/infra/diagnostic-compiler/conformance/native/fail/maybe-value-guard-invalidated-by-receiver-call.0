@@ -1,0 +1,15 @@
+type Holder {
+    value: Maybe<u8>,
+    fn clear(self: mutref<Self>) -> Bool {
+        self.value = null
+        return true
+    }
+}
+
+pub fn main() -> Void {
+    let bytes: [1]u8 = [1]
+    var holder: Holder = Holder { value: std.mem.get(bytes, 0) }
+    if holder.value.has && holder.clear() {
+        let byte: u8 = holder.value.value
+    }
+}

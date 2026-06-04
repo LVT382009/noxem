@@ -1,0 +1,7 @@
+pub fn main(world: World) -> Void raises {
+    var out: [6]u8 = [0_u8; 6]
+    let repeated: Maybe<Span<u8>> = std.str.repeat(out, "ha", 3)
+    if repeated.has && std.mem.eql(repeated.value, "hahaha") {
+        check world.out.write("repeat string ok\n")
+    }
+}

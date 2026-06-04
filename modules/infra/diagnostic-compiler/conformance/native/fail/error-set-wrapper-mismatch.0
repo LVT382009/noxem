@@ -1,0 +1,11 @@
+fn inner() -> Void raises [Bad] {
+    raise Bad
+}
+
+fn wrapper() -> Void raises {
+    check inner()
+}
+
+pub fn main() -> Void raises [Other] {
+    check wrapper()
+}

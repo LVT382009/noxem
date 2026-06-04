@@ -1,0 +1,15 @@
+fn validate(ok: Bool) -> i32 raises [InvalidInput] {
+    if !ok {
+        raise InvalidInput
+    }
+    return 42
+}
+
+fn run() -> Void raises [InvalidInput] {
+    check validate(true)
+}
+
+pub fn main(world: World) -> Void raises {
+    check run()
+    check world.out.write("fallibility ok\n")
+}

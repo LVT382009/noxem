@@ -1,0 +1,14 @@
+pub fn main(world: World) -> Void raises {
+    let view: Span<u8> = "zero-slices"[5..11]
+    var i: i32 = 0
+    var total: usize = 0
+    while i < 50000 {
+        if view[0] == 115 as u8 && view[5] == 115 as u8 {
+            total = total + std.mem.len(view)
+        }
+        i = i + 1
+    }
+    if total == 300000 {
+        check world.out.write("slices\n")
+    }
+}

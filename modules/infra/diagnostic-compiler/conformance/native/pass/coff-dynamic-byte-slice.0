@@ -1,0 +1,9 @@
+pub fn main(world: World) -> Void raises {
+    let text: String = "abcdef"
+    let start: usize = 1
+    let end: usize = 4
+    let middle: Span<u8> = text[start..end]
+    if std.mem.len(middle) == 3 {
+        check world.out.write("dynamic slice ok\n")
+    }
+}

@@ -1,0 +1,21 @@
+pub fn main(world: World) -> Void raises {
+    let values: [5]i32 = [7, 2, 10, 4, 1]
+    var index: usize = 0
+    var sum: i32 = 0
+    var min: i32 = values[0]
+    var max: i32 = values[0]
+    while index < 5 {
+        let value: i32 = values[index]
+        sum = sum + value
+        if value < min {
+            min = value
+        }
+        if value > max {
+            max = value
+        }
+        index = index + 1
+    }
+    if sum == 24 && min == 1 && max == 10 {
+        check world.out.write("array sum min max ok\n")
+    }
+}

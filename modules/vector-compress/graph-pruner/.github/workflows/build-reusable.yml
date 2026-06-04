@@ -1,0 +1,672 @@
+name: Reusable Build
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref to build'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  lint:
+    name: Lint and Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.11'
+
+      - name: Run pre-commit with only lint group (no project deps)
+        run: |
+          uv run --frozen --only-group lint pre-commit run --all-files --show-diff-on-failure
+
+  type-check:
+    name: Type Check with ty
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install ty
+        run: uv tool install ty==0.0.17
+
+      - name: Run ty type checker
+        run: |
+          # Run ty on core packages, apps, and tests
+          ty check packages/leann-core/src apps tests
+
+  build:
+    needs: [lint, type-check]
+    name: Build ${{ matrix.os }} Python ${{ matrix.python }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Note: Python 3.9 dropped - uses PEP 604 union syntax (str | None)
+          # which requires Python 3.10+
+          - os: ubuntu-22.04
+            python: '3.10'
+          - os: ubuntu-22.04
+            python: '3.11'
+          - os: ubuntu-22.04
+            python: '3.12'
+          - os: ubuntu-22.04
+            python: '3.13'
+          # ARM64 Linux builds
+          - os: ubuntu-22.04-arm
+            python: '3.10'
+          - os: ubuntu-22.04-arm
+            python: '3.11'
+          - os: ubuntu-22.04-arm
+            python: '3.12'
+          - os: ubuntu-22.04-arm
+            python: '3.13'
+          - os: macos-14
+            python: '3.10'
+          - os: macos-14
+            python: '3.11'
+          - os: macos-14
+            python: '3.12'
+          - os: macos-14
+            python: '3.13'
+          - os: macos-15
+            python: '3.10'
+          - os: macos-15
+            python: '3.11'
+          - os: macos-15
+            python: '3.12'
+          - os: macos-15
+            python: '3.13'
+          # Intel Mac builds (x86_64) - replaces deprecated macos-13
+          # Note: Python 3.13 excluded - PyTorch has no wheels for macOS x86_64 + Python 3.13
+          # (PyTorch <=2.4.1 lacks cp313, PyTorch >=2.5.0 dropped Intel Mac support)
+          - os: macos-15-intel
+            python: '3.10'
+          - os: macos-15-intel
+            python: '3.11'
+          - os: macos-15-intel
+            python: '3.12'
+          # macOS 26 (beta) - arm64
+          - os: macos-26
+            python: '3.10'
+          - os: macos-26
+            python: '3.11'
+          - os: macos-26
+            python: '3.12'
+          - os: macos-26
+            python: '3.13'
+          # Windows validation (native HNSW + DiskANN build/install path)
+          - os: windows-2022
+            python: '3.11'
+          - os: windows-2022
+            python: '3.12'
+          - os: windows-2022
+            python: '3.13'
+          - os: windows-2022
+            python: '3.14'
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libomp-dev libboost-all-dev protobuf-compiler libzmq3-dev \
+            pkg-config libabsl-dev libaio-dev libprotobuf-dev \
+            patchelf
+
+          # Debug: Show system information
+          echo "🔍 System Information:"
+          echo "Architecture: $(uname -m)"
+          echo "OS: $(uname -a)"
+          echo "CPU info: $(lscpu | head -5)"
+
+          # Install math library based on architecture
+          ARCH=$(uname -m)
+          echo "🔍 Setting up math library for architecture: $ARCH"
+
+          if [[ "$ARCH" == "x86_64" ]]; then
+            # Install Intel MKL for DiskANN on x86_64
+            echo "📦 Installing Intel MKL for x86_64..."
+            wget -q https://registrationcenter-download.intel.com/akdlm/IRC_NAS/79153e0f-74d7-45af-b8c2-258941adf58a/intel-onemkl-2025.0.0.940.sh
+            sudo sh intel-onemkl-2025.0.0.940.sh -a --components intel.oneapi.lin.mkl.devel --action install --eula accept -s
+            source /opt/intel/oneapi/setvars.sh
+            echo "MKLROOT=/opt/intel/oneapi/mkl/latest" >> $GITHUB_ENV
+            echo "LD_LIBRARY_PATH=/opt/intel/oneapi/compiler/latest/linux/compiler/lib/intel64_lin" >> $GITHUB_ENV
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/intel/oneapi/mkl/latest/lib/intel64" >> $GITHUB_ENV
+            echo "✅ Intel MKL installed for x86_64"
+
+            # Debug: Check MKL installation
+            echo "🔍 MKL Installation Check:"
+            ls -la /opt/intel/oneapi/mkl/latest/ || echo "MKL directory not found"
+            ls -la /opt/intel/oneapi/mkl/latest/lib/ || echo "MKL lib directory not found"
+
+          elif [[ "$ARCH" == "aarch64" ]]; then
+            # Use OpenBLAS for ARM64 (MKL installer not compatible with ARM64)
+            echo "📦 Installing OpenBLAS for ARM64..."
+            sudo apt-get install -y libopenblas-dev liblapack-dev liblapacke-dev
+            echo "✅ OpenBLAS installed for ARM64"
+
+            # Debug: Check OpenBLAS installation
+            echo "🔍 OpenBLAS Installation Check:"
+            dpkg -l | grep openblas || echo "OpenBLAS package not found"
+            ls -la /usr/lib/aarch64-linux-gnu/openblas/ || echo "OpenBLAS directory not found"
+          fi
+
+          # Debug: Show final library paths
+          echo "🔍 Final LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Don't install LLVM, use system clang for better compatibility
+          # CMake is required for scikit-build (HNSW + DiskANN); install via brew so
+          # we do not depend on fetching the PyPI cmake package during uv build.
+          brew install cmake libomp boost protobuf zeromq
+
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          retry() {
+            local attempts=$1
+            shift
+            local n=1
+            while true; do
+              "$@" && break
+              if [[ $n -ge $attempts ]]; then
+                echo "Command failed after $n attempts: $*"
+                return 1
+              fi
+              echo "Command failed (attempt $n/$attempts). Retrying in 10s: $*"
+              sleep 10
+              n=$((n + 1))
+            done
+          }
+
+          retry 5 choco install swig -y --no-progress
+          retry 5 choco install nuget.commandline -y --no-progress
+          # pkgconfiglite via Chocolatey is flaky (exits 0 even on failure);
+          # verify the binary exists and fall back to direct download.
+          retry 3 choco install pkgconfiglite -y --no-progress || true
+          PKG_CONFIG_DIR="C:/ProgramData/chocolatey/bin"
+          if [[ ! -f "${PKG_CONFIG_DIR}/pkg-config.exe" ]]; then
+            echo "pkg-config.exe not found after choco, downloading directly..."
+            PKG_CONFIG_DIR="${RUNNER_TEMP}/pkg-config"
+            mkdir -p "${PKG_CONFIG_DIR}"
+            curl -fsSL -o "${RUNNER_TEMP}/pkgconfiglite.zip" \
+              "https://sourceforge.net/projects/pkgconfiglite/files/0.28-1/pkg-config-lite-0.28-1_bin-win32.zip/download"
+            unzip -q "${RUNNER_TEMP}/pkgconfiglite.zip" -d "${RUNNER_TEMP}/pkgconfiglite"
+            cp "${RUNNER_TEMP}/pkgconfiglite/pkg-config-lite-0.28-1/bin/"* "${PKG_CONFIG_DIR}/"
+          fi
+          echo "${PKG_CONFIG_DIR}" >> "$GITHUB_PATH"
+          echo "PKG_CONFIG_EXECUTABLE=${PKG_CONFIG_DIR}/pkg-config.exe" >> "$GITHUB_ENV"
+          if [[ -z "${VCPKG_INSTALLATION_ROOT:-}" ]]; then
+            echo "VCPKG_INSTALLATION_ROOT is not set on this runner"
+            exit 1
+          fi
+          retry 5 "${VCPKG_INSTALLATION_ROOT}/vcpkg" install zeromq:x64-windows
+          retry 5 "${VCPKG_INSTALLATION_ROOT}/vcpkg" install openblas:x64-windows
+          retry 5 "${VCPKG_INSTALLATION_ROOT}/vcpkg" install lapack:x64-windows
+          retry 5 "${VCPKG_INSTALLATION_ROOT}/vcpkg" install boost-program-options:x64-windows
+          retry 5 "${VCPKG_INSTALLATION_ROOT}/vcpkg" install protobuf:x64-windows
+
+          # DiskANN links against Intel OpenMP (libiomp5md) via NuGet during its
+          # CMake build.  The NuGet packages end up in a temp build dir that is
+          # cleaned up by `uv build`, so delvewheel can't find the DLL later.
+          # Download it here to a persistent, known location.
+          NUGET_PKG_DIR="${RUNNER_TEMP}/nuget_pkgs"
+          retry 5 nuget install intelopenmp.redist.win -Version 2022.0.3.3747 \
+            -ExcludeVersion -OutputDirectory "${NUGET_PKG_DIR}"
+          echo "INTEL_OMP_BIN_DIR=${NUGET_PKG_DIR}/intelopenmp.redist.win/runtimes/win-x64/native" >> "$GITHUB_ENV"
+
+          echo "PKG_CONFIG_PATH=${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=${VCPKG_INSTALLATION_ROOT}/installed/x64-windows" >> "$GITHUB_ENV"
+          echo "OPENBLAS_LIB=${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/lib/openblas.lib" >> "$GITHUB_ENV"
+          echo "${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/bin" >> "$GITHUB_PATH"
+          echo "${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/debug/bin" >> "$GITHUB_PATH"
+          echo "${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/tools/protobuf" >> "$GITHUB_PATH"
+          pkg-config --version || true
+          where pkg-config || true
+          pkg-config --modversion libzmq || true
+
+      - name: Install build dependencies
+        run: |
+          retry() {
+            local attempts=$1
+            shift
+            local n=1
+            while true; do
+              "$@" && break
+              if [[ $n -ge $attempts ]]; then
+                echo "Command failed after $n attempts: $*"
+                return 1
+              fi
+              echo "Command failed (attempt $n/$attempts). Retrying in 5s: $*"
+              sleep 5
+              n=$((n + 1))
+            done
+          }
+
+          retry 5 uv python install ${{ matrix.python }}
+          uv venv --python ${{ matrix.python }} .uv-build
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            BUILD_PY=".uv-build\\Scripts\\python.exe"
+          else
+            BUILD_PY=".uv-build/bin/python"
+          fi
+          retry 5 uv pip install --python "$BUILD_PY" scikit-build-core numpy swig Cython pybind11
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            retry 5 uv pip install --python "$BUILD_PY" auditwheel
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            retry 5 uv pip install --python "$BUILD_PY" delocate
+          else
+            retry 5 uv pip install --python "$BUILD_PY" delvewheel
+          fi
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            echo "$(pwd)\\.uv-build\\Scripts" >> $GITHUB_PATH
+          else
+            echo "$(pwd)/.uv-build/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Set macOS environment variables
+        if: runner.os == 'macOS'
+        run: |
+          # Use brew --prefix to automatically detect Homebrew installation path
+          HOMEBREW_PREFIX=$(brew --prefix)
+          echo "HOMEBREW_PREFIX=${HOMEBREW_PREFIX}" >> $GITHUB_ENV
+          echo "OpenMP_ROOT=${HOMEBREW_PREFIX}/opt/libomp" >> $GITHUB_ENV
+
+          # Set CMAKE_PREFIX_PATH to let CMake find all packages automatically
+          echo "CMAKE_PREFIX_PATH=${HOMEBREW_PREFIX}" >> $GITHUB_ENV
+
+          # Set compiler flags for OpenMP (required for both backends)
+          echo "LDFLAGS=-L${HOMEBREW_PREFIX}/opt/libomp/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I${HOMEBREW_PREFIX}/opt/libomp/include" >> $GITHUB_ENV
+
+      - name: Build packages
+        run: |
+          # Build core (platform independent)
+          cd packages/leann-core
+          uv build
+          cd ../..
+
+          # Build HNSW backend
+          cd packages/leann-backend-hnsw
+          if [[ "${{ matrix.os }}" == macos-* ]]; then
+            # Use system clang for better compatibility
+            export CC=clang
+            export CXX=clang++
+            # Set deployment target based on runner
+            # macos-15-intel runs macOS 15, so target 15.0 (system libraries require it)
+            if [[ "${{ matrix.os }}" == "macos-15-intel" ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=15.0
+            elif [[ "${{ matrix.os }}" == macos-14* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=14.0
+            elif [[ "${{ matrix.os }}" == macos-15* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=15.0
+            elif [[ "${{ matrix.os }}" == macos-26* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=26.0
+            fi
+            uv build --wheel --python ${{ matrix.python }} --find-links ${GITHUB_WORKSPACE}/packages/leann-core/dist
+          else
+            uv build --wheel --python ${{ matrix.python }} --find-links ${GITHUB_WORKSPACE}/packages/leann-core/dist
+          fi
+          cd ../..
+
+          # Build DiskANN backend
+          cd packages/leann-backend-diskann
+          if [[ "${{ matrix.os }}" == macos-* ]]; then
+            # Use system clang for better compatibility
+            export CC=clang
+            export CXX=clang++
+            # Set deployment target based on runner
+            # macos-15-intel runs macOS 15, so target 15.0 (system libraries require it)
+            if [[ "${{ matrix.os }}" == "macos-15-intel" ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=15.0
+            elif [[ "${{ matrix.os }}" == macos-14* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=14.0
+            elif [[ "${{ matrix.os }}" == macos-15* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=15.0
+            elif [[ "${{ matrix.os }}" == macos-26* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=26.0
+            fi
+            uv build --wheel --python ${{ matrix.python }} --find-links ${GITHUB_WORKSPACE}/packages/leann-core/dist
+          else
+            uv build --wheel --python ${{ matrix.python }} --find-links ${GITHUB_WORKSPACE}/packages/leann-core/dist
+          fi
+          cd ../..
+
+          # Build IVF backend (pure Python; depends on leann-core + faiss-cpu at install time)
+          cd packages/leann-backend-ivf
+          uv build --wheel --python ${{ matrix.python }} --find-links ${GITHUB_WORKSPACE}/packages/leann-core/dist
+          cd ../..
+
+          # Build meta package (platform independent)
+          cd packages/leann
+          uv build
+          cd ../..
+
+      - name: Repair wheels (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # Repair HNSW wheel
+          cd packages/leann-backend-hnsw
+          if [ -d dist ]; then
+            auditwheel repair dist/*.whl -w dist_repaired
+            rm -rf dist
+            mv dist_repaired dist
+          fi
+          cd ../..
+
+          # Repair DiskANN wheel
+          cd packages/leann-backend-diskann
+          if [ -d dist ]; then
+            auditwheel repair dist/*.whl -w dist_repaired
+            rm -rf dist
+            mv dist_repaired dist
+          fi
+          cd ../..
+
+      - name: Repair wheels (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Determine deployment target based on runner OS
+          # macos-15-intel runs macOS 15, so target 15.0 (system libraries require it)
+          if [[ "${{ matrix.os }}" == "macos-15-intel" ]]; then
+            HNSW_TARGET="15.0"
+            DISKANN_TARGET="15.0"
+          elif [[ "${{ matrix.os }}" == macos-14* ]]; then
+            HNSW_TARGET="14.0"
+            DISKANN_TARGET="14.0"
+          elif [[ "${{ matrix.os }}" == macos-15* ]]; then
+            HNSW_TARGET="15.0"
+            DISKANN_TARGET="15.0"
+          elif [[ "${{ matrix.os }}" == macos-26* ]]; then
+            HNSW_TARGET="26.0"
+            DISKANN_TARGET="26.0"
+          fi
+
+          # Repair HNSW wheel
+          cd packages/leann-backend-hnsw
+          if [ -d dist ]; then
+            export MACOSX_DEPLOYMENT_TARGET=$HNSW_TARGET
+            delocate-wheel -w dist_repaired -v --require-target-macos-version $HNSW_TARGET dist/*.whl
+            rm -rf dist
+            mv dist_repaired dist
+          fi
+          cd ../..
+
+          # Repair DiskANN wheel
+          cd packages/leann-backend-diskann
+          if [ -d dist ]; then
+            export MACOSX_DEPLOYMENT_TARGET=$DISKANN_TARGET
+            delocate-wheel -w dist_repaired -v --require-target-macos-version $DISKANN_TARGET dist/*.whl
+            rm -rf dist
+            mv dist_repaired dist
+          fi
+          cd ../..
+
+      - name: Repair wheels (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          # Repair HNSW wheel
+          cd packages/leann-backend-hnsw
+          if [ -d dist ]; then
+            delvewheel repair dist/*.whl -w dist_repaired --add-path "${VCPKG_INSTALLATION_ROOT}/installed/x64-windows/bin"
+            rm -rf dist
+            mv dist_repaired dist
+          fi
+          cd ../..
+
+          # Repair DiskANN wheel.
+          # DiskANN's CMake install bundles diskann.dll and libiomp5md.dll inside
+          # the wheel, but delvewheel doesn't search inside the wheel for deps.
+          # Extract the wheel so delvewheel can discover them via --add-path.
+          cd packages/leann-backend-diskann
+          if [ -d dist ]; then
+            # Extract the wheel and build --add-path with native Windows paths.
+            # mktemp returns Git Bash paths (/tmp/...) that delvewheel.exe can't
+            # resolve, so use Python for the entire extract-and-repair flow.
+            python -c "
+          import zipfile, sys, glob, tempfile, subprocess, os, shutil
+          whl = glob.glob('dist/*.whl')[0]
+          tmpdir = tempfile.mkdtemp(prefix='diskann_whl_')
+          zipfile.ZipFile(whl).extractall(tmpdir)
+
+          add_paths = [os.environ.get('VCPKG_INSTALLATION_ROOT','') + '/installed/x64-windows/bin',
+                       os.environ.get('INTEL_OMP_BIN_DIR','')]
+          for entry in os.listdir(tmpdir):
+              full = os.path.join(tmpdir, entry)
+              if os.path.isdir(full):
+                  add_paths.append(full)
+          add_path_str = ';'.join(p for p in add_paths if p)
+
+          print(f'add-path: {add_path_str}')
+          rc = subprocess.call([sys.executable, '-m', 'delvewheel', 'repair', whl,
+                                '-w', 'dist_repaired', '--add-path', add_path_str])
+          shutil.rmtree(tmpdir, ignore_errors=True)
+          sys.exit(rc)
+          "
+            rm -rf dist
+            mv dist_repaired dist
+          fi
+          cd ../..
+
+      - name: List built packages
+        run: |
+          echo "📦 Built packages:"
+          find packages/*/dist -name "*.whl" -o -name "*.tar.gz" | sort
+
+
+      - name: Install built packages for testing
+        run: |
+          retry() {
+            local attempts=$1
+            shift
+            local n=1
+            while true; do
+              "$@" && break
+              if [[ $n -ge $attempts ]]; then
+                echo "Command failed after $n attempts: $*"
+                return 1
+              fi
+              echo "Command failed (attempt $n/$attempts). Retrying in 5s: $*"
+              sleep 5
+              n=$((n + 1))
+            done
+          }
+
+          # Create uv-managed virtual environment with the requested interpreter
+          retry 5 uv python install ${{ matrix.python }}
+          uv venv --python ${{ matrix.python }}
+          source .venv/bin/activate || source .venv/Scripts/activate
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            UV_PY=".venv\\Scripts\\python.exe"
+          else
+            UV_PY=".venv/bin/python"
+          fi
+
+          # Install test dependency group only (avoids reinstalling project package)
+          uv pip install --python "$UV_PY" --group test
+
+          # Install core wheel built in this job
+          CORE_WHL=$(find packages/leann-core/dist -maxdepth 1 -name "*.whl" -print -quit)
+          if [[ -n "$CORE_WHL" ]]; then
+            uv pip install --python "$UV_PY" "$CORE_WHL"
+          else
+            uv pip install --python "$UV_PY" packages/leann-core/dist/*.tar.gz
+          fi
+
+          PY_TAG=$($UV_PY -c "import sys; print(f'cp{sys.version_info[0]}{sys.version_info[1]}')")
+
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            # macos-15-intel runs macOS 15, so target 15.0 (system libraries require it)
+            if [[ "${{ matrix.os }}" == "macos-15-intel" ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=15.0
+            elif [[ "${{ matrix.os }}" == macos-14* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=14.0
+            elif [[ "${{ matrix.os }}" == macos-15* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=15.0
+            elif [[ "${{ matrix.os }}" == macos-26* ]]; then
+              export MACOSX_DEPLOYMENT_TARGET=26.0
+            fi
+          fi
+
+          HNSW_WHL=$(find packages/leann-backend-hnsw/dist -maxdepth 1 -name "*-${PY_TAG}-*.whl" -print -quit)
+          if [[ -z "$HNSW_WHL" ]]; then
+            HNSW_WHL=$(find packages/leann-backend-hnsw/dist -maxdepth 1 -name "*-py3-*.whl" -print -quit)
+          fi
+          if [[ -n "$HNSW_WHL" ]]; then
+            uv pip install --python "$UV_PY" "$HNSW_WHL"
+          else
+            uv pip install --python "$UV_PY" ./packages/leann-backend-hnsw
+          fi
+
+          DISKANN_WHL=$(find packages/leann-backend-diskann/dist -maxdepth 1 -name "*-${PY_TAG}-*.whl" -print -quit)
+          if [[ -z "$DISKANN_WHL" ]]; then
+            DISKANN_WHL=$(find packages/leann-backend-diskann/dist -maxdepth 1 -name "*-py3-*.whl" -print -quit)
+          fi
+          if [[ -n "$DISKANN_WHL" ]]; then
+            uv pip install --python "$UV_PY" "$DISKANN_WHL"
+          else
+            uv pip install --python "$UV_PY" ./packages/leann-backend-diskann
+          fi
+
+          IVF_WHL=$(find packages/leann-backend-ivf/dist -maxdepth 1 -name "*.whl" -print -quit)
+          if [[ -n "$IVF_WHL" ]]; then
+            uv pip install --python "$UV_PY" "$IVF_WHL"
+          else
+            uv pip install --python "$UV_PY" ./packages/leann-backend-ivf
+          fi
+
+          LEANN_WHL=$(find packages/leann/dist -maxdepth 1 -name "*.whl" -print -quit)
+          if [[ -n "$LEANN_WHL" ]]; then
+            uv pip install --python "$UV_PY" "$LEANN_WHL"
+          else
+            uv pip install --python "$UV_PY" packages/leann/dist/*.tar.gz
+          fi
+
+      - name: Run tests with pytest
+        env:
+          CI: true
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          HF_HUB_DISABLE_SYMLINKS: 1
+          TOKENIZERS_PARALLELISM: false
+          PYTORCH_ENABLE_MPS_FALLBACK: 0
+          OMP_NUM_THREADS: 1
+          MKL_NUM_THREADS: 1
+        run: |
+          source .venv/bin/activate || source .venv/Scripts/activate
+          pytest tests/ -v --tb=short
+
+      - name: Run sanity checks (optional)
+        run: |
+          # Activate virtual environment
+          source .venv/bin/activate || source .venv/Scripts/activate
+
+          # Run distance function tests if available
+          if [ -f test/sanity_checks/test_distance_functions.py ]; then
+            echo "Running distance function sanity checks..."
+            python test/sanity_checks/test_distance_functions.py || echo "⚠️ Distance function test failed, continuing..."
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.os }}-py${{ matrix.python }}
+          path: packages/*/dist/
+
+
+  arch-smoke:
+    name: Arch Linux smoke test (install & import)
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Prepare system
+        run: |
+          # Initialize pacman keyring to avoid "no secret key available" error
+          pacman-key --init
+          pacman -Syu --noconfirm
+          # Install build essentials (uv will manage Python version)
+          pacman -S --noconfirm gcc git zlib openssl
+
+      - name: Download ALL wheel artifacts from this run
+        uses: actions/download-artifact@v5
+        with:
+          # Don't specify name, download all artifacts
+          path: ./wheels
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Create virtual environment and install wheels
+        run: |
+          # Use Python 3.13 explicitly (Arch has Python 3.14 which PyO3/tokenizers doesn't support yet)
+          uv python install 3.13
+          uv venv --python 3.13
+          source .venv/bin/activate || source .venv/Scripts/activate
+          # Flatten artifact subdirectories into a single wheelhouse.
+          # actions/download-artifact stores each artifact in its own folder and
+          # pip/uv --find-links does not recurse into nested directories.
+          mkdir -p wheelhouse
+          find wheels -name "*.whl" -exec cp {} wheelhouse/ \;
+
+          # Prefer wheels produced in this workflow run for our internal packages,
+          # but still allow dependencies to be installed from the normal index.
+          uv pip install --find-links wheelhouse leann-core
+          uv pip install --find-links wheelhouse leann-backend-hnsw
+          uv pip install --find-links wheelhouse leann-backend-diskann
+          uv pip install --find-links wheelhouse leann-backend-ivf
+          uv pip install --find-links wheelhouse leann
+
+      - name: Import & tiny runtime check
+        env:
+          OMP_NUM_THREADS: 1
+          MKL_NUM_THREADS: 1
+        run: |
+          source .venv/bin/activate || source .venv/Scripts/activate
+          python - <<'PY'
+          import leann
+          import leann_backend_hnsw as h
+          import leann_backend_diskann as d
+          import leann_backend_ivf as ivf
+          from leann import LeannBuilder, LeannSearcher
+          b = LeannBuilder(backend_name="hnsw")
+          b.add_text("hello arch")
+          b.build_index("arch_demo.leann")
+          s = LeannSearcher("arch_demo.leann")
+          print("search:", s.search("hello", top_k=1))
+          PY

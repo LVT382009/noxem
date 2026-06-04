@@ -1,0 +1,4 @@
+pub fn main(world: World) -> Void raises {
+    let message: String = "hello from a binding\n"
+    check world.out.write(message)
+}

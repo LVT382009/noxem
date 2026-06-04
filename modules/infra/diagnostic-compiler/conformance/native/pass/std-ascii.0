@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    let digit: Maybe<u8> = std.ascii.digitValue(55_u8)
+    let hex: Maybe<u8> = std.ascii.hexValue(70_u8)
+    let missing: Maybe<u8> = std.ascii.hexValue(120_u8)
+    if std.ascii.isDigit(57_u8) && std.ascii.isAlpha(65_u8) && std.ascii.isAlnum(122_u8) && std.ascii.isWhitespace(10_u8) && std.ascii.isLower(97_u8) && std.ascii.isUpper(90_u8) && std.ascii.isHexDigit(102_u8) && std.ascii.toLower(65_u8) == 97_u8 && std.ascii.toUpper(122_u8) == 90_u8 && digit.has && digit.value == 7_u8 && hex.has && hex.value == 15_u8 && !missing.has {
+        check world.out.write("std ascii ok\n")
+    }
+}

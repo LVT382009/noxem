@@ -1,0 +1,18 @@
+type File {
+    fd: i32,
+}
+
+fn consume(file: owned<File>) -> Void {
+}
+
+fn rescueFallback(maybe: Maybe<owned<File>>, fallback: owned<File>) -> Void {
+    let file: owned<File> = rescue maybe err fallback
+    consume(file)
+    consume(fallback)
+}
+
+pub fn main() -> Void {
+    let maybe: Maybe<owned<File>> = null
+    let fallback: owned<File> = File { fd: 1 }
+    rescueFallback(maybe, fallback)
+}

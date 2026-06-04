@@ -1,0 +1,22 @@
+type BufferView {
+    bytes: Span<u8>,
+    allocator: Maybe<ref<Alloc>>,
+}
+
+type EditableBuffer {
+    bytes: Span<u8>,
+    owner: Maybe<mutref<Alloc>>,
+}
+
+type SliceView {
+    bytes: Span<u8>,
+}
+
+pub fn main(world: World) -> Void raises {
+    let bytes: Span<u8> = std.mem.span("zero-memory")
+    let same: Span<u8> = std.mem.span("zero-memory")
+    let view: SliceView = SliceView { bytes: bytes }
+    if std.mem.len(view.bytes) == 11 && std.mem.eqlBytes(view.bytes, same) {
+        check world.out.write("memory type forms runnable\n")
+    }
+}

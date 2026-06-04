@@ -1,0 +1,7 @@
+fn __zero_std_net_localhost(port: u16) -> Address {
+    return std.net.address("localhost", port)
+}
+
+fn __zero_std_net_loopback(port: u16) -> Address {
+    return std.net.address("127.0.0.1", port)
+}

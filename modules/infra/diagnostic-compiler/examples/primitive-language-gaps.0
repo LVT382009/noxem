@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    let bytes: [4]u8 = [1, 2, 3, 4]
+    var attempts: i32 = 0
+    attempts = attempts + 1
+    if attempts == 1 {
+        check world.out.write("arrays and assignment ok\n")
+    }
+}

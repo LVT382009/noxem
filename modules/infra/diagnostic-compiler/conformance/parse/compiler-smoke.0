@@ -1,0 +1,24 @@
+type Point {
+    x: i32,
+}
+
+enum Color: u8 {
+    red,
+    blue,
+}
+
+choice Event {
+    quit,
+    key: i32,
+}
+
+fn main(x: i32) -> i32 {
+    if x {
+        return x
+    }
+    while x {
+        raise Bad
+    }
+    check rescue x err 0
+    return x
+}

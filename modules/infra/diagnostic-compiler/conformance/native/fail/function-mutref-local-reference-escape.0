@@ -1,0 +1,14 @@
+type Holder {
+    value: ref<i32>,
+}
+
+fn storeLocal(holder: mutref<Holder>) -> Void {
+    let local: i32 = 1
+    holder.value = &local
+}
+
+pub fn main() -> Void {
+    let fallback: i32 = 0
+    var holder: Holder = Holder { value: &fallback }
+    storeLocal(&mut holder)
+}

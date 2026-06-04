@@ -1,0 +1,5 @@
+pub fn main() -> Void {
+    var x: i32 = 1
+    let refs: [1]ref<i32> = [&x]
+    x = 2
+}

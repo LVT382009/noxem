@@ -1,0 +1,80 @@
+fn targetNeutralStdlibOk() -> Bool {
+    var ok: Bool = true
+
+    var hex_buf: [4]u8 = [0_u8; 4]
+    let hex: Maybe<String> = std.codec.hexEncode(hex_buf, "Az")
+    var b64_buf: [4]u8 = [0_u8; 4]
+    let b64: Maybe<String> = std.codec.base64Encode(b64_buf, "abc")
+    var varint_buf: [5]u8 = [0_u8; 5]
+    let varint: Maybe<Span<u8>> = std.codec.varintEncode(varint_buf, 300_u32)
+    if !hex.has || !std.mem.eql(hex.value, "417a") || !b64.has || !std.mem.eql(b64.value, "YWJj") || std.codec.base64EncodedLen(3) != 4 {
+        ok = false
+    }
+    if !varint.has || std.codec.encodedVarintLen(300_u32) != 2 || !std.codec.utf8Valid("zero") {
+        ok = false
+    }
+    if varint.has {
+        let decoded_varint: Maybe<u32> = std.codec.varintDecode(varint.value)
+        if !decoded_varint.has || decoded_varint.value != 300_u32 {
+            ok = false
+        }
+    }
+
+    var json_buf: [16]u8 = [0_u8; 16]
+    let json_text: Maybe<String> = std.json.writeString(json_buf, "zero")
+    if !json_text.has || !std.mem.eql(json_text.value, "\"zero\"") || !std.json.validate("{\"ok\":true}") || std.json.streamTokens("{\"ok\":true}") != 3 {
+        ok = false
+    }
+
+    var url_buf: [24]u8 = [0_u8; 24]
+    let url: Maybe<String> = std.codec.urlEncode(url_buf, "a b")
+    var query_buf: [24]u8 = [0_u8; 24]
+    let query: Maybe<Span<u8>> = std.url.writeQueryParam(query_buf, "q", "zero lang")
+    if !url.has || !std.mem.eql(url.value, "a%20b") || !query.has || !std.mem.eql(query.value, "q=zero+lang") {
+        ok = false
+    }
+
+    var reversed_buf: [4]u8 = [0_u8; 4]
+    let reversed: Maybe<Span<u8>> = std.str.reverse(reversed_buf, "zero")
+    if !reversed.has || !std.mem.eql(reversed.value, "orez") || !std.str.contains("zero text", "text") || std.str.wordCountAscii("zero text") != 2 {
+        ok = false
+    }
+    if std.math.gcdU32(84, 30) != 6 || std.math.powU32(3, 4) != 81 || !std.math.isPrimeU32(31) {
+        ok = false
+    }
+
+    var sorted: [4]u32 = [9_u32, 1_u32, 4_u32, 2_u32]
+    std.sort.insertionU32(sorted)
+    if !std.sort.isSortedU32(sorted) || std.search.binaryU32(sorted, 9_u32) != 3 {
+        ok = false
+    }
+
+    var request_buf: [192]u8 = [0_u8; 192]
+    let request: Maybe<Span<u8>> = std.http.writeJsonRequest(request_buf, "POST https://example.com/api?name=zero", "{\"ping\":1}")
+    if !request.has {
+        ok = false
+    }
+    if request.has {
+        let method: Maybe<Span<u8>> = std.http.requestMethodName(request.value)
+        let path: Maybe<Span<u8>> = std.http.requestPath(request.value)
+        let body: Maybe<Span<u8>> = std.http.requestBodyWithin(request.value, 16)
+        if !method.has || !std.mem.eql(method.value, "POST") || !path.has || !std.mem.eql(path.value, "/api") || !body.has || !std.mem.eql(body.value, "{\"ping\":1}") {
+            ok = false
+        }
+    }
+
+    var log_buf: [96]u8 = [0_u8; 96]
+    let entry: Maybe<Span<u8>> = std.log.keyValue(log_buf, "info", "event", "startup")
+    if !entry.has || !std.testing.containsBytes(entry.value, "\"value\":\"startup\"") {
+        ok = false
+    }
+
+    return ok
+}
+
+export c fn main() -> i32 {
+    if targetNeutralStdlibOk() {
+        return 0
+    }
+    return 1
+}

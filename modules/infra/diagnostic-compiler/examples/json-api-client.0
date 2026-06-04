@@ -1,0 +1,37 @@
+pub fn main(world: World) -> Void raises {
+    let maybe_url: Maybe<String> = std.args.get(1)
+    if !maybe_url.has {
+        check world.err.write("usage: pass API URL\n")
+        return
+    }
+    var line_buf: [192]u8 = [0_u8; 192]
+    let start_line: Maybe<Span<u8>> = std.str.concat(line_buf, "POST ", std.mem.span(maybe_url.value))
+    if !start_line.has {
+        check world.err.write("api url too long\n")
+        return
+    }
+    var request_buf: [256]u8 = [0_u8; 256]
+    let request: Maybe<Span<u8>> = std.http.writeJsonRequest(request_buf, start_line.value, "{\"ping\":1}")
+    if !request.has {
+        check world.err.write("api request invalid\n")
+        return
+    }
+    let net: Net = std.net.host()
+    let client: HttpClient = std.http.client(net)
+    var response_buf: [512]u8 = [0_u8; 512]
+    let result: HttpResult = std.http.fetch(client, request.value, response_buf, std.time.ms(5000))
+    let body: Maybe<Span<u8>> = std.http.responseBody(response_buf, result)
+    var arena_buf: [32]u8 = [0_u8; 32]
+    var arena: FixedBufAlloc = std.mem.fixedBufAlloc(arena_buf)
+    var parsed: Maybe<JsonDoc> = null
+    var echo: Maybe<u32> = null
+    if body.has {
+        parsed = std.json.parseBytes(arena, body.value)
+        echo = std.json.u32(body.value, "echo")
+    }
+    if std.http.resultOk(result) && std.http.resultStatus(result) == 201_u16 && body.has && parsed.has && echo.has && echo.value == 1_u32 {
+        check world.out.write("json api client ok\n")
+        return
+    }
+    check world.err.write("json api client failed\n")
+}

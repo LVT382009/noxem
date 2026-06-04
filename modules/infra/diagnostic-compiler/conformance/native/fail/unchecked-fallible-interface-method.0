@@ -1,0 +1,17 @@
+type S {
+    value: i32,
+    fn risky(self: ref<Self>) -> Void raises [Bad] {
+        raise Bad
+    }
+}
+
+interface Risky<T: Type> {
+    fn risky(self: ref<T>) -> Void raises [Bad]
+}
+
+fn run<T: Risky<T>>(value: ref<T>) -> Void raises [Bad] {
+    T.risky(value)
+}
+
+pub fn main() -> Void {
+}

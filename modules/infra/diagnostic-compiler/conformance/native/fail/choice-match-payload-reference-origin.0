@@ -1,0 +1,16 @@
+choice Slot {
+    some: ref<i32>,
+    none,
+}
+
+pub fn main() -> Void {
+    var value: i32 = 1
+    let slot: Slot = Slot.some(&value)
+    match slot {
+        .some(borrowed) {
+            value = 2
+        }
+        none {
+        }
+    }
+}

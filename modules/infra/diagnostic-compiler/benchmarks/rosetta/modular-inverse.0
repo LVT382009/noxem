@@ -1,0 +1,25 @@
+fn inverse(a0: i32, m0: i32) -> i32 {
+    var t: i32 = 0
+    var newt: i32 = 1
+    var r: i32 = m0
+    var newr: i32 = a0
+    while newr != 0 {
+        let q: i32 = r / newr
+        let nextT: i32 = t - q * newt
+        t = newt
+        newt = nextT
+        let nextR: i32 = r - q * newr
+        r = newr
+        newr = nextR
+    }
+    if t < 0 {
+        t = t + m0
+    }
+    return t
+}
+
+pub fn main(world: World) -> Void raises {
+    if inverse(3, 11) == 4 {
+        check world.out.write("modular inverse ok\n")
+    }
+}

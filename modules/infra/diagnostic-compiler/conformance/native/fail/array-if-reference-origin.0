@@ -1,0 +1,9 @@
+pub fn main(flag: Bool) -> Void {
+    var x: i32 = 1
+    let y: i32 = 2
+    var refs: [1]ref<i32> = [&x]
+    if flag {
+        refs = [&y]
+    }
+    x = 3
+}

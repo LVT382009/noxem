@@ -1,0 +1,16 @@
+fn babbage() -> u32 {
+    var n: u32 = 1
+    while n < 30000 {
+        if n * n % 1000000 == 269696 {
+            return n
+        }
+        n = n + 1
+    }
+    return 0
+}
+
+pub fn main(world: World) -> Void raises {
+    if babbage() == 25264 {
+        check world.out.write("babbage ok\n")
+    }
+}

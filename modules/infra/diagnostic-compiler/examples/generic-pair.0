@@ -1,0 +1,17 @@
+type Pair<T: Type, U: Type> {
+    left: T,
+    right: U,
+}
+
+fn makePair<T: Type, U: Type>(left: T, right: U) -> Pair<T, U> {
+    return Pair { left: left, right: right }
+}
+
+pub fn main(world: World) -> Void raises {
+    let pair: Pair<i32, u8> = makePair(40, 2_u8)
+    if pair.left == 40 && pair.right == 2_u8 {
+        check world.out.write("generic pair ok\n")
+    } else {
+        check world.out.write("generic pair broke\n")
+    }
+}

@@ -1,0 +1,9 @@
+type Foo {
+    value: i32,
+}
+
+fn caller<static Foo: usize>() -> Void {
+}
+
+pub fn main() -> Void {
+}

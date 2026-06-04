@@ -1,0 +1,8 @@
+type Point {
+    x: i32,
+}
+
+pub fn main(world: World) -> Void raises {
+    let point: Point = Point { x: 1 }
+    check world.out.write(point.y)
+}

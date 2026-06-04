@@ -1,0 +1,7 @@
+pub fn main() -> Void {
+    let value: Bool = true
+    match value {
+        true {
+        }
+    }
+}

@@ -1,0 +1,17 @@
+fn distance1(left: Span<u8>, right: Span<u8>) -> u32 {
+    var edits: u32 = 0
+    var i: usize = 0
+    while i < std.mem.len(left) {
+        if left[i] != right[i] {
+            edits = edits + 1
+        }
+        i = i + 1
+    }
+    return edits
+}
+
+pub fn main(world: World) -> Void raises {
+    if distance1(std.mem.span("kitten"), std.mem.span("sitten")) == 1 {
+        check world.out.write("levenshtein ok\n")
+    }
+}

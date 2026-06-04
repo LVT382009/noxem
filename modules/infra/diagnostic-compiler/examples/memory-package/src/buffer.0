@@ -1,0 +1,12 @@
+pub fn prepare() -> usize {
+    var dst: [18]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    return std.mem.copy(dst, std.mem.span("memory package ok\n"))
+}
+
+pub fn firstByte() -> u8 {
+    return "memory package ok\n"[0]
+}
+
+pub fn messageOk() -> Bool {
+    return std.mem.eqlBytes("memory package ok\n"[0..18], std.mem.span("memory package ok\n"))
+}

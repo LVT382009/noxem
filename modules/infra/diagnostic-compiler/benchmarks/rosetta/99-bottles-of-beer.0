@@ -1,0 +1,17 @@
+fn bottlesLeft(start: u32, verses: u32) -> u32 {
+    var value: u32 = start
+    var i: u32 = 0
+    while i < verses {
+        if value > 0 {
+            value = value - 1
+        }
+        i = i + 1
+    }
+    return value
+}
+
+pub fn main(world: World) -> Void raises {
+    if bottlesLeft(99, 3) == 96 {
+        check world.out.write("bottles ok\n")
+    }
+}

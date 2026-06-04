@@ -1,0 +1,13 @@
+fn determinant(a: i32, b: i32, c: i32, d: i32) -> i32 {
+    return a * d - b * c
+}
+
+fn permanent(a: i32, b: i32, c: i32, d: i32) -> i32 {
+    return a * d + b * c
+}
+
+pub fn main(world: World) -> Void raises {
+    if determinant(1, 2, 3, 4) == -2 && permanent(1, 2, 3, 4) == 10 {
+        check world.out.write("determinant permanent ok\n")
+    }
+}

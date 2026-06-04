@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    let a: i32 = 21
+    let b: i32 = 6
+    let ok: Bool = a + b == 27 && a - b == 15 && (a * b == 126 && a % b == 3)
+    if ok {
+        check world.out.write("integer arithmetic ok\n")
+    }
+}

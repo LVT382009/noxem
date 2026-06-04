@@ -1,0 +1,4 @@
+pub fn main(world: World) -> Void raises {
+    let byte: u8 = 256
+    check world.out.write("bad integer\n")
+}

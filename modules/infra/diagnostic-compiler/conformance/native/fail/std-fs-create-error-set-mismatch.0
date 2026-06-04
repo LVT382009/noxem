@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises [NotFound] {
+    let fs: Fs = std.fs.host()
+    var file: owned<File> = check std.fs.createOrRaise(fs, ".zero/conformance/unreachable.txt")
+    check std.fs.writeAllOrRaise(&mut file, std.mem.span("unreachable\n"))
+    check world.out.write("unreachable\n")
+}

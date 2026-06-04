@@ -1,0 +1,14 @@
+type Point {
+    x: i32,
+    y: i32,
+}
+
+enum State {
+    ready,
+    done,
+}
+
+choice Event {
+    key: i32,
+    quit,
+}

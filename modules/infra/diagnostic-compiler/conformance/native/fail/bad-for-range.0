@@ -1,0 +1,5 @@
+pub fn main(world: World) -> Void raises {
+    for index in "a".."z" {
+        check world.out.write("bad range\n")
+    }
+}

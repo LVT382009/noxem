@@ -1,0 +1,22 @@
+fn shift(c: u8, amount: u8) -> u8 {
+    if c >= 97 && c <= 122 {
+        return (c - 97 + amount) % 26 + 97
+    }
+    if c >= 65 && c <= 90 {
+        return (c - 65 + amount) % 26 + 65
+    }
+    return c
+}
+
+pub fn main(world: World) -> Void raises {
+    let source: Span<u8> = std.mem.span("Attack at Z")
+    var out: [11]u8 = [0_u8; 11]
+    var i: usize = 0
+    while i < std.mem.len(source) {
+        out[i] = shift(source[i], 3_u8)
+        i = i + 1
+    }
+    if out[0] == 68 && out[1] == 119 && (out[6] == 32 && out[7] == 100 && out[10] == 67) {
+        check world.out.write("caesar cipher ok\n")
+    }
+}

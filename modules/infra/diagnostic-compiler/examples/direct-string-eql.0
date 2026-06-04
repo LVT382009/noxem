@@ -1,0 +1,9 @@
+export c fn main() -> u8 {
+    if std.mem.eqlBytes("token"[0..5], "token"[0..5]) {
+        if std.mem.eqlBytes("token"[0..5], "toker"[0..5]) {
+            return 0_u8
+        }
+        return 1_u8
+    }
+    return 0_u8
+}

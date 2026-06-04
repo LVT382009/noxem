@@ -1,0 +1,37 @@
+type Box<T: Type> {
+    value: T,
+}
+
+type StaticBox<static N: usize> {
+    cap: usize = N,
+    bytes: [N]u8,
+    fn init(bytes: [N]u8) -> Self {
+        return StaticBox { bytes: bytes }
+    }
+}
+
+type Nested<T: Type, static N: usize> {
+    inner: Box<u8> = Box { value: 7 },
+    storage: StaticBox<N> = StaticBox.init([1, 2, 3, 4]),
+}
+
+type Chunk {
+    bytes: [4]u8,
+}
+
+fn takes4(bytes: [4]u8) -> u8 {
+    return bytes[0]
+}
+
+fn make_chunk() -> Chunk {
+    return Chunk { bytes: [9, 8, 7, 6] }
+}
+
+pub fn main(world: World) -> Void raises {
+    let nested: Nested<u8, 4> = Nested {}
+    let chunk: Chunk = make_chunk()
+    let first: u8 = takes4([4, 3, 2, 1])
+    if nested.inner.value == 7 && nested.storage.cap == 4 && chunk.bytes[2] == 7 && first == 4 {
+        check world.out.write("generic literals arrays ok\n")
+    }
+}

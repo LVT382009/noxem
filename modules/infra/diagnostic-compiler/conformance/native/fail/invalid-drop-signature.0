@@ -1,0 +1,10 @@
+type BadDrop {
+    value: i32,
+    fn drop(self: ref<Self>) -> Void {
+    }
+}
+
+pub fn main(world: World) -> Void raises {
+    let value: owned<BadDrop> = BadDrop { value: 1 }
+    check world.out.write("invalid drop signature")
+}

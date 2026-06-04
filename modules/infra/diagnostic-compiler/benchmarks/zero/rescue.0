@@ -1,0 +1,19 @@
+fn value(i: i32) -> i32 raises [Miss] {
+    if i % 4 == 0 {
+        return i
+    }
+    raise Miss
+}
+
+pub fn main(world: World) -> Void raises {
+    var i: i32 = 0
+    var total: i32 = 0
+    while i < 50000 {
+        let item: i32 = rescue value(i) err 2
+        total = total + item
+        i = i + 1
+    }
+    if total > 0 {
+        check world.out.write("rescue\n")
+    }
+}

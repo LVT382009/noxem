@@ -1,0 +1,15 @@
+pub fn main(world: World) -> Void raises {
+    var outer: u32 = 0
+    var count: u32 = 0
+    while outer < 3 {
+        var inner: u32 = 0
+        while inner < 4 {
+            count = count + 1
+            inner = inner + 1
+        }
+        outer = outer + 1
+    }
+    if count == 12 {
+        check world.out.write("nested loops ok\n")
+    }
+}

@@ -1,0 +1,19 @@
+type Holder {
+    value: i32,
+    fn get(self: ref<Self>) -> ref<i32> {
+        return &self.value
+    }
+}
+
+interface Reader<T: Type> {
+    fn get(self: ref<T>) -> ref<i32>
+}
+
+fn read<T: Reader<T>>(value: ref<T>) -> ref<i32> {
+    return T.get(value)
+}
+
+pub fn main() -> Void {
+    let holder: Holder = Holder { value: 1 }
+    let value: ref<i32> = read<Holder>(&holder)
+}

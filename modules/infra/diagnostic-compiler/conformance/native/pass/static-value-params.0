@@ -1,0 +1,17 @@
+const cap: usize = 4
+
+type FixedVec<T: Type, static N: usize> {
+    len: usize,
+    items: [N]T,
+}
+
+fn first<T: Type, static N: usize>(vec: ref<FixedVec<T, N>>) -> T {
+    return vec.items[0]
+}
+
+pub fn main(world: World) -> Void raises {
+    let vec: FixedVec<u8, cap> = FixedVec { len: cap, items: [1, 2, 3, 4] }
+    if vec.len == cap && first<u8, cap>(&vec) == 1 && std.mem.len(vec.items) == 4 {
+        check world.out.write("static value params native\n")
+    }
+}

@@ -1,0 +1,15 @@
+type Counter {
+    value: i32,
+    fn add(self: ref<Self>, amount: i32) -> i32 {
+        return self.value + amount
+    }
+}
+
+pub fn main(world: World) -> Void raises {
+    let counter: Counter = Counter { value: 40 }
+    if Counter.add(&counter, 2) == 42 {
+        check world.out.write("static method ok\n")
+    } else {
+        check world.out.write("static method broke\n")
+    }
+}

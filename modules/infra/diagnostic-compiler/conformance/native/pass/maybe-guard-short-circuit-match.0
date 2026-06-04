@@ -1,0 +1,40 @@
+fn readOrGuard() -> Bool {
+    let bytes: [1]u8 = [1]
+    let value: Maybe<u8> = std.mem.get(bytes, 0)
+    return !value.has || value.value == 1_u8
+}
+
+fn readMatchGuard() -> u8 {
+    let bytes: [1]u8 = [1]
+    let value: Maybe<u8> = std.mem.get(bytes, 0)
+    match value.has {
+        true if value.value == 1_u8 {
+            return value.value
+        }
+        true {
+            return 0_u8
+        }
+        false {
+            return 0_u8
+        }
+    }
+}
+
+fn readAfterMatch() -> u8 {
+    let bytes: [1]u8 = [1]
+    let value: Maybe<u8> = std.mem.get(bytes, 0)
+    match value.has {
+        false {
+            return 0_u8
+        }
+        true {
+        }
+    }
+    return value.value
+}
+
+pub fn main() -> Void {
+    let ok: Bool = readOrGuard()
+    let guarded: u8 = readMatchGuard()
+    let after: u8 = readAfterMatch()
+}

@@ -1,0 +1,1086 @@
+{
+  "schemaVersion": 1,
+  "corpus": "zero-rosetta",
+  "taskCount": 154,
+  "target": "linux-musl-x64",
+  "cases": [
+    {
+      "id": "100-doors",
+      "source": "benchmarks/rosetta/100-doors.0",
+      "expectedStdout": "100 doors ok\n",
+      "expectedStderr": "",
+      "slug": "100-doors"
+    },
+    {
+      "id": "15-puzzle-solver",
+      "source": "benchmarks/rosetta/15-puzzle-solver.0",
+      "expectedStdout": "15 puzzle solver ok\n",
+      "expectedStderr": "",
+      "slug": "15-puzzle-solver"
+    },
+    {
+      "id": "24-game",
+      "source": "benchmarks/rosetta/24-game.0",
+      "expectedStdout": "24 game ok\n",
+      "expectedStderr": "",
+      "slug": "24-game"
+    },
+    {
+      "id": "24-game-Solve",
+      "source": "benchmarks/rosetta/24-game-solve.0",
+      "expectedStdout": "24 solve ok\n",
+      "expectedStderr": "",
+      "slug": "24-game-solve"
+    },
+    {
+      "id": "4-rings-or-4-squares-puzzle",
+      "source": "benchmarks/rosetta/4-rings-or-4-squares-puzzle.0",
+      "expectedStdout": "four rings ok\n",
+      "expectedStderr": "",
+      "slug": "4-rings-or-4-squares-puzzle"
+    },
+    {
+      "id": "9-billion-names-of-God-the-integer",
+      "source": "benchmarks/rosetta/9-billion-names-of-god-the-integer.0",
+      "expectedStdout": "integer partitions ok\n",
+      "expectedStderr": "",
+      "slug": "9-billion-names-of-god-the-integer"
+    },
+    {
+      "id": "99-bottles-of-beer",
+      "source": "benchmarks/rosetta/99-bottles-of-beer.0",
+      "expectedStdout": "bottles ok\n",
+      "expectedStderr": "",
+      "slug": "99-bottles-of-beer"
+    },
+    {
+      "id": "A+B",
+      "source": "benchmarks/rosetta/a-b.0",
+      "expectedStdout": "a plus b ok\n",
+      "expectedStderr": "",
+      "slug": "a-b"
+    },
+    {
+      "id": "ABC-problem",
+      "source": "benchmarks/rosetta/abc-problem.0",
+      "expectedStdout": "abc blocks ok\n",
+      "expectedStderr": "",
+      "slug": "abc-problem"
+    },
+    {
+      "id": "Abelian-sandpile-model",
+      "source": "benchmarks/rosetta/abelian-sandpile-model.0",
+      "expectedStdout": "sandpile ok\n",
+      "expectedStderr": "",
+      "slug": "abelian-sandpile-model"
+    },
+    {
+      "id": "Abelian-sandpile-model-Identity",
+      "source": "benchmarks/rosetta/abelian-sandpile-model-identity.0",
+      "expectedStdout": "sandpile identity ok\n",
+      "expectedStderr": "",
+      "slug": "abelian-sandpile-model-identity"
+    },
+    {
+      "id": "Ackermann-function",
+      "source": "benchmarks/rosetta/ackermann-function.0",
+      "expectedStdout": "ackermann ok\n",
+      "expectedStderr": "",
+      "slug": "ackermann-function"
+    },
+    {
+      "id": "AKS-test-for-primes",
+      "source": "benchmarks/rosetta/aks-test-for-primes.0",
+      "expectedStdout": "aks prime ok\n",
+      "expectedStderr": "",
+      "slug": "aks-test-for-primes"
+    },
+    {
+      "id": "Amicable-pairs",
+      "source": "benchmarks/rosetta/amicable-pairs.0",
+      "expectedStdout": "amicable ok\n",
+      "expectedStderr": "",
+      "slug": "amicable-pairs"
+    },
+    {
+      "id": "Animate-a-pendulum",
+      "source": "benchmarks/rosetta/animate-a-pendulum.0",
+      "expectedStdout": "pendulum ok\n",
+      "expectedStderr": "",
+      "slug": "animate-a-pendulum"
+    },
+    {
+      "id": "Anti-primes",
+      "source": "benchmarks/rosetta/anti-primes.0",
+      "expectedStdout": "anti prime ok\n",
+      "expectedStderr": "",
+      "slug": "anti-primes"
+    },
+    {
+      "id": "Arbitrary-precision-integers-included-",
+      "source": "benchmarks/rosetta/arbitrary-precision-integers-included.0",
+      "expectedStdout": "big integer ok\n",
+      "expectedStderr": "",
+      "slug": "arbitrary-precision-integers-included"
+    },
+    {
+      "id": "Arithmetic-Integer",
+      "source": "benchmarks/rosetta/arithmetic-integer.0",
+      "expectedStdout": "integer arithmetic ok\n",
+      "expectedStderr": "",
+      "slug": "arithmetic-integer"
+    },
+    {
+      "id": "Array-concatenation",
+      "source": "benchmarks/rosetta/array-concatenation.0",
+      "expectedStdout": "array concatenation ok\n",
+      "expectedStderr": "",
+      "slug": "array-concatenation"
+    },
+    {
+      "id": "Array-length",
+      "source": "benchmarks/rosetta/array-length.0",
+      "expectedStdout": "array length ok\n",
+      "expectedStderr": "",
+      "slug": "array-length"
+    },
+    {
+      "id": "Arrays",
+      "source": "benchmarks/rosetta/arrays.0",
+      "expectedStdout": "arrays ok\n",
+      "expectedStderr": "",
+      "slug": "arrays"
+    },
+    {
+      "id": "Assertions",
+      "source": "benchmarks/rosetta/assertions.0",
+      "expectedStdout": "assertions ok\n",
+      "expectedStderr": "",
+      "slug": "assertions"
+    },
+    {
+      "id": "Babbage-problem",
+      "source": "benchmarks/rosetta/babbage-problem.0",
+      "expectedStdout": "babbage ok\n",
+      "expectedStderr": "",
+      "slug": "babbage-problem"
+    },
+    {
+      "id": "Balanced-brackets",
+      "source": "benchmarks/rosetta/balanced-brackets.0",
+      "expectedStdout": "balanced brackets ok\n",
+      "expectedStderr": "",
+      "slug": "balanced-brackets"
+    },
+    {
+      "id": "Base64-decode-data",
+      "source": "benchmarks/rosetta/base64-decode-data.0",
+      "expectedStdout": "base64 decode ok\n",
+      "expectedStderr": "",
+      "slug": "base64-decode-data"
+    },
+    {
+      "id": "Bifid-cipher",
+      "source": "benchmarks/rosetta/bifid-cipher.0",
+      "expectedStdout": "bifid ok\n",
+      "expectedStderr": "",
+      "slug": "bifid-cipher"
+    },
+    {
+      "id": "Binary-digits",
+      "source": "benchmarks/rosetta/binary-digits.0",
+      "expectedStdout": "binary digits ok\n",
+      "expectedStderr": "",
+      "slug": "binary-digits"
+    },
+    {
+      "id": "Bitcoin-address-validation",
+      "source": "benchmarks/rosetta/bitcoin-address-validation.0",
+      "expectedStdout": "bitcoin address ok\n",
+      "expectedStderr": "",
+      "slug": "bitcoin-address-validation"
+    },
+    {
+      "id": "Bitmap",
+      "source": "benchmarks/rosetta/bitmap.0",
+      "expectedStdout": "bitmap ok\n",
+      "expectedStderr": "",
+      "slug": "bitmap"
+    },
+    {
+      "id": "Boolean-values",
+      "source": "benchmarks/rosetta/boolean-values.0",
+      "expectedStdout": "boolean values ok\n",
+      "expectedStderr": "",
+      "slug": "boolean-values"
+    },
+    {
+      "id": "Box-the-compass",
+      "source": "benchmarks/rosetta/box-the-compass.0",
+      "expectedStdout": "compass ok\n",
+      "expectedStderr": "",
+      "slug": "box-the-compass"
+    },
+    {
+      "id": "Boyer-Moore-string-search",
+      "source": "benchmarks/rosetta/boyer-moore-string-search.0",
+      "expectedStdout": "boyer moore ok\n",
+      "expectedStderr": "",
+      "slug": "boyer-moore-string-search"
+    },
+    {
+      "id": "Caesar-cipher",
+      "source": "benchmarks/rosetta/caesar-cipher.0",
+      "expectedStdout": "caesar cipher ok\n",
+      "expectedStderr": "",
+      "slug": "caesar-cipher"
+    },
+    {
+      "id": "Calculating-the-value-of-e",
+      "source": "benchmarks/rosetta/calculating-the-value-of-e.0",
+      "expectedStdout": "e ok\n",
+      "expectedStderr": "",
+      "slug": "calculating-the-value-of-e"
+    },
+    {
+      "id": "Call-a-foreign-language-function",
+      "source": "benchmarks/rosetta/call-a-foreign-language-function.0",
+      "expectedStdout": "foreign call ok\n",
+      "expectedStderr": "",
+      "slug": "call-a-foreign-language-function"
+    },
+    {
+      "id": "Camel-case-and-snake-case",
+      "source": "benchmarks/rosetta/camel-case-and-snake-case.0",
+      "expectedStdout": "camel snake ok\n",
+      "expectedStderr": "",
+      "slug": "camel-case-and-snake-case"
+    },
+    {
+      "id": "Canonicalize-CIDR",
+      "source": "benchmarks/rosetta/canonicalize-cidr.0",
+      "expectedStdout": "cidr ok\n",
+      "expectedStderr": "",
+      "slug": "canonicalize-cidr"
+    },
+    {
+      "id": "Case-sensitivity-of-identifiers",
+      "source": "benchmarks/rosetta/case-sensitivity-of-identifiers.0",
+      "expectedStdout": "case sensitivity ok\n",
+      "expectedStderr": "",
+      "slug": "case-sensitivity-of-identifiers"
+    },
+    {
+      "id": "Catalan-numbers-Pascals-triangle",
+      "source": "benchmarks/rosetta/catalan-numbers-pascals-triangle.0",
+      "expectedStdout": "catalan ok\n",
+      "expectedStderr": "",
+      "slug": "catalan-numbers-pascals-triangle"
+    },
+    {
+      "id": "Character-codes",
+      "source": "benchmarks/rosetta/character-codes.0",
+      "expectedStdout": "character codes ok\n",
+      "expectedStderr": "",
+      "slug": "character-codes"
+    },
+    {
+      "id": "Cholesky-decomposition",
+      "source": "benchmarks/rosetta/cholesky-decomposition.0",
+      "expectedStdout": "cholesky ok\n",
+      "expectedStderr": "",
+      "slug": "cholesky-decomposition"
+    },
+    {
+      "id": "Chowla-numbers",
+      "source": "benchmarks/rosetta/chowla-numbers.0",
+      "expectedStdout": "chowla ok\n",
+      "expectedStderr": "",
+      "slug": "chowla-numbers"
+    },
+    {
+      "id": "Circular-primes",
+      "source": "benchmarks/rosetta/circular-primes.0",
+      "expectedStdout": "circular prime ok\n",
+      "expectedStderr": "",
+      "slug": "circular-primes"
+    },
+    {
+      "id": "Combinations-and-permutations",
+      "source": "benchmarks/rosetta/combinations-and-permutations.0",
+      "expectedStdout": "combinations permutations ok\n",
+      "expectedStderr": "",
+      "slug": "combinations-and-permutations"
+    },
+    {
+      "id": "Comments",
+      "source": "benchmarks/rosetta/comments.0",
+      "expectedStdout": "comments ok\n",
+      "expectedStderr": "",
+      "slug": "comments"
+    },
+    {
+      "id": "Compiler-AST-interpreter",
+      "source": "benchmarks/rosetta/compiler-ast-interpreter.0",
+      "expectedStdout": "ast interpreter ok\n",
+      "expectedStderr": "",
+      "slug": "compiler-ast-interpreter"
+    },
+    {
+      "id": "Compiler-code-generator",
+      "source": "benchmarks/rosetta/compiler-code-generator.0",
+      "expectedStdout": "code generator ok\n",
+      "expectedStderr": "",
+      "slug": "compiler-code-generator"
+    },
+    {
+      "id": "Compiler-lexical-analyzer",
+      "source": "benchmarks/rosetta/compiler-lexical-analyzer.0",
+      "expectedStdout": "lexer ok\n",
+      "expectedStderr": "",
+      "slug": "compiler-lexical-analyzer"
+    },
+    {
+      "id": "Compiler-syntax-analyzer",
+      "source": "benchmarks/rosetta/compiler-syntax-analyzer.0",
+      "expectedStdout": "parser ok\n",
+      "expectedStderr": "",
+      "slug": "compiler-syntax-analyzer"
+    },
+    {
+      "id": "Conditional-structures",
+      "source": "benchmarks/rosetta/conditional-structures.0",
+      "expectedStdout": "conditional structures ok\n",
+      "expectedStderr": "",
+      "slug": "conditional-structures"
+    },
+    {
+      "id": "Convex-hull",
+      "source": "benchmarks/rosetta/convex-hull.0",
+      "expectedStdout": "convex hull ok\n",
+      "expectedStderr": "",
+      "slug": "convex-hull"
+    },
+    {
+      "id": "Copy-a-string",
+      "source": "benchmarks/rosetta/copy-a-string.0",
+      "expectedStdout": "copy string ok\n",
+      "expectedStderr": "",
+      "slug": "copy-a-string"
+    },
+    {
+      "id": "Count-in-octal",
+      "source": "benchmarks/rosetta/count-in-octal.0",
+      "expectedStdout": "count in octal ok\n",
+      "expectedStderr": "",
+      "slug": "count-in-octal"
+    },
+    {
+      "id": "Count-occurrences-of-a-substring",
+      "source": "benchmarks/rosetta/count-occurrences-of-a-substring.0",
+      "expectedStdout": "substring occurrences ok\n",
+      "expectedStderr": "",
+      "slug": "count-occurrences-of-a-substring"
+    },
+    {
+      "id": "CRC-32",
+      "source": "benchmarks/rosetta/crc-32.0",
+      "expectedStdout": "crc ok\n",
+      "expectedStderr": "",
+      "slug": "crc-32"
+    },
+    {
+      "id": "CUSIP",
+      "source": "benchmarks/rosetta/cusip.0",
+      "expectedStdout": "cusip ok\n",
+      "expectedStderr": "",
+      "slug": "cusip"
+    },
+    {
+      "id": "Cyclops-numbers",
+      "source": "benchmarks/rosetta/cyclops-numbers.0",
+      "expectedStdout": "cyclops ok\n",
+      "expectedStderr": "",
+      "slug": "cyclops-numbers"
+    },
+    {
+      "id": "De-Bruijn-sequences",
+      "source": "benchmarks/rosetta/de-bruijn-sequences.0",
+      "expectedStdout": "de bruijn ok\n",
+      "expectedStderr": "",
+      "slug": "de-bruijn-sequences"
+    },
+    {
+      "id": "Deal-cards-for-FreeCell",
+      "source": "benchmarks/rosetta/deal-cards-for-freecell.0",
+      "expectedStdout": "freecell deal ok\n",
+      "expectedStderr": "",
+      "slug": "deal-cards-for-freecell"
+    },
+    {
+      "id": "Delete-a-file",
+      "source": "benchmarks/rosetta/delete-a-file.0",
+      "expectedStdout": "delete file ok\n",
+      "expectedStderr": "",
+      "slug": "delete-a-file"
+    },
+    {
+      "id": "Department-numbers",
+      "source": "benchmarks/rosetta/department-numbers.0",
+      "expectedStdout": "departments ok\n",
+      "expectedStderr": "",
+      "slug": "department-numbers"
+    },
+    {
+      "id": "Determinant-and-permanent",
+      "source": "benchmarks/rosetta/determinant-and-permanent.0",
+      "expectedStdout": "determinant permanent ok\n",
+      "expectedStderr": "",
+      "slug": "determinant-and-permanent"
+    },
+    {
+      "id": "Determine-if-a-string-is-numeric",
+      "source": "benchmarks/rosetta/determine-if-a-string-is-numeric.0",
+      "expectedStdout": "numeric string ok\n",
+      "expectedStderr": "",
+      "slug": "determine-if-a-string-is-numeric"
+    },
+    {
+      "id": "Dijkstras-algorithm",
+      "source": "benchmarks/rosetta/dijkstras-algorithm.0",
+      "expectedStdout": "dijkstra ok\n",
+      "expectedStderr": "",
+      "slug": "dijkstras-algorithm"
+    },
+    {
+      "id": "Draw-a-sphere",
+      "source": "benchmarks/rosetta/draw-a-sphere.0",
+      "expectedStdout": "sphere ok\n",
+      "expectedStderr": "",
+      "slug": "draw-a-sphere"
+    },
+    {
+      "id": "Eertree",
+      "source": "benchmarks/rosetta/eertree.0",
+      "expectedStdout": "eertree ok\n",
+      "expectedStderr": "",
+      "slug": "eertree"
+    },
+    {
+      "id": "Egyptian-division",
+      "source": "benchmarks/rosetta/egyptian-division.0",
+      "expectedStdout": "egyptian division ok\n",
+      "expectedStderr": "",
+      "slug": "egyptian-division"
+    },
+    {
+      "id": "Elliptic-curve-arithmetic",
+      "source": "benchmarks/rosetta/elliptic-curve-arithmetic.0",
+      "expectedStdout": "elliptic curve ok\n",
+      "expectedStderr": "",
+      "slug": "elliptic-curve-arithmetic"
+    },
+    {
+      "id": "Empty-string",
+      "source": "benchmarks/rosetta/empty-string.0",
+      "expectedStdout": "empty string ok\n",
+      "expectedStderr": "",
+      "slug": "empty-string"
+    },
+    {
+      "id": "Entropy",
+      "source": "benchmarks/rosetta/entropy.0",
+      "expectedStdout": "entropy ok\n",
+      "expectedStderr": "",
+      "slug": "entropy"
+    },
+    {
+      "id": "Ethiopian-multiplication",
+      "source": "benchmarks/rosetta/ethiopian-multiplication.0",
+      "expectedStdout": "ethiopian multiplication ok\n",
+      "expectedStderr": "",
+      "slug": "ethiopian-multiplication"
+    },
+    {
+      "id": "Eulers-sum-of-powers-conjecture",
+      "source": "benchmarks/rosetta/eulers-sum-of-powers-conjecture.0",
+      "expectedStdout": "euler powers ok\n",
+      "expectedStderr": "",
+      "slug": "eulers-sum-of-powers-conjecture"
+    },
+    {
+      "id": "Evaluate-binomial-coefficients",
+      "source": "benchmarks/rosetta/evaluate-binomial-coefficients.0",
+      "expectedStdout": "binomial coefficients ok\n",
+      "expectedStderr": "",
+      "slug": "evaluate-binomial-coefficients"
+    },
+    {
+      "id": "Exceptions",
+      "source": "benchmarks/rosetta/exceptions.0",
+      "expectedStdout": "exceptions ok\n",
+      "expectedStderr": "",
+      "slug": "exceptions"
+    },
+    {
+      "id": "Execute-a-Markov-algorithm",
+      "source": "benchmarks/rosetta/execute-a-markov-algorithm.0",
+      "expectedStdout": "markov ok\n",
+      "expectedStderr": "",
+      "slug": "execute-a-markov-algorithm"
+    },
+    {
+      "id": "Extensible-prime-generator",
+      "source": "benchmarks/rosetta/extensible-prime-generator.0",
+      "expectedStdout": "prime generator ok\n",
+      "expectedStderr": "",
+      "slug": "extensible-prime-generator"
+    },
+    {
+      "id": "Factorial",
+      "source": "benchmarks/rosetta/factorial.0",
+      "expectedStdout": "factorial ok\n",
+      "expectedStderr": "",
+      "slug": "factorial"
+    },
+    {
+      "id": "Factors-of-an-integer",
+      "source": "benchmarks/rosetta/factors-of-an-integer.0",
+      "expectedStdout": "factors ok\n",
+      "expectedStderr": "",
+      "slug": "factors-of-an-integer"
+    },
+    {
+      "id": "Farey-sequence",
+      "source": "benchmarks/rosetta/farey-sequence.0",
+      "expectedStdout": "farey ok\n",
+      "expectedStderr": "",
+      "slug": "farey-sequence"
+    },
+    {
+      "id": "Fibonacci-sequence",
+      "source": "benchmarks/rosetta/fibonacci-sequence.0",
+      "expectedStdout": "fibonacci ok\n",
+      "expectedStderr": "",
+      "slug": "fibonacci-sequence"
+    },
+    {
+      "id": "Fibonacci-word",
+      "source": "benchmarks/rosetta/fibonacci-word.0",
+      "expectedStdout": "fibonacci word ok\n",
+      "expectedStderr": "",
+      "slug": "fibonacci-word"
+    },
+    {
+      "id": "File-input-output",
+      "source": "benchmarks/rosetta/file-input-output.0",
+      "expectedStdout": "file io ok\n",
+      "expectedStderr": "",
+      "slug": "file-input-output"
+    },
+    {
+      "id": "Find-limit-of-recursion",
+      "source": "benchmarks/rosetta/find-limit-of-recursion.0",
+      "expectedStdout": "recursion limit ok\n",
+      "expectedStderr": "",
+      "slug": "find-limit-of-recursion"
+    },
+    {
+      "id": "FizzBuzz",
+      "source": "benchmarks/rosetta/fizzbuzz.0",
+      "expectedStdout": "fizzbuzz ok\n",
+      "expectedStderr": "",
+      "slug": "fizzbuzz"
+    },
+    {
+      "id": "Floyd-Warshall-algorithm",
+      "source": "benchmarks/rosetta/floyd-warshall-algorithm.0",
+      "expectedStdout": "floyd warshall ok\n",
+      "expectedStderr": "",
+      "slug": "floyd-warshall-algorithm"
+    },
+    {
+      "id": "Function-definition",
+      "source": "benchmarks/rosetta/function-definition.0",
+      "expectedStdout": "function definition ok\n",
+      "expectedStderr": "",
+      "slug": "function-definition"
+    },
+    {
+      "id": "Generate-lower-case-ASCII-alphabet",
+      "source": "benchmarks/rosetta/generate-lower-case-ascii-alphabet.0",
+      "expectedStdout": "ascii alphabet ok\n",
+      "expectedStderr": "",
+      "slug": "generate-lower-case-ascii-alphabet"
+    },
+    {
+      "id": "Gray-code",
+      "source": "benchmarks/rosetta/gray-code.0",
+      "expectedStdout": "gray code ok\n",
+      "expectedStderr": "",
+      "slug": "gray-code"
+    },
+    {
+      "id": "Greatest-common-divisor",
+      "source": "benchmarks/rosetta/greatest-common-divisor.0",
+      "expectedStdout": "gcd ok\n",
+      "expectedStderr": "",
+      "slug": "greatest-common-divisor"
+    },
+    {
+      "id": "Happy-numbers",
+      "source": "benchmarks/rosetta/happy-numbers.0",
+      "expectedStdout": "happy numbers ok\n",
+      "expectedStderr": "",
+      "slug": "happy-numbers"
+    },
+    {
+      "id": "Haversine-formula",
+      "source": "benchmarks/rosetta/haversine-formula.0",
+      "expectedStdout": "haversine ok\n",
+      "expectedStderr": "",
+      "slug": "haversine-formula"
+    },
+    {
+      "id": "Hello-world-Newline-omission",
+      "source": "benchmarks/rosetta/hello-world-newline-omission.0",
+      "expectedStdout": "Hello, world!",
+      "expectedStderr": "",
+      "slug": "hello-world-newline-omission"
+    },
+    {
+      "id": "Hello-world-Standard-error",
+      "source": "benchmarks/rosetta/hello-world-standard-error.0",
+      "expectedStdout": "",
+      "expectedStderr": "Hello, stderr!\n",
+      "slug": "hello-world-standard-error"
+    },
+    {
+      "id": "Hello-world-Text",
+      "source": "benchmarks/rosetta/hello-world-text.0",
+      "expectedStdout": "Hello, world!\n",
+      "expectedStderr": "",
+      "slug": "hello-world-text"
+    },
+    {
+      "id": "Huffman-coding",
+      "source": "benchmarks/rosetta/huffman-coding.0",
+      "expectedStdout": "huffman ok\n",
+      "expectedStderr": "",
+      "slug": "huffman-coding"
+    },
+    {
+      "id": "Integer-sequence",
+      "source": "benchmarks/rosetta/integer-sequence.0",
+      "expectedStdout": "integer sequence ok\n",
+      "expectedStderr": "",
+      "slug": "integer-sequence"
+    },
+    {
+      "id": "Introspection",
+      "source": "benchmarks/rosetta/introspection.0",
+      "expectedStdout": "introspection ok\n",
+      "expectedStderr": "",
+      "slug": "introspection"
+    },
+    {
+      "id": "Jaro-similarity",
+      "source": "benchmarks/rosetta/jaro-similarity.0",
+      "expectedStdout": "jaro similarity ok\n",
+      "expectedStderr": "",
+      "slug": "jaro-similarity"
+    },
+    {
+      "id": "K-d-tree",
+      "source": "benchmarks/rosetta/k-d-tree.0",
+      "expectedStdout": "kd tree ok\n",
+      "expectedStderr": "",
+      "slug": "k-d-tree"
+    },
+    {
+      "id": "Knapsack-problem-0-1",
+      "source": "benchmarks/rosetta/knapsack-problem-0-1.0",
+      "expectedStdout": "knapsack ok\n",
+      "expectedStderr": "",
+      "slug": "knapsack-problem-0-1"
+    },
+    {
+      "id": "Knights-tour",
+      "source": "benchmarks/rosetta/knights-tour.0",
+      "expectedStdout": "knight tour ok\n",
+      "expectedStderr": "",
+      "slug": "knights-tour"
+    },
+    {
+      "id": "Leap-year",
+      "source": "benchmarks/rosetta/leap-year.0",
+      "expectedStdout": "leap year ok\n",
+      "expectedStderr": "",
+      "slug": "leap-year"
+    },
+    {
+      "id": "Levenshtein-distance",
+      "source": "benchmarks/rosetta/levenshtein-distance.0",
+      "expectedStdout": "levenshtein ok\n",
+      "expectedStderr": "",
+      "slug": "levenshtein-distance"
+    },
+    {
+      "id": "Loops-Downward-for",
+      "source": "benchmarks/rosetta/loops-downward-for.0",
+      "expectedStdout": "downward loop ok\n",
+      "expectedStderr": "",
+      "slug": "loops-downward-for"
+    },
+    {
+      "id": "Loops-For",
+      "source": "benchmarks/rosetta/loops-for.0",
+      "expectedStdout": "for loop ok\n",
+      "expectedStderr": "",
+      "slug": "loops-for"
+    },
+    {
+      "id": "Loops-For-with-a-specified-step",
+      "source": "benchmarks/rosetta/loops-for-with-a-specified-step.0",
+      "expectedStdout": "step loop ok\n",
+      "expectedStderr": "",
+      "slug": "loops-for-with-a-specified-step"
+    },
+    {
+      "id": "Loops-Foreach",
+      "source": "benchmarks/rosetta/loops-foreach.0",
+      "expectedStdout": "foreach loop ok\n",
+      "expectedStderr": "",
+      "slug": "loops-foreach"
+    },
+    {
+      "id": "Loops-Nested",
+      "source": "benchmarks/rosetta/loops-nested.0",
+      "expectedStdout": "nested loops ok\n",
+      "expectedStderr": "",
+      "slug": "loops-nested"
+    },
+    {
+      "id": "Loops-While",
+      "source": "benchmarks/rosetta/loops-while.0",
+      "expectedStdout": "while loop ok\n",
+      "expectedStderr": "",
+      "slug": "loops-while"
+    },
+    {
+      "id": "Lucas-Lehmer-test",
+      "source": "benchmarks/rosetta/lucas-lehmer-test.0",
+      "expectedStdout": "lucas lehmer ok\n",
+      "expectedStderr": "",
+      "slug": "lucas-lehmer-test"
+    },
+    {
+      "id": "LZW-compression",
+      "source": "benchmarks/rosetta/lzw-compression.0",
+      "expectedStdout": "lzw ok\n",
+      "expectedStderr": "",
+      "slug": "lzw-compression"
+    },
+    {
+      "id": "M-bius-function",
+      "source": "benchmarks/rosetta/m-bius-function.0",
+      "expectedStdout": "mobius ok\n",
+      "expectedStderr": "",
+      "slug": "m-bius-function"
+    },
+    {
+      "id": "Main-step-of-GOST-28147-89",
+      "source": "benchmarks/rosetta/main-step-of-gost-28147-89.0",
+      "expectedStdout": "gost step ok\n",
+      "expectedStderr": "",
+      "slug": "main-step-of-gost-28147-89"
+    },
+    {
+      "id": "Matrix-exponentiation-operator",
+      "source": "benchmarks/rosetta/matrix-exponentiation-operator.0",
+      "expectedStdout": "matrix exponent ok\n",
+      "expectedStderr": "",
+      "slug": "matrix-exponentiation-operator"
+    },
+    {
+      "id": "Modular-arithmetic",
+      "source": "benchmarks/rosetta/modular-arithmetic.0",
+      "expectedStdout": "modular arithmetic ok\n",
+      "expectedStderr": "",
+      "slug": "modular-arithmetic"
+    },
+    {
+      "id": "Modular-inverse",
+      "source": "benchmarks/rosetta/modular-inverse.0",
+      "expectedStdout": "modular inverse ok\n",
+      "expectedStderr": "",
+      "slug": "modular-inverse"
+    },
+    {
+      "id": "Monty-Hall-problem",
+      "source": "benchmarks/rosetta/monty-hall-problem.0",
+      "expectedStdout": "monty hall ok\n",
+      "expectedStderr": "",
+      "slug": "monty-hall-problem"
+    },
+    {
+      "id": "Move-to-front-algorithm",
+      "source": "benchmarks/rosetta/move-to-front-algorithm.0",
+      "expectedStdout": "move to front ok\n",
+      "expectedStderr": "",
+      "slug": "move-to-front-algorithm"
+    },
+    {
+      "id": "Mutual-recursion",
+      "source": "benchmarks/rosetta/mutual-recursion.0",
+      "expectedStdout": "mutual recursion ok\n",
+      "expectedStderr": "",
+      "slug": "mutual-recursion"
+    },
+    {
+      "id": "Natural-sorting",
+      "source": "benchmarks/rosetta/natural-sorting.0",
+      "expectedStdout": "natural sort ok\n",
+      "expectedStderr": "",
+      "slug": "natural-sorting"
+    },
+    {
+      "id": "Parametric-polymorphism",
+      "source": "benchmarks/rosetta/parametric-polymorphism.0",
+      "expectedStdout": "parametric polymorphism ok\n",
+      "expectedStderr": "",
+      "slug": "parametric-polymorphism"
+    },
+    {
+      "id": "Parse-an-IP-Address",
+      "source": "benchmarks/rosetta/parse-an-ip-address.0",
+      "expectedStdout": "parse ip ok\n",
+      "expectedStderr": "",
+      "slug": "parse-an-ip-address"
+    },
+    {
+      "id": "Parsing-Shunting-yard-algorithm",
+      "source": "benchmarks/rosetta/parsing-shunting-yard-algorithm.0",
+      "expectedStdout": "shunting yard ok\n",
+      "expectedStderr": "",
+      "slug": "parsing-shunting-yard-algorithm"
+    },
+    {
+      "id": "Pells-equation",
+      "source": "benchmarks/rosetta/pells-equation.0",
+      "expectedStdout": "pell ok\n",
+      "expectedStderr": "",
+      "slug": "pells-equation"
+    },
+    {
+      "id": "Perfect-numbers",
+      "source": "benchmarks/rosetta/perfect-numbers.0",
+      "expectedStdout": "perfect numbers ok\n",
+      "expectedStderr": "",
+      "slug": "perfect-numbers"
+    },
+    {
+      "id": "Perlin-noise",
+      "source": "benchmarks/rosetta/perlin-noise.0",
+      "expectedStdout": "perlin ok\n",
+      "expectedStderr": "",
+      "slug": "perlin-noise"
+    },
+    {
+      "id": "Permutations-by-swapping",
+      "source": "benchmarks/rosetta/permutations-by-swapping.0",
+      "expectedStdout": "permutations by swapping ok\n",
+      "expectedStderr": "",
+      "slug": "permutations-by-swapping"
+    },
+    {
+      "id": "Program-name",
+      "source": "benchmarks/rosetta/program-name.0",
+      "expectedStdout": "program name ok\n",
+      "expectedStderr": "",
+      "slug": "program-name"
+    },
+    {
+      "id": "Quine",
+      "source": "benchmarks/rosetta/quine.0",
+      "expectedStdout": "quine ok\n",
+      "expectedStderr": "",
+      "slug": "quine"
+    },
+    {
+      "id": "Repeat-a-string",
+      "source": "benchmarks/rosetta/repeat-a-string.0",
+      "expectedStdout": "repeat string ok\n",
+      "expectedStderr": "",
+      "slug": "repeat-a-string"
+    },
+    {
+      "id": "Reverse-a-string",
+      "source": "benchmarks/rosetta/reverse-a-string.0",
+      "expectedStdout": "reverse string ok\n",
+      "expectedStderr": "",
+      "slug": "reverse-a-string"
+    },
+    {
+      "id": "Rot-13",
+      "source": "benchmarks/rosetta/rot-13.0",
+      "expectedStdout": "rot13 ok\n",
+      "expectedStderr": "",
+      "slug": "rot-13"
+    },
+    {
+      "id": "Run-length-encoding",
+      "source": "benchmarks/rosetta/run-length-encoding.0",
+      "expectedStdout": "run length ok\n",
+      "expectedStderr": "",
+      "slug": "run-length-encoding"
+    },
+    {
+      "id": "Self-describing-numbers",
+      "source": "benchmarks/rosetta/self-describing-numbers.0",
+      "expectedStdout": "self describing ok\n",
+      "expectedStderr": "",
+      "slug": "self-describing-numbers"
+    },
+    {
+      "id": "SHA-1",
+      "source": "benchmarks/rosetta/sha-1.0",
+      "expectedStdout": "sha1 ok\n",
+      "expectedStderr": "",
+      "slug": "sha-1"
+    },
+    {
+      "id": "Show-ASCII-table",
+      "source": "benchmarks/rosetta/show-ascii-table.0",
+      "expectedStdout": "ascii table ok\n",
+      "expectedStderr": "",
+      "slug": "show-ascii-table"
+    },
+    {
+      "id": "Sierpinski-triangle",
+      "source": "benchmarks/rosetta/sierpinski-triangle.0",
+      "expectedStdout": "sierpinski ok\n",
+      "expectedStderr": "",
+      "slug": "sierpinski-triangle"
+    },
+    {
+      "id": "Sieve-of-Eratosthenes",
+      "source": "benchmarks/rosetta/sieve-of-eratosthenes.0",
+      "expectedStdout": "sieve ok\n",
+      "expectedStderr": "",
+      "slug": "sieve-of-eratosthenes"
+    },
+    {
+      "id": "Singly-linked-list-Element-definition",
+      "source": "benchmarks/rosetta/singly-linked-list-element-definition.0",
+      "expectedStdout": "list element definition ok\n",
+      "expectedStderr": "",
+      "slug": "singly-linked-list-element-definition"
+    },
+    {
+      "id": "Sleep",
+      "source": "benchmarks/rosetta/sleep.0",
+      "expectedStdout": "sleep ok\n",
+      "expectedStderr": "",
+      "slug": "sleep"
+    },
+    {
+      "id": "Stern-Brocot-sequence",
+      "source": "benchmarks/rosetta/stern-brocot-sequence.0",
+      "expectedStdout": "stern brocot ok\n",
+      "expectedStderr": "",
+      "slug": "stern-brocot-sequence"
+    },
+    {
+      "id": "Strassens-algorithm",
+      "source": "benchmarks/rosetta/strassens-algorithm.0",
+      "expectedStdout": "strassen ok\n",
+      "expectedStderr": "",
+      "slug": "strassens-algorithm"
+    },
+    {
+      "id": "String-case",
+      "source": "benchmarks/rosetta/string-case.0",
+      "expectedStdout": "string case ok\n",
+      "expectedStderr": "",
+      "slug": "string-case"
+    },
+    {
+      "id": "String-concatenation",
+      "source": "benchmarks/rosetta/string-concatenation.0",
+      "expectedStdout": "string concatenation ok\n",
+      "expectedStderr": "",
+      "slug": "string-concatenation"
+    },
+    {
+      "id": "String-length",
+      "source": "benchmarks/rosetta/string-length.0",
+      "expectedStdout": "string length ok\n",
+      "expectedStderr": "",
+      "slug": "string-length"
+    },
+    {
+      "id": "Sum-and-product-of-an-array",
+      "source": "benchmarks/rosetta/sum-and-product-of-an-array.0",
+      "expectedStdout": "sum product ok\n",
+      "expectedStderr": "",
+      "slug": "sum-and-product-of-an-array"
+    },
+    {
+      "id": "Sum-multiples-of-3-and-5",
+      "source": "benchmarks/rosetta/sum-multiples-of-3-and-5.0",
+      "expectedStdout": "sum multiples ok\n",
+      "expectedStderr": "",
+      "slug": "sum-multiples-of-3-and-5"
+    },
+    {
+      "id": "Sum-of-a-series",
+      "source": "benchmarks/rosetta/sum-of-a-series.0",
+      "expectedStdout": "series ok\n",
+      "expectedStderr": "",
+      "slug": "sum-of-a-series"
+    },
+    {
+      "id": "Sutherland-Hodgman-polygon-clipping",
+      "source": "benchmarks/rosetta/sutherland-hodgman-polygon-clipping.0",
+      "expectedStdout": "polygon clipping ok\n",
+      "expectedStderr": "",
+      "slug": "sutherland-hodgman-polygon-clipping"
+    },
+    {
+      "id": "Tarjan",
+      "source": "benchmarks/rosetta/tarjan.0",
+      "expectedStdout": "tarjan ok\n",
+      "expectedStderr": "",
+      "slug": "tarjan"
+    },
+    {
+      "id": "Thue-Morse",
+      "source": "benchmarks/rosetta/thue-morse.0",
+      "expectedStdout": "thue morse ok\n",
+      "expectedStderr": "",
+      "slug": "thue-morse"
+    },
+    {
+      "id": "Tokenize-a-string",
+      "source": "benchmarks/rosetta/tokenize-a-string.0",
+      "expectedStdout": "tokenize ok\n",
+      "expectedStderr": "",
+      "slug": "tokenize-a-string"
+    },
+    {
+      "id": "Towers-of-Hanoi",
+      "source": "benchmarks/rosetta/towers-of-hanoi.0",
+      "expectedStdout": "hanoi ok\n",
+      "expectedStderr": "",
+      "slug": "towers-of-hanoi"
+    },
+    {
+      "id": "Zero-to-the-zero-power",
+      "source": "benchmarks/rosetta/zero-to-the-zero-power.0",
+      "expectedStdout": "zero power ok\n",
+      "expectedStderr": "",
+      "slug": "zero-to-the-zero-power"
+    }
+  ]
+}

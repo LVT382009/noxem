@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  check-release:
+    name: Check for new version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      needs_release: ${{ steps.check.outputs.needs_release }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check GitHub release status
+        id: check
+        run: |
+          LOCAL_VERSION=$(node -p "require('./package.json').version")
+          echo "Local version: $LOCAL_VERSION"
+
+          TAG="v$LOCAL_VERSION"
+          EXISTING_ASSETS=$(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null || true)
+          missing=0
+          for asset in \
+            CHECKSUMS.txt \
+            zero-darwin-arm64 \
+            zero-darwin-x64 \
+            zero-linux-arm64 \
+            zero-linux-x64 \
+            zero-linux-musl-arm64 \
+            zero-linux-musl-x64 \
+            zero-win32-arm64.exe \
+            zero-win32-x64.exe
+          do
+            if ! printf '%s\n' "$EXISTING_ASSETS" | grep -Fx "$asset" >/dev/null; then
+              echo "Missing release asset: $asset"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -eq 0 ]; then
+            echo "GitHub release $TAG exists with all assets"
+            echo "needs_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "GitHub release $TAG is missing assets, will create/update"
+            echo "needs_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "version=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  github-release:
+    name: Create GitHub Release
+    needs: check-release
+    if: needs.check-release.outputs.needs_release == 'true'
+    runs-on: macos-14
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - name: Extract changelog entry
+        run: |
+          VERSION="${{ needs.check-release.outputs.version }}"
+          awk '/<!-- release:start -->/{found=1; next} /<!-- release:end -->/{found=0} found{print}' CHANGELOG.md > /tmp/release-notes.md
+
+          LINES=$(wc -l < /tmp/release-notes.md | tr -d ' ')
+          if [ "$LINES" -lt 2 ]; then
+            echo "Error: No release notes found between <!-- release:start --> and <!-- release:end --> markers in CHANGELOG.md"
+            exit 1
+          fi
+          echo "Extracted release notes for $VERSION ($LINES lines)"
+
+      - name: Cross-compile for all targets
+        run: |
+          mkdir -p /tmp/zero-release
+          node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/embed-skill-data.mts
+
+          build_asset() {
+            target="$1"
+            name="$2"
+            echo "Building $name (target: $target)..."
+            zig cc -target "$target" -std=c11 -D_POSIX_C_SOURCE=200809L -Os -Inative/zero-c/include native/zero-c/src/*.c -o "/tmp/zero-release/$name"
+            chmod 755 "/tmp/zero-release/$name"
+          }
+
+          build_asset aarch64-macos        zero-darwin-arm64
+          build_asset x86_64-macos         zero-darwin-x64
+          build_asset aarch64-linux-gnu    zero-linux-arm64
+          build_asset x86_64-linux-gnu     zero-linux-x64
+          build_asset aarch64-linux-musl   zero-linux-musl-arm64
+          build_asset x86_64-linux-musl    zero-linux-musl-x64
+          build_asset aarch64-windows-gnu  zero-win32-arm64.exe
+          build_asset x86_64-windows-gnu   zero-win32-x64.exe
+
+          (cd /tmp/zero-release && shasum -a 256 zero-* > CHECKSUMS.txt)
+
+      - name: Smoke test release assets
+        run: |
+          set -eu
+          cd /tmp/zero-release
+
+          for asset in \
+            zero-darwin-arm64 \
+            zero-darwin-x64 \
+            zero-linux-arm64 \
+            zero-linux-x64 \
+            zero-linux-musl-arm64 \
+            zero-linux-musl-x64 \
+            zero-win32-arm64.exe \
+            zero-win32-x64.exe
+          do
+            test -s "$asset"
+          done
+
+          shasum -a 256 -c CHECKSUMS.txt
+
+          if [ "$(uname -s)" = "Darwin" ]; then
+            case "$(uname -m)" in
+              arm64)
+                ./zero-darwin-arm64 --version
+                ./zero-darwin-arm64 skills list --json
+                ;;
+              x86_64)
+                ./zero-darwin-x64 --version
+                ./zero-darwin-x64 skills list --json
+                ;;
+              *) echo "Skipping host binary smoke for unsupported macOS arch $(uname -m)" ;;
+            esac
+          fi
+
+      - name: Create GitHub Release
+        run: |
+          VERSION="${{ needs.check-release.outputs.version }}"
+          TAG="v$VERSION"
+
+          if gh release view "$TAG" &>/dev/null; then
+            echo "Release $TAG already exists, updating assets"
+          else
+            echo "Creating release $TAG..."
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes-file /tmp/release-notes.md
+          fi
+
+          gh release upload "$TAG" \
+            /tmp/zero-release/zero-* \
+            /tmp/zero-release/CHECKSUMS.txt \
+            --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

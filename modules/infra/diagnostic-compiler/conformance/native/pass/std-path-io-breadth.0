@@ -1,0 +1,168 @@
+pub fn main(world: World) -> Void raises {
+    var path_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let normalized: Maybe<String> = std.path.normalize(path_buf, "src//./main.0/")
+    var parent_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let parent_normalized: Maybe<String> = std.path.normalize(parent_buf, "src/a/../main.0")
+    var join_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let joined: Maybe<String> = std.path.join(join_buf, "src/", "/main.0")
+    var root_join_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let root_join_base: Span<u8> = "/x"[..1]
+    let root_joined: Maybe<String> = std.path.join(root_join_buf, root_join_base, "main.0")
+    var empty_abs_join_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let empty_abs_joined: Maybe<String> = std.path.join(empty_abs_join_buf, "", "/main.0")
+    var rel_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let relative: Maybe<String> = std.path.relative(rel_buf, "src", "src/main.0")
+    var fallback_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let fallback_relative: Maybe<String> = std.path.relative(fallback_buf, "other", "src/main.0")
+    var small_buf: [3]u8 = [0, 0, 0]
+    let overflow: Maybe<String> = std.path.normalize(small_buf, "abcd")
+    var root_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let root_normalized: Maybe<String> = std.path.normalize(root_buf, "/src//./main.0/")
+    var root_parent_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let root_parent: Maybe<String> = std.path.normalize(root_parent_buf, "/../src")
+    var leading_parent_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let leading_parent: Maybe<String> = std.path.normalize(leading_parent_buf, "../src")
+    var nested_parent_buf: [32]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let nested_parent: Maybe<String> = std.path.normalize(nested_parent_buf, "a/../../b")
+    var trim_fit_buf: [1]u8 = [0]
+    let trim_fit: Maybe<String> = std.path.normalize(trim_fit_buf, "a/")
+    var copy_dst: [4]u8 = [0, 0, 0, 0]
+    var reader_buf: [8]u8 = [0, 0, 0, 0, 0, 0, 0, 0]
+    var writer_buf: [8]u8 = [0, 0, 0, 0, 0, 0, 0, 0]
+    let reader: BufferedReader = std.io.bufferedReader(reader_buf)
+    let writer: BufferedWriter = std.io.bufferedWriter(writer_buf)
+    let copied: usize = std.io.copy(copy_dst, std.mem.span("abcd"))
+    var ok: Bool = true
+    if !normalized.has {
+        ok = false
+    }
+    if normalized.has {
+        if !std.mem.eql(normalized.value, "src/main.0") {
+            ok = false
+        }
+    }
+    if !parent_normalized.has {
+        ok = false
+    }
+    if parent_normalized.has {
+        if !std.mem.eql(parent_normalized.value, "src/main.0") {
+            ok = false
+        }
+    }
+    if !joined.has {
+        ok = false
+    }
+    if joined.has {
+        if !std.mem.eql(joined.value, "src/main.0") {
+            ok = false
+        }
+    }
+    if !root_joined.has {
+        ok = false
+    }
+    if root_joined.has {
+        if !std.mem.eql(root_joined.value, "/main.0") {
+            ok = false
+        }
+    }
+    if !empty_abs_joined.has {
+        ok = false
+    }
+    if empty_abs_joined.has {
+        if !std.mem.eql(empty_abs_joined.value, "/main.0") {
+            ok = false
+        }
+    }
+    if !relative.has {
+        ok = false
+    }
+    if relative.has {
+        if !std.mem.eql(relative.value, "main.0") {
+            ok = false
+        }
+    }
+    if !fallback_relative.has {
+        ok = false
+    }
+    if fallback_relative.has {
+        if !std.mem.eql(fallback_relative.value, "src/main.0") {
+            ok = false
+        }
+    }
+    if overflow.has {
+        ok = false
+    }
+    if !root_normalized.has {
+        ok = false
+    }
+    if root_normalized.has {
+        if !std.mem.eql(root_normalized.value, "/src/main.0") {
+            ok = false
+        }
+    }
+    if !root_parent.has {
+        ok = false
+    }
+    if root_parent.has {
+        if !std.mem.eql(root_parent.value, "/src") {
+            ok = false
+        }
+    }
+    if !leading_parent.has {
+        ok = false
+    }
+    if leading_parent.has {
+        if !std.mem.eql(leading_parent.value, "../src") {
+            ok = false
+        }
+    }
+    if !nested_parent.has {
+        ok = false
+    }
+    if nested_parent.has {
+        if !std.mem.eql(nested_parent.value, "../b") {
+            ok = false
+        }
+    }
+    if !trim_fit.has {
+        ok = false
+    }
+    if trim_fit.has {
+        if !std.mem.eql(trim_fit.value, "a") {
+            ok = false
+        }
+    }
+    if !std.mem.eql(std.path.basename("src/main.0"), "main.0") {
+        ok = false
+    }
+    if !std.mem.eql(std.path.dirname("src/main.0"), "src") {
+        ok = false
+    }
+    if !std.mem.eql(std.path.dirname("/main.0"), root_join_base) {
+        ok = false
+    }
+    if !std.mem.eql(std.path.dirname(root_join_base), root_join_base) {
+        ok = false
+    }
+    if !std.mem.eql(std.path.extension("src/main.0"), "0") {
+        ok = false
+    }
+    if std.io.readerCapacity(&reader) != 8 {
+        ok = false
+    }
+    if std.io.writerCapacity(&writer) != 8 {
+        ok = false
+    }
+    if copied != 4 {
+        ok = false
+    }
+    if copy_dst[0] != 97_u8 {
+        ok = false
+    }
+    if copy_dst[3] != 100_u8 {
+        ok = false
+    }
+    if ok {
+        check world.out.write("std path io breadth ok\n")
+    }
+}

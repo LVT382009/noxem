@@ -1,0 +1,7 @@
+fn value() -> Void {
+}
+
+pub fn main() -> Void {
+    let value: i32 = 1
+    value()
+}

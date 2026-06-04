@@ -1,0 +1,5 @@
+pub fn main(world: World) -> Void raises [NotFound, TooLarge, Io] {
+    let fs: Fs = std.fs.host()
+    let _file: i32 = std.fs.createOrRaise(fs, ".zero/conformance/unreachable.txt")
+    check world.out.write("unreachable\n")
+}

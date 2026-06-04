@@ -1,0 +1,16 @@
+fn identity<T: Type>(value: T) -> T {
+    return value
+}
+
+fn identity__i32(value: i32) -> i32 {
+    return value + 1
+}
+
+pub fn main(world: World) -> Void raises {
+    let value: i32 = identity<i32>(1)
+    if value == 1 {
+        check world.out.write("direct specialization collision avoided\n")
+    } else {
+        check world.out.write("direct specialization collision reached wrong target\n")
+    }
+}

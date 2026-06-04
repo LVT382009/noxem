@@ -1,0 +1,13 @@
+fn view(flag: Bool) -> Span<u8> {
+    let first: [2]u8 = [1, 2]
+    let second: [2]u8 = [3, 4]
+    var span: Span<u8> = first
+    if flag {
+        span = second
+    }
+    return span
+}
+
+pub fn main() -> Void {
+    let span: Span<u8> = view(true)
+}

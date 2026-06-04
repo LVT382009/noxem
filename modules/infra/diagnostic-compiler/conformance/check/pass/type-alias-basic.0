@@ -1,0 +1,15 @@
+pub alias ByteCount = usize
+
+alias BytePair = Pair<u8, u8>
+
+type Pair<T: Type, U: Type> {
+    left: T,
+    right: U,
+}
+
+pub fn main() -> Void {
+    let count: ByteCount = 4_usize
+    let pair: BytePair = Pair { left: 1_u8, right: 2_u8 }
+    expect (count == 4_usize)
+    expect (pair.right == 2_u8)
+}

@@ -1,0 +1,19 @@
+fn is_upper_a(code: u8) -> Bool {
+    if code == 65_u8 {
+        return true
+    }
+    return false
+}
+
+fn left_score() -> i32 {
+    let bytes: [3]u8 = [65_u8, 90_u8, 65_u8]
+    var i: usize = 0
+    var score: i32 = 0
+    while i < 3 {
+        if is_upper_a(bytes[i]) {
+            score = score + 10
+        }
+        i = i + 1
+    }
+    return score
+}

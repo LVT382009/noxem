@@ -1,0 +1,15 @@
+fn factorial(n: u32) -> u32 {
+    var value: u32 = 1
+    var index: u32 = 2
+    while index <= n {
+        value = value * index
+        index = index + 1
+    }
+    return value
+}
+
+pub fn main(world: World) -> Void raises {
+    if factorial(6) == 720 {
+        check world.out.write("factorial ok\n")
+    }
+}

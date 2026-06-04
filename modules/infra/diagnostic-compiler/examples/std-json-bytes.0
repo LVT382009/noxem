@@ -1,0 +1,11 @@
+pub fn main(world: World) -> Void raises {
+    let bytes: Span<u8> = std.mem.span("{\"ok\":1}")
+    var arena_buf: [16]u8 = [0_u8; 16]
+    var arena: FixedBufAlloc = std.mem.fixedBufAlloc(arena_buf)
+    let parsed: Maybe<JsonDoc> = std.json.parseBytes(arena, bytes)
+    if std.json.validateBytes(bytes) && parsed.has && std.json.streamTokensBytes(bytes) == 3 {
+        check world.out.write("std json bytes ok\n")
+        return
+    }
+    check world.err.write("std json bytes failed\n")
+}

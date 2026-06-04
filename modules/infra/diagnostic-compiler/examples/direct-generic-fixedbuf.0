@@ -1,0 +1,13 @@
+type FixedBuf<T: Type, static N: usize> {
+    len: usize = 0,
+    first: T,
+    items: [N]T,
+}
+
+export c fn main() -> u8 {
+    let buf: FixedBuf<u8, 4> = FixedBuf { first: 55_u8, items: [1_u8, 2_u8, 3_u8, 4_u8] }
+    if buf.len == 0 {
+        return buf.first
+    }
+    return 0_u8
+}

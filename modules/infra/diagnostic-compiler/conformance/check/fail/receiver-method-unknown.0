@@ -1,0 +1,12 @@
+type FixedVec<T: Type, static N: usize> {
+    len: usize,
+    items: [N]T,
+    fn count(self: ref<Self>) -> usize {
+        return self.len
+    }
+}
+
+pub fn main() -> Void {
+    let vec: FixedVec<u8, 4> = FixedVec { len: 0, items: [0, 0, 0, 0] }
+    vec.missing()
+}

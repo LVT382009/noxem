@@ -1,0 +1,105 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package clickhouse
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	yaml "github.com/goccy/go-yaml"
+	"github.com/googleapis/mcp-toolbox/internal/sources"
+	"github.com/googleapis/mcp-toolbox/internal/tools"
+	"github.com/googleapis/mcp-toolbox/internal/util"
+	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
+)
+
+const listDatabasesType string = "clickhouse-list-databases"
+
+func init() {
+	if !tools.Register(listDatabasesType, newListDatabasesConfig) {
+		panic(fmt.Sprintf("tool type %q already registered", listDatabasesType))
+	}
+}
+
+func newListDatabasesConfig(ctx context.Context, name string, decoder *yaml.Decoder) (tools.ToolConfig, error) {
+	actual := Config{ConfigBase: tools.ConfigBase{Name: name}}
+	if err := decoder.DecodeContext(ctx, &actual); err != nil {
+		return nil, err
+	}
+	return actual, nil
+}
+
+type compatibleSource interface {
+	RunSQL(context.Context, string, parameters.ParamValues) (any, error)
+}
+
+type Config struct {
+	tools.ConfigBase `yaml:",inline"`
+	Type             string                 `yaml:"type" validate:"required"`
+	Source           string                 `yaml:"source" validate:"required"`
+	Parameters       parameters.Parameters  `yaml:"parameters"`
+	Annotations      *tools.ToolAnnotations `yaml:"annotations,omitempty"`
+}
+
+var _ tools.ToolConfig = Config{}
+
+func (cfg Config) ToolConfigType() string {
+	return listDatabasesType
+}
+
+func (cfg Config) Initialize(srcs map[string]sources.Source) (tools.Tool, error) {
+	if cfg.Description == "" {
+		return nil, fmt.Errorf("description is required for tool %q", cfg.Name)
+	}
+
+	allParameters, paramManifest, _ := parameters.ProcessParameters(nil, cfg.Parameters)
+
+	return Tool{
+		BaseTool: tools.NewBaseTool(
+			cfg,
+			tools.GetAnnotationsOrDefault(cfg.Annotations, tools.NewReadOnlyAnnotations),
+			tools.Manifest{Description: cfg.Description, Parameters: paramManifest, AuthRequired: cfg.AuthRequired},
+			allParameters,
+		),
+	}, nil
+}
+
+var _ tools.Tool = Tool{}
+
+type Tool struct {
+	tools.BaseTool[Config]
+}
+
+func (t Tool) ToConfig() tools.ToolConfig {
+	return t.Cfg
+}
+
+func (t Tool) Invoke(ctx context.Context, resourceMgr tools.SourceProvider, params parameters.ParamValues, token tools.AccessToken) (any, util.ToolboxError) {
+	source, err := tools.GetCompatibleSource[compatibleSource](resourceMgr, t.Cfg.Source, t.Cfg.Name, t.Cfg.Type)
+	if err != nil {
+		return nil, util.NewClientServerError("source used is not compatible with the tool", http.StatusInternalServerError, err)
+	}
+
+	// Query to list all databases
+	query := "SHOW DATABASES"
+
+	out, err := source.RunSQL(ctx, query, nil)
+	if err != nil {
+		return nil, util.ProcessGeneralError(err)
+	}
+
+	return out, nil
+}

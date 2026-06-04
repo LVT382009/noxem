@@ -1,0 +1,9 @@
+fn codeCount(text: Span<u8>) -> usize {
+    return std.mem.len(text)
+}
+
+pub fn main(world: World) -> Void raises {
+    if codeCount(std.mem.span("TOBE")) == 4 {
+        check world.out.write("lzw ok\n")
+    }
+}

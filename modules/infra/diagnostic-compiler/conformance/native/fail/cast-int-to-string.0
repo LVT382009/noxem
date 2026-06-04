@@ -1,0 +1,4 @@
+pub fn main(world: World) -> Void raises {
+    let text: String = 1 as String
+    check world.out.write("bad cast\n")
+}

@@ -1,0 +1,11 @@
+pub fn main(world: World) -> Void raises {
+    var values: [4]i32 = [0, 0, 0, 0]
+    var len: usize = 0
+    len = std.collections.push(values, len, 3)
+    len = std.collections.push(values, len, 1)
+    len = std.collections.push(values, len, 4)
+    len = std.collections.push(values, len, 1)
+    if len == 4 && values[0] == 3 && values[2] == 4 {
+        check world.out.write("arrays ok\n")
+    }
+}

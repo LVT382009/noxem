@@ -1,0 +1,31 @@
+type Holder {
+    value: Maybe<u8>,
+}
+
+fn clear(holder: mutref<Holder>) -> Bool {
+    holder.value = null
+    return false
+}
+
+fn read(flag: Bool) -> u8 {
+    let input: [1]u8 = [1]
+    var holder: Holder = Holder { value: std.mem.get(input, 0) }
+    if holder.value.has {
+        match flag {
+            true if clear(&mut holder) {
+                return 0_u8
+            }
+            true {
+                return holder.value.value
+            }
+            false {
+                return 0_u8
+            }
+        }
+    }
+    return 0_u8
+}
+
+pub fn main() -> Void {
+    let byte: u8 = read(true)
+}

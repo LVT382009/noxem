@@ -1,0 +1,28 @@
+type FixedVec<T: Type, static N: usize> {
+    len: usize,
+    items: [N]T,
+    fn push(self: mutref<Self>, value: T) -> Void raises [Full] {
+        if self.len == N {
+            raise Full
+        }
+        self.items[self.len] = value
+        self.len = self.len + 1
+    }
+    fn get(self: ref<Self>, index: usize) -> Maybe<T> {
+        return std.mem.get(self.items, index)
+    }
+    fn count(self: ref<Self>) -> usize {
+        return self.len
+    }
+}
+
+pub fn main(world: World) -> Void raises {
+    var vec: FixedVec<u8, 4> = FixedVec { len: 0, items: [0, 0, 0, 0] }
+    check vec.push(7)
+    check vec.push(9)
+    let first: Maybe<u8> = vec.get(0)
+    let second: Maybe<u8> = vec.get(1)
+    if first.has && first.value == 7 && second.has && second.value == 9 && vec.count() == 2 {
+        check world.out.write("receiver methods ok\n")
+    }
+}

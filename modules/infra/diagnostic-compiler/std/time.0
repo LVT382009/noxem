@@ -1,0 +1,71 @@
+fn __zero_std_time_zero() -> Duration {
+    return std.time.ns(0)
+}
+
+fn __zero_std_time_minutes(value: i32) -> Duration {
+    return std.time.ns((value as i64) * 60000000000)
+}
+
+fn __zero_std_time_hours(value: i32) -> Duration {
+    return std.time.ns((value as i64) * 3600000000000)
+}
+
+fn __zero_std_time_min(left: Duration, right: Duration) -> Duration {
+    if std.time.lessThan(left, right) {
+        return left
+    }
+    return right
+}
+
+fn __zero_std_time_max(left: Duration, right: Duration) -> Duration {
+    if std.time.lessThan(left, right) {
+        return right
+    }
+    return left
+}
+
+fn __zero_std_time_clamp(value: Duration, low: Duration, high: Duration) -> Duration {
+    let lower: Duration = __zero_std_time_min(low, high)
+    let upper: Duration = __zero_std_time_max(low, high)
+    if std.time.lessThan(value, lower) {
+        return lower
+    }
+    if std.time.lessThan(upper, value) {
+        return upper
+    }
+    return value
+}
+
+fn __zero_std_time_as_us_floor(value: Duration) -> i64 {
+    let ns: i64 = std.time.asNs(value)
+    let quotient: i64 = ns / 1000_i64
+    let remainder: i64 = ns % 1000_i64
+    if ns < 0_i64 && remainder != 0_i64 {
+        return quotient - 1_i64
+    }
+    return quotient
+}
+
+fn __zero_std_time_as_ms_floor(value: Duration) -> i32 {
+    let ns: i64 = std.time.asNs(value)
+    let quotient: i64 = ns / 1000000_i64
+    let remainder: i64 = ns % 1000000_i64
+    if ns < 0_i64 && remainder != 0_i64 {
+        return (quotient - 1_i64) as i32
+    }
+    return quotient as i32
+}
+
+fn __zero_std_time_as_seconds_floor(value: Duration) -> i64 {
+    let ns: i64 = std.time.asNs(value)
+    let quotient: i64 = ns / 1000000000_i64
+    let remainder: i64 = ns % 1000000000_i64
+    if ns < 0_i64 && remainder != 0_i64 {
+        return quotient - 1_i64
+    }
+    return quotient
+}
+
+fn __zero_std_time_is_zero(value: Duration) -> Bool {
+    return std.time.asNs(value) == 0
+}

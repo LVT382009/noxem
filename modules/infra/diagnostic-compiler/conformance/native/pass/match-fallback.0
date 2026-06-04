@@ -1,0 +1,16 @@
+enum Mode {
+    fast,
+    slow,
+}
+
+pub fn main(world: World) -> Void raises {
+    let mode: Mode = Mode.slow
+    match mode {
+        fast {
+            check world.out.write("match fast\n")
+        }
+        _ {
+            check world.out.write("match fallback ok\n")
+        }
+    }
+}

@@ -1,0 +1,23 @@
+type CharBag {
+    letter: char,
+    newline: char,
+    quote: char,
+    slash: char,
+    hex: char,
+}
+
+fn echoChar(value: char) -> char {
+    return value
+}
+
+pub fn main(world: World) -> Void raises {
+    let letter: char = 'A'
+    let newline: char = '\n'
+    let quote: char = '\''
+    let slash: char = '\\'
+    let hex: char = 'A'
+    let bag: CharBag = CharBag { letter: letter, newline: newline, quote: quote, slash: slash, hex: hex }
+    if letter == hex && echoChar(bag.letter) == 'A' && bag.newline == newline && bag.quote == quote && bag.slash == slash {
+        check world.out.write("char literals ok\n")
+    }
+}

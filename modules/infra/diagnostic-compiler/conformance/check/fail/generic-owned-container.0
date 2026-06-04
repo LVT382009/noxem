@@ -1,0 +1,7 @@
+type Box<T: Type> {
+    value: owned<T>,
+}
+
+pub fn main() -> Void {
+    return
+}

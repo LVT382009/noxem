@@ -1,0 +1,7 @@
+const base: i32 = 40
+
+const answer: i32 = base + 2
+
+pub fn main() -> Void {
+    expect (answer == 42)
+}

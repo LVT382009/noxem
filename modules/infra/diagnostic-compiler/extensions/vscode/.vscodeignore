@@ -1,0 +1,9 @@
+dist/**
+examples/**
+node_modules/**
+src/**
+tests/**
+.git/**
+.zero/**
+package-lock.json
+tsconfig.json

@@ -1,0 +1,27 @@
+pub fn main(world: World) -> Void raises {
+    let maybe_request: Maybe<String> = std.args.get(1)
+    if !maybe_request.has {
+        check world.err.write("usage: pass HTTP request envelope\n")
+        return
+    }
+    let net: Net = std.net.host()
+    let client: HttpClient = std.http.client(net)
+    var response: [512]u8 = [0_u8; 512]
+    let result: HttpResult = std.http.fetch(client, std.mem.span(maybe_request.value), response, std.time.ms(5000))
+    if !std.http.resultOk(result) {
+        check world.err.write("http json fetch failed\n")
+        return
+    }
+    let bytes: Maybe<Span<u8>> = std.http.responseBody(response, result)
+    var arena_buf: [16]u8 = [0_u8; 16]
+    var arena: FixedBufAlloc = std.mem.fixedBufAlloc(arena_buf)
+    var parsed: Maybe<JsonDoc> = null
+    if bytes.has {
+        parsed = std.json.parseBytes(arena, bytes.value)
+    }
+    if bytes.has && parsed.has && std.json.validateBytes(bytes.value) && std.json.streamTokensBytes(bytes.value) == 3 {
+        check world.out.write("http json ok\n")
+        return
+    }
+    check world.err.write("http json parse failed\n")
+}

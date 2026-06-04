@@ -1,0 +1,14 @@
+type Holder {
+    value: ref<i32>,
+}
+
+fn storeRecursive(holder: mutref<Holder>, next: ref<i32>) -> Void {
+    storeRecursive(holder, next)
+}
+
+pub fn main() -> Void {
+    let old: i32 = 1
+    let next: i32 = 2
+    var holder: Holder = Holder { value: &old }
+    storeRecursive(&mut holder, &next)
+}

@@ -1,0 +1,10 @@
+pub fn main() -> Maybe<Void> raises {
+    var x: i32 = 1
+    let y: i32 = 2
+    var refs: [1]ref<i32> = [&x]
+    let maybe: Maybe<ref<i32>> = std.mem.get(refs, 0)
+    let current: ref<i32> = check maybe
+    refs = [&y]
+    x = 2
+    return null
+}

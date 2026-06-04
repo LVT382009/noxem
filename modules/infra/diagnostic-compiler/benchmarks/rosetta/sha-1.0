@@ -1,0 +1,9 @@
+fn digestWord(a: u32, b: u32) -> u32 {
+    return (a + b) % 65536
+}
+
+pub fn main(world: World) -> Void raises {
+    if digestWord(65535, 2) == 1 {
+        check world.out.write("sha1 ok\n")
+    }
+}

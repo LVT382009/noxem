@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    while false {
+        check world.out.write("unreachable\n")
+    }
+    check world.out.write("countdown done\n")
+}

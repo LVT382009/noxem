@@ -1,0 +1,9 @@
+pub fn main() -> Maybe<Void> raises {
+    var x: i32 = 1
+    let y: i32 = 2
+    var refs: [1]ref<i32> = [&x]
+    let current: ref<i32> = check std.mem.get(refs, 0)
+    refs = [&y]
+    x = 2
+    return null
+}

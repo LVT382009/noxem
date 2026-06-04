@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    let value: Maybe<u32> = std.math.factorialU32(6_u32)
+    if value.has {
+        if value.value == 720_u32 {
+            check world.out.write("factorial ok\n")
+        }
+    }
+}

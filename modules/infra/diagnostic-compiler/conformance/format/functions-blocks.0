@@ -1,0 +1,14 @@
+fn helper(value: i32) -> i32 {
+    if value == 0 {
+        return 1
+    } else {
+        return value
+    }
+}
+
+pub fn main() -> Void {
+    let count: i32 = helper(1)
+    while count != 0 {
+        break
+    }
+}

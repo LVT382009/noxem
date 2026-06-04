@@ -1,0 +1,9 @@
+fn bytecodeLen(nodes: u32) -> u32 {
+    return nodes * 2
+}
+
+pub fn main(world: World) -> Void raises {
+    if bytecodeLen(3) == 6 {
+        check world.out.write("code generator ok\n")
+    }
+}

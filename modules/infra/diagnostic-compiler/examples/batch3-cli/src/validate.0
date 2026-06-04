@@ -1,0 +1,3 @@
+pub fn isExpected(bytes: MutSpan<u8>) -> Bool {
+    return std.mem.eqlBytes(bytes, std.mem.span("batch3 cli ok\n"))
+}

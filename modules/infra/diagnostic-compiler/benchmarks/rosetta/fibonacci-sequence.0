@@ -1,0 +1,28 @@
+fn fib(n: u32) -> u32 {
+    var index: u32 = 0
+    var a: u32 = 0
+    var b: u32 = 1
+    while index < n {
+        let next: u32 = a + b
+        a = b
+        b = next
+        index = index + 1
+    }
+    return a
+}
+
+fn fibSum(max: u32) -> u32 {
+    var index: u32 = 0
+    var sum: u32 = 0
+    while index <= max {
+        sum = sum + fib(index)
+        index = index + 1
+    }
+    return sum
+}
+
+pub fn main(world: World) -> Void raises {
+    if fib(0) == 0 && fib(1) == 1 && (fib(2) == 1 && fib(10) == 55) && fibSum(10) == 143 {
+        check world.out.write("fibonacci ok\n")
+    }
+}

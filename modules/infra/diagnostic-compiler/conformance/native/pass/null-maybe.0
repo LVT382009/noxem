@@ -1,0 +1,10 @@
+type Holder {
+    value: Maybe<i32>,
+}
+
+pub fn main(world: World) -> Void raises {
+    let holder: Holder = Holder { value: null }
+    if !holder.value.has {
+        check world.out.write("null maybe ok\n")
+    }
+}

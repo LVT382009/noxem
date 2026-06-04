@@ -1,0 +1,33 @@
+fn value(c: u8) -> u32 {
+    if c >= 48 && c <= 57 {
+        return (c - 48) as u32
+    }
+    if c >= 65 && c <= 90 {
+        return (c - 65 + 10) as u32
+    }
+    return 0
+}
+
+fn digitSum(n: u32) -> u32 {
+    return n / 10 + n % 10
+}
+
+fn checkDigit(text: Span<u8>) -> u32 {
+    var sum: u32 = 0
+    var i: usize = 0
+    while i < 8 {
+        var v: u32 = value(text[i])
+        if i % 2 == 1 {
+            v = v * 2
+        }
+        sum = sum + digitSum(v)
+        i = i + 1
+    }
+    return (10 - sum % 10) % 10
+}
+
+pub fn main(world: World) -> Void raises {
+    if checkDigit(std.mem.span("03783310")) == 0 {
+        check world.out.write("cusip ok\n")
+    }
+}

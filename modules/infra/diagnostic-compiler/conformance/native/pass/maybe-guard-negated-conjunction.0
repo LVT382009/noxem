@@ -1,0 +1,23 @@
+fn guardedBoth() -> u8 {
+    let bytes: [2]u8 = [1, 2]
+    let first: Maybe<u8> = std.mem.get(bytes, 0)
+    let second: Maybe<u8> = std.mem.get(bytes, 1)
+    if !(first.has && second.has) {
+        return 0_u8
+    }
+    return first.value + second.value
+}
+
+fn guardedComparison() -> u8 {
+    let bytes: [1]u8 = [1]
+    let value: Maybe<u8> = std.mem.get(bytes, 0)
+    if (value.has && true) == true {
+        return value.value
+    }
+    return 0_u8
+}
+
+pub fn main() -> Void {
+    let both: u8 = guardedBoth()
+    let comparison: u8 = guardedComparison()
+}

@@ -1,0 +1,12 @@
+fn lowlink(self: u32, child: u32) -> u32 {
+    if child < self {
+        return child
+    }
+    return self
+}
+
+pub fn main(world: World) -> Void raises {
+    if lowlink(4, 2) == 2 {
+        check world.out.write("tarjan ok\n")
+    }
+}

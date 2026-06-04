@@ -1,0 +1,4 @@
+test "wrong numeric width" {
+    let value: u8 = 256
+    expect (value == 0)
+}

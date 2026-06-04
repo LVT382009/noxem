@@ -1,0 +1,14 @@
+export c fn main() -> u8 {
+    var storage: [8]u8 = [0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8]
+    var alloc: FixedBufAlloc = std.mem.fixedBufAlloc(storage)
+    let first: Maybe<MutSpan<u8>> = std.mem.allocBytes(alloc, 4)
+    if first.has {
+        if std.mem.len(first.value) == 4 {
+            let bytes: MutSpan<u8> = first.value
+            if std.mem.len(bytes) == 4 {
+                return first.value[0]
+            }
+        }
+    }
+    return 0_u8
+}

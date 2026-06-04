@@ -1,0 +1,13 @@
+fn digitAdd(a: u8, b: u8, carry: u8) -> u8 {
+    return (a + b + carry) % 10
+}
+
+fn digitCarry(a: u8, b: u8, carry: u8) -> u8 {
+    return (a + b + carry) / 10
+}
+
+pub fn main(world: World) -> Void raises {
+    if digitAdd(9, 8, 1) == 8 && digitCarry(9, 8, 1) == 1 {
+        check world.out.write("big integer ok\n")
+    }
+}

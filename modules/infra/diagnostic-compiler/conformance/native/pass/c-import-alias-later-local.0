@@ -1,0 +1,7 @@
+extern c "conformance/c/simple.h" as c
+
+export c fn main() -> i32 {
+    let total: i32 = c.zero_c_add(20, 22)
+    let c: i32 = 1
+    return total + c
+}

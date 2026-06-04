@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    let ok: Bool = true && !false
+    if ok {
+        check world.out.write("boolean values ok\n")
+    }
+}

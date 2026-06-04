@@ -1,0 +1,79 @@
+fn __zero_std_collections_push<T: Type>(items: MutSpan<T>, len: usize, value: T) -> usize {
+    if len >= std.mem.len(items) {
+        return len
+    }
+    items[len] = value
+    return len + 1
+}
+
+fn __zero_std_collections_append<T: Type>(items: MutSpan<T>, len: usize, values: Span<T>) -> usize {
+    let capacity: usize = std.mem.len(items)
+    let value_count: usize = std.mem.len(values)
+    if len > capacity || value_count > capacity - len {
+        return len
+    }
+    var index: usize = 0
+    while index < value_count {
+        items[len + index] = values[index]
+        index = index + 1
+    }
+    return len + value_count
+}
+
+fn __zero_std_collections_view<T: Type>(items: Span<T>, len: usize) -> Span<T> {
+    var end: usize = len
+    if end > std.mem.len(items) {
+        end = std.mem.len(items)
+    }
+    return items[..end]
+}
+
+fn __zero_std_collections_contains<T: Type>(items: Span<T>, len: usize, needle: T) -> Bool {
+    let view: Span<T> = __zero_std_collections_view(items, len)
+    var index: usize = 0
+    while index < std.mem.len(view) {
+        if view[index] == needle {
+            return true
+        }
+        index = index + 1
+    }
+    return false
+}
+
+fn __zero_std_collections_count<T: Type>(items: Span<T>, len: usize, needle: T) -> usize {
+    let view: Span<T> = __zero_std_collections_view(items, len)
+    var index: usize = 0
+    var total: usize = 0
+    while index < std.mem.len(view) {
+        if view[index] == needle {
+            total = total + 1
+        }
+        index = index + 1
+    }
+    return total
+}
+
+fn __zero_std_collections_remove_swap<T: Type>(items: MutSpan<T>, len: usize, index: usize) -> usize {
+    if len == 0 || len > std.mem.len(items) || index >= len {
+        return len
+    }
+    let next_len: usize = len - 1
+    if index != next_len {
+        items[index] = items[next_len]
+    }
+    return next_len
+}
+
+fn __zero_std_collections_move_to_front<T: Type>(items: MutSpan<T>, len: usize, index: usize) -> usize {
+    if len > std.mem.len(items) || index == 0 || index >= len {
+        return len
+    }
+    let chosen: T = items[index]
+    var cursor: usize = index
+    while cursor > 0 {
+        items[cursor] = items[cursor - 1]
+        cursor = cursor - 1
+    }
+    items[0] = chosen
+    return len
+}

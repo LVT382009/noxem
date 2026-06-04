@@ -1,0 +1,14 @@
+fn choose(left: ref<i32>, right: ref<i32>) -> ref<i32> {
+    if true {
+        return left
+    } else {
+        return right
+    }
+}
+
+pub fn main() -> Void {
+    let x: i32 = 1
+    var y: i32 = 2
+    let current: ref<i32> = choose(&x, &y)
+    y = 3
+}

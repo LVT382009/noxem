@@ -1,0 +1,18 @@
+extern c "examples/vendor/include/config.h" as cconfig
+
+extern type CConfig {
+    port: i32,
+    workers: i32,
+}
+
+type Config {
+    port: i32,
+    workers: i32,
+}
+
+pub fn main(world: World) -> Void raises {
+    let config: Config = Config { port: 3000, workers: 4 }
+    if config.workers > 0 {
+        check world.out.write("config shape parsed\n")
+    }
+}

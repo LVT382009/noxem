@@ -1,0 +1,17 @@
+pub fn main(world: World) -> Void raises {
+    let first: Maybe<String> = std.args.get(1)
+    let mode: Maybe<String> = std.env.get("ZERO_CLI_FILE_MODE")
+    if first.has && std.mem.eql(first.value, "write") {
+        let bytes: Span<u8> = std.mem.span(first.value)
+        let written: Maybe<usize> = std.fs.writeBytes(".zero/out/cli-file.txt", bytes)
+        if written.has && written.value > 0 && std.fs.exists(".zero/out/cli-file.txt") {
+            if mode.has && std.mem.eql(mode.value, "verbose") {
+                check world.err.write(mode.value)
+                check world.err.write("\n")
+            }
+            check world.out.write("cli file ok\n")
+        }
+    } else {
+        check world.out.write("pass an argument\n")
+    }
+}

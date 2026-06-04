@@ -1,0 +1,16 @@
+extern c "conformance/c/simple.h" as Counter
+
+type Counter {
+    value: i32,
+    fn zero_c_add(self: ref<Self>, a: i32, b: i32) -> i32 {
+        return self.value + a + b
+    }
+}
+
+export c fn main() -> i32 {
+    let counter: Counter = Counter { value: 1000 }
+    if Counter.zero_c_add(&counter, 20, 22) == 1042 {
+        return 0
+    }
+    return 1
+}

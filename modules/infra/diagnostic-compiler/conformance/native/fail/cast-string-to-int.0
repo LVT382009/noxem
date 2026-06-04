@@ -1,0 +1,4 @@
+pub fn main(world: World) -> Void raises {
+    let byte: u8 = "zero" as u8
+    check world.out.write("bad cast\n")
+}

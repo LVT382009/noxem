@@ -1,0 +1,18 @@
+type Point {
+    x: i32,
+    y: i32,
+}
+
+fn sum(point: Point) -> i32 {
+    return point.x + point.y
+}
+
+pub fn main(world: World) -> Void raises {
+    let point: Point = Point { x: 40, y: 2 }
+    let total: i32 = sum(point)
+    if total == 42 {
+        check world.out.write("point works\n")
+    } else {
+        check world.out.write("point broke\n")
+    }
+}

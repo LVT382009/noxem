@@ -1,0 +1,3 @@
+test "xfail: known checked failure" {
+    expect (false)
+}

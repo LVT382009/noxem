@@ -1,0 +1,16 @@
+type RefBag {
+    refs: [1]ref<i32>,
+}
+
+fn first(bag: RefBag) -> ref<i32> {
+    return bag.refs[0]
+}
+
+pub fn main() -> Void {
+    var x: i32 = 1
+    var y: i32 = 2
+    var bag: RefBag = RefBag { refs: [&x] }
+    let current: ref<i32> = first(bag)
+    bag.refs = [&y]
+    x = 3
+}

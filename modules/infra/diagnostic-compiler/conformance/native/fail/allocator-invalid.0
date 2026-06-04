@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    let bytes: i32 = std.mem.allocBytes("not an allocator", 1)
+    if bytes.has {
+        check world.out.write("allocated")
+    }
+}

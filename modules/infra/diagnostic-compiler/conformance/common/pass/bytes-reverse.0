@@ -1,0 +1,15 @@
+pub fn main(world: World) -> Void raises {
+    var bytes: [5]u8 = [97, 98, 99, 100, 101]
+    var left: usize = 0
+    var right: usize = 4
+    while left < right {
+        let saved: u8 = bytes[left]
+        bytes[left] = bytes[right]
+        bytes[right] = saved
+        left = left + 1
+        right = right - 1
+    }
+    if bytes[0] == 101 && bytes[1] == 100 && bytes[2] == 99 && bytes[3] == 98 && bytes[4] == 97 {
+        check world.out.write("bytes reverse ok\n")
+    }
+}

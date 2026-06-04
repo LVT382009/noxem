@@ -1,0 +1,4 @@
+extern c "conformance/c/simple.h" as c
+
+pub fn main() -> Void {
+}

@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    var buf: [16]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let read_count: usize = std.fs.read("conformance/fixtures/std-fs-read.txt", buf)
+    let written: usize = std.fs.write(".zero/conformance/std-fs-write.txt", "zero write\n")
+    if read_count > 0 && written == 11 && std.fs.exists(".zero/conformance/std-fs-write.txt") {
+        check world.out.write("fs ok\n")
+    }
+}

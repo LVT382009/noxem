@@ -1,0 +1,6 @@
+pub fn main() -> Void {
+    var data: i32 = 1
+    let first: ref<i32> = &data
+    let second: ref<i32> = &data
+    let conflicting: i32 = &mut data
+}

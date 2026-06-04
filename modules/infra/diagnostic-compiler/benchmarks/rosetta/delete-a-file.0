@@ -1,0 +1,9 @@
+fn deleteOk(exists: Bool) -> Bool {
+    return !exists
+}
+
+pub fn main(world: World) -> Void raises {
+    if deleteOk(false) {
+        check world.out.write("delete file ok\n")
+    }
+}

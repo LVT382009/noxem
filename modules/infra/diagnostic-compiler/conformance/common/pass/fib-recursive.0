@@ -1,0 +1,12 @@
+fn fib(n: u32) -> u32 {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+pub fn main(world: World) -> Void raises {
+    if fib(10) == 55 {
+        check world.out.write("fib recursive ok\n")
+    }
+}

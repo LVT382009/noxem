@@ -1,0 +1,5 @@
+extern c "conformance/c/target-conditional.h" as c
+
+export c fn main() -> i32 {
+    return c.zero_c_windows_add(20, 22)
+}

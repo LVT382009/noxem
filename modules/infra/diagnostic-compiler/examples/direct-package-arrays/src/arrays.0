@@ -1,0 +1,9 @@
+fn record(value: i32) -> Void {
+    return
+}
+
+fn package_sum() -> i32 {
+    var values: [3]i32 = [2, 4, 6]
+    values[1] = values[1] + 1
+    return values[0] + values[1] + values[2]
+}

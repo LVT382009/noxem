@@ -1,0 +1,19 @@
+[submodule "packages/leann-backend-diskann/third_party/DiskANN"]
+	path = packages/leann-backend-diskann/third_party/DiskANN
+	url = https://github.com/yichuan-w/DiskANN.git
+[submodule "packages/leann-backend-hnsw/third_party/faiss"]
+	path = packages/leann-backend-hnsw/third_party/faiss
+	url = https://github.com/yichuan-w/faiss.git
+[submodule "packages/leann-backend-hnsw/third_party/msgpack-c"]
+	path = packages/leann-backend-hnsw/third_party/msgpack-c
+	url = https://github.com/msgpack/msgpack-c.git
+	branch = cpp_master
+[submodule "packages/leann-backend-hnsw/third_party/cppzmq"]
+	path = packages/leann-backend-hnsw/third_party/cppzmq
+	url = https://github.com/zeromq/cppzmq.git
+[submodule "packages/leann-backend-hnsw/third_party/libzmq"]
+	path = packages/leann-backend-hnsw/third_party/libzmq
+	url = https://github.com/zeromq/libzmq.git
+[submodule "packages/astchunk-leann"]
+	path = packages/astchunk-leann
+	url = https://github.com/yichuan-w/astchunk-leann.git

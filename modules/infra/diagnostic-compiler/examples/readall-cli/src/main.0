@@ -1,0 +1,19 @@
+use reader
+
+use validate
+
+pub fn main(world: World) -> Void raises {
+    let fs: Fs = std.fs.host()
+    check seed(fs)
+    var storage: [126]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    var arena: FixedBufAlloc = std.mem.arena(storage)
+    let maybe_body: Maybe<owned<ByteBuf>> = std.fs.readAll(arena, fs, ".zero/readall-cli.txt", 128)
+    if !maybe_body.has {
+        return
+    }
+    let body: owned<ByteBuf> = maybe_body.value
+    let len: usize = check validate_config(&body)
+    if len == 16 {
+        check world.out.write("readall cli ok\n")
+    }
+}

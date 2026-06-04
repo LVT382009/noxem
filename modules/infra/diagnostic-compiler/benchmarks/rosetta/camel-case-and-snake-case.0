@@ -1,0 +1,17 @@
+fn underscoreCount(text: Span<u8>) -> u32 {
+    var count: u32 = 0
+    var i: usize = 0
+    while i < std.mem.len(text) {
+        if text[i] == 95 {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    return count
+}
+
+pub fn main(world: World) -> Void raises {
+    if underscoreCount(std.mem.span("camel_case_word")) == 2 {
+        check world.out.write("camel snake ok\n")
+    }
+}

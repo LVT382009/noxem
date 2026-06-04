@@ -1,0 +1,13 @@
+type File {
+    fd: i32,
+}
+
+type Holder {
+    file: owned<File>,
+}
+
+pub fn main() -> Void {
+    let file: owned<File> = File { fd: 1 }
+    let holder: Holder = Holder { file: file }
+    let holders: [2]Holder = [holder; 2]
+}

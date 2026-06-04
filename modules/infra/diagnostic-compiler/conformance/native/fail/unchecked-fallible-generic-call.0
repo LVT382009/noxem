@@ -1,0 +1,7 @@
+fn risky<T: Type>(value: T) -> Void raises [Bad] {
+    raise Bad
+}
+
+pub fn main() -> Void raises [Bad] {
+    risky<i32>(1)
+}

@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    var values: [4]usize = [0_usize, 0_usize, 0_usize, 0_usize]
+    var len: usize = 0
+    len = std.collections.push(values, len, 8_usize)
+    if len == 1 && values[0] == 8_usize {
+        check world.out.write("std collections usize memory ok\n")
+    }
+}

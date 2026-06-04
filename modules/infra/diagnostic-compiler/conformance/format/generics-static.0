@@ -1,0 +1,11 @@
+type Box<T: Type, static N: usize> {
+    items: [N]T,
+}
+
+fn first<T: Type, static N: usize>(box: ref<Box<T, N>>) -> T {
+    return box.items[0]
+}
+
+pub fn main() -> Void {
+    let value: Box<u8, 4> = Box { items: [1, 2, 3, 4] }
+}

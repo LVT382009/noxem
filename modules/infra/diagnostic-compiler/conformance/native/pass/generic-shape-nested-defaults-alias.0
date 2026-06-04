@@ -1,0 +1,23 @@
+alias U8Box = Box<u8>
+
+type Box<T: Type> {
+    value: T,
+}
+
+type Slot<T: Type> {
+    item: T,
+    seen: Bool = false,
+}
+
+type Pair<T: Type, U: Type> {
+    left: T,
+    right: U,
+}
+
+pub fn main(world: World) -> Void raises {
+    let nested: Pair<Box<i32>, Slot<u8>> = Pair { left: Box { value: 42 }, right: Slot { item: 7_u8 } }
+    let aliased: U8Box = Box { value: nested.right.item }
+    if nested.left.value == 42 && !nested.right.seen && aliased.value == 7_u8 {
+        check world.out.write("generic shape nested defaults alias ok\n")
+    }
+}

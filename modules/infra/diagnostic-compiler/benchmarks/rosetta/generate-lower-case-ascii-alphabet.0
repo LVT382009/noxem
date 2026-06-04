@@ -1,0 +1,11 @@
+pub fn main(world: World) -> Void raises {
+    var letters: [26]u8 = [0_u8; 26]
+    var i: usize = 0
+    while i < 26 {
+        letters[i] = (i + 97) as u8
+        i = i + 1
+    }
+    if letters[0] == 97 && letters[25] == 122 {
+        check world.out.write("ascii alphabet ok\n")
+    }
+}

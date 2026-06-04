@@ -1,0 +1,5 @@
+pub fn main(world: World) -> Void raises {
+    var values: [2]i32 = [1, 2]
+    values[0] = true
+    check world.out.write("bad indexed mutation\n")
+}

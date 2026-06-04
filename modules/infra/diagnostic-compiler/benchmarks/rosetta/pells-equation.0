@@ -1,0 +1,9 @@
+fn pell(x: i32, y: i32, d: i32) -> Bool {
+    return x * x - d * (y * y) == 1
+}
+
+pub fn main(world: World) -> Void raises {
+    if pell(3, 2, 2) {
+        check world.out.write("pell ok\n")
+    }
+}

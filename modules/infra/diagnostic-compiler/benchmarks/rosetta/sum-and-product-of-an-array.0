@@ -1,0 +1,14 @@
+pub fn main(world: World) -> Void raises {
+    let values: [4]u32 = [1, 2, 3, 4]
+    var i: usize = 0
+    var sum: u32 = 0
+    var product: u32 = 1
+    while i < 4 {
+        sum = sum + values[i]
+        product = product * values[i]
+        i = i + 1
+    }
+    if sum == 10 && product == 24 {
+        check world.out.write("sum product ok\n")
+    }
+}

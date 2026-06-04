@@ -1,0 +1,7 @@
+pub fn main(world: World) -> Void raises {
+    let number: Maybe<usize> = std.parse.parseUsize("12345")
+    let invalid: Maybe<usize> = std.parse.parseUsize("12a")
+    if number.has && number.value == 12345 && !invalid.has {
+        check world.out.write("numeric string ok\n")
+    }
+}

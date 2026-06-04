@@ -1,0 +1,7 @@
+type S {
+    x: i32,
+    x: Bool,
+}
+
+pub fn main() -> Void {
+}

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/LEANN-RAG/LEANN-RAG/tree/main/docs
+    about: Read the docs first
+  - name: Discussions
+    url: https://github.com/LEANN-RAG/LEANN-RAG/discussions
+    about: Ask questions and share ideas

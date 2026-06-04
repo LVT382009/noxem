@@ -1,0 +1,10 @@
+type Item {
+    value: i32,
+}
+
+type Box<Item: Type> {
+    value: Item,
+}
+
+pub fn main() -> Void {
+}

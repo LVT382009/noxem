@@ -1,0 +1,5 @@
+test "json raw allocator" {
+    let bytes: Span<u8> = std.mem.span("{\"ok\":true}")
+    let parsed: i32 = std.json.parseBytes(123, bytes)
+    expect (parsed.has)
+}

@@ -1,0 +1,14 @@
+type Holder {
+    value: ref<i32>,
+}
+
+pub fn main() -> Void {
+    let next: i32 = 1
+    var old: i32 = 2
+    var holder: Holder = Holder { value: &old }
+    if true {
+        let selected: mutref<Holder> = &mut holder
+        selected.value = &next
+    }
+    old = 3
+}

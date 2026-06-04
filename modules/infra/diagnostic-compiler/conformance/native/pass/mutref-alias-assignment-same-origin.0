@@ -1,0 +1,10 @@
+type Holder {
+    value: mutref<i32>,
+}
+
+pub fn main() -> Void {
+    var x: i32 = 1
+    var holder: Holder = Holder { value: &mut x }
+    let selected: mutref<Holder> = &mut holder
+    selected.value = &mut x
+}

@@ -1,0 +1,6 @@
+const answer: u8 = 300
+
+pub fn main() -> Void {
+    let value: u8 = answer
+    expect (value == 0_u8)
+}

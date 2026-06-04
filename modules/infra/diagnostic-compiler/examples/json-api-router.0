@@ -1,0 +1,42 @@
+fn handle(request: Span<u8>, response: MutSpan<u8>) -> Maybe<Span<u8>> {
+    if std.http.requestMatches(request, "GET", "/health") {
+        return std.http.writeJsonResponse(response, 200_u16, "{\"ok\":true}")
+    }
+    if std.http.requestMatches(request, "POST", "/users") {
+        let tenant: Maybe<Span<u8>> = std.http.requestQueryValue(request, "tenant")
+        let content_type: Maybe<Span<u8>> = std.http.requestHeader(request, "content-type")
+        let body: Maybe<Span<u8>> = std.http.requestBodyWithin(request, 64)
+        var id: Maybe<u32> = null
+        if body.has {
+            id = std.json.u32(body.value, "id")
+        }
+        if tenant.has && std.mem.eql(tenant.value, "demo") && content_type.has && std.mem.eql(content_type.value, "application/json") && body.has && std.json.validateBytes(body.value) && id.has {
+            return std.http.writeJsonResponse(response, 201_u16, "{\"created\":true}")
+        }
+        return std.http.writeJsonResponse(response, 400_u16, "{\"error\":\"invalid\"}")
+    }
+    return std.http.writeJsonResponse(response, 404_u16, "{\"error\":\"not_found\"}")
+}
+
+pub fn main(world: World) -> Void raises {
+    let maybe_request: Maybe<String> = std.args.get(1)
+    if !maybe_request.has {
+        check world.err.write("usage: pass HTTP request envelope\n")
+        return
+    }
+    var response: [256]u8 = [0_u8; 256]
+    let output: Maybe<Span<u8>> = handle(std.mem.span(maybe_request.value), response)
+    if !output.has {
+        check world.err.write("json api router failed\n")
+        return
+    }
+    let content_type: HttpHeaderValue = std.http.headerValue(output.value, "content-type")
+    let header: Maybe<Span<u8>> = std.http.headerBytes(output.value, content_type)
+    let body_offset: usize = std.http.responseBodyOffset(output.value)
+    let body: Span<u8> = output.value[body_offset..]
+    if header.has && std.mem.eql(header.value, "application/json") && std.str.contains(output.value, "201 Created") && std.mem.eql(body, "{\"created\":true}") {
+        check world.out.write("json api router ok\n")
+        return
+    }
+    check world.err.write("json api router failed\n")
+}

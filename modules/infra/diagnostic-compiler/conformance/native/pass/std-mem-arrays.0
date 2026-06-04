@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    let bytes: [4]u8 = [122, 101, 114, 111]
+    var scratch: [4]u8 = [0, 0, 0, 0]
+    let copied: usize = std.mem.copy(scratch, bytes)
+    if std.mem.eql("zero", "zero") && copied == 4 && scratch[0] == 122 as u8 {
+        check world.out.write("native std mem arrays\n")
+    }
+}

@@ -1,0 +1,3 @@
+fn labelOk() -> Bool {
+    return true
+}

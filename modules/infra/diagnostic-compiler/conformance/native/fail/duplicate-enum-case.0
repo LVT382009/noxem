@@ -1,0 +1,7 @@
+enum E {
+    a,
+    a,
+}
+
+pub fn main() -> Void {
+}

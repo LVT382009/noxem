@@ -1,0 +1,13 @@
+fn shortest(ab: i32, ac: i32, cb: i32) -> i32 {
+    let via: i32 = ac + cb
+    if via < ab {
+        return via
+    }
+    return ab
+}
+
+pub fn main(world: World) -> Void raises {
+    if shortest(9, 2, 3) == 5 {
+        check world.out.write("dijkstra ok\n")
+    }
+}

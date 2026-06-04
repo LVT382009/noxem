@@ -1,0 +1,249 @@
+fn __zero_std_path_is_sep(byte: u8) -> Bool {
+    return byte == 47_u8 || byte == 92_u8
+}
+
+fn __zero_std_path_segment_end(path: String, index: usize) -> Bool {
+    return index >= std.mem.len(path) || __zero_std_path_is_sep(path[index])
+}
+
+fn __zero_std_path_trim_end(path: String) -> usize {
+    var end: usize = std.mem.len(path)
+    while end > 0 && __zero_std_path_is_sep(path[end - 1]) {
+        end = end - 1
+    }
+    return end
+}
+
+fn __zero_std_path_basename(path: String) -> String {
+    let end: usize = __zero_std_path_trim_end(path)
+    var start: usize = end
+    while start > 0 && !__zero_std_path_is_sep(path[start - 1]) {
+        start = start - 1
+    }
+    return path[start..end]
+}
+
+fn __zero_std_path_dirname(path: String) -> String {
+    let end: usize = __zero_std_path_trim_end(path)
+    var root_len: usize = 0
+    if std.mem.len(path) > 0 && __zero_std_path_is_sep(path[0]) {
+        root_len = 1
+    }
+    if root_len > 0 && end == 0 {
+        return path[..root_len]
+    }
+    var split: usize = end
+    while split > 0 && !__zero_std_path_is_sep(path[split - 1]) {
+        split = split - 1
+    }
+    while split > root_len && __zero_std_path_is_sep(path[split - 1]) {
+        split = split - 1
+    }
+    return path[..split]
+}
+
+fn __zero_std_path_extension(path: String) -> String {
+    let end: usize = __zero_std_path_trim_end(path)
+    var start: usize = end
+    while start > 0 && !__zero_std_path_is_sep(path[start - 1]) {
+        start = start - 1
+    }
+    var dot: usize = end
+    var scan: usize = end
+    while scan > start {
+        scan = scan - 1
+        if path[scan] == 46_u8 {
+            dot = scan
+            scan = start
+        }
+    }
+    if dot == end {
+        return path[end..end]
+    }
+    if dot == start {
+        return path[end..end]
+    }
+    return path[dot + 1..end]
+}
+
+fn __zero_std_path_copy(buffer: MutSpan<u8>, source: String) -> Maybe<String> {
+    let len: usize = std.mem.len(source)
+    if len > std.mem.len(buffer) {
+        return null
+    }
+    var index: usize = 0
+    while index < len {
+        buffer[index] = source[index]
+        index = index + 1
+    }
+    return buffer[..len]
+}
+
+fn __zero_std_path_join(buffer: MutSpan<u8>, left: String, right: String) -> Maybe<String> {
+    var left_end: usize = __zero_std_path_trim_end(left)
+    if left_end == 0 && (std.mem.len(left) > 0 && __zero_std_path_is_sep(left[0])) {
+        left_end = 1
+    }
+    let left_is_root: Bool = left_end == 1 && __zero_std_path_is_sep(left[0])
+    let right_is_root: Bool = std.mem.len(right) > 0 && __zero_std_path_is_sep(right[0])
+    var right_start: usize = 0
+    while right_start < std.mem.len(right) && __zero_std_path_is_sep(right[right_start]) {
+        right_start = right_start + 1
+    }
+    let right_len: usize = std.mem.len(right) - right_start
+    var total: usize = left_end + right_len
+    if left_end == 0 && right_is_root {
+        total = total + 1
+    }
+    if left_end > 0 && right_len > 0 && !left_is_root {
+        total = total + 1
+    }
+    if total > std.mem.len(buffer) {
+        return null
+    }
+    var out: usize = 0
+    while out < left_end {
+        if left_is_root && out == 0 {
+            buffer[out] = 47_u8
+        } else {
+            buffer[out] = left[out]
+        }
+        out = out + 1
+    }
+    if left_end == 0 && right_is_root {
+        buffer[out] = 47_u8
+        out = out + 1
+    }
+    if left_end > 0 && right_len > 0 && !left_is_root {
+        buffer[out] = 47_u8
+        out = out + 1
+    }
+    var read: usize = right_start
+    while read < std.mem.len(right) {
+        buffer[out] = right[read]
+        out = out + 1
+        read = read + 1
+    }
+    return buffer[..out]
+}
+
+fn __zero_std_path_output_ends_parent(buffer: MutSpan<u8>, out: usize, root_len: usize) -> Bool {
+    if out <= root_len {
+        return false
+    }
+    var segment_start: usize = out
+    while segment_start > root_len && !__zero_std_path_is_sep(buffer[segment_start - 1]) {
+        segment_start = segment_start - 1
+    }
+    let segment_len: usize = out - segment_start
+    if segment_len != 2 {
+        return false
+    }
+    return buffer[segment_start] == 46_u8 && buffer[segment_start + 1] == 46_u8
+}
+
+fn __zero_std_path_normalize(buffer: MutSpan<u8>, path: String) -> Maybe<String> {
+    var read: usize = 0
+    var out: usize = 0
+    var root_len: usize = 0
+    if std.mem.len(path) > 0 && __zero_std_path_is_sep(path[0]) {
+        if std.mem.len(buffer) == 0 {
+            return null
+        }
+        buffer[0] = 47_u8
+        out = 1
+        root_len = 1
+        read = 1
+    }
+    while read < std.mem.len(path) {
+        while read < std.mem.len(path) && __zero_std_path_is_sep(path[read]) {
+            read = read + 1
+        }
+        if read < std.mem.len(path) {
+            let segment_start: usize = read
+            while read < std.mem.len(path) && !__zero_std_path_is_sep(path[read]) {
+                read = read + 1
+            }
+            let segment_end: usize = read
+            let segment_len: usize = segment_end - segment_start
+            if segment_len == 1 && path[segment_start] == 46_u8 {
+                read = segment_end
+            } else if segment_len == 2 && path[segment_start] == 46_u8 && path[segment_start + 1] == 46_u8 {
+                if root_len == 1 && out == root_len {
+                    read = segment_end
+                } else if out > root_len && !__zero_std_path_output_ends_parent(buffer, out, root_len) {
+                    while out > root_len && !__zero_std_path_is_sep(buffer[out - 1]) {
+                        out = out - 1
+                    }
+                    if out > root_len && __zero_std_path_is_sep(buffer[out - 1]) {
+                        out = out - 1
+                    }
+                } else {
+                    var needed: usize = segment_len
+                    if out > root_len {
+                        needed = needed + 1
+                    }
+                    if out + needed > std.mem.len(buffer) {
+                        return null
+                    }
+                    if out > root_len {
+                        buffer[out] = 47_u8
+                        out = out + 1
+                    }
+                    var copy: usize = segment_start
+                    while copy < segment_end {
+                        buffer[out] = path[copy]
+                        out = out + 1
+                        copy = copy + 1
+                    }
+                }
+            } else {
+                var needed: usize = segment_len
+                if out > root_len {
+                    needed = needed + 1
+                }
+                if out + needed > std.mem.len(buffer) {
+                    return null
+                }
+                if out > root_len {
+                    buffer[out] = 47_u8
+                    out = out + 1
+                }
+                var copy: usize = segment_start
+                while copy < segment_end {
+                    buffer[out] = path[copy]
+                    out = out + 1
+                    copy = copy + 1
+                }
+            }
+        }
+    }
+    return buffer[..out]
+}
+
+fn __zero_std_path_relative(buffer: MutSpan<u8>, base: String, target: String) -> Maybe<String> {
+    let base_end: usize = __zero_std_path_trim_end(base)
+    let target_len: usize = std.mem.len(target)
+    let base_prefix: String = base[..base_end]
+    let base_matches: Bool = std.str.startsWith(target, base_prefix)
+    if base_matches && base_end == target_len {
+        return buffer[..0]
+    }
+    if base_matches && base_end < target_len {
+        if __zero_std_path_is_sep(target[base_end]) {
+            var out: usize = 0
+            var read: usize = base_end + 1
+            let rel_len: usize = target_len - read
+            if rel_len > std.mem.len(buffer) {
+                return null
+            }
+            while read < target_len {
+                buffer[out] = target[read]
+                out = out + 1
+                read = read + 1
+            }
+            return buffer[..out]
+        }
+    }
+    return __zero_std_path_copy(buffer, target)
+}

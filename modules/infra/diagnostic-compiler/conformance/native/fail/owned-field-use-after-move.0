@@ -1,0 +1,17 @@
+type File {
+    fd: i32,
+}
+
+type Holder {
+    file: owned<File>,
+}
+
+fn close(file: owned<File>) -> Void {
+}
+
+pub fn main(world: World) -> Void raises {
+    let file: owned<File> = File { fd: 1 }
+    let holder: Holder = Holder { file: file }
+    close(file)
+    check world.out.write("owned field move")
+}

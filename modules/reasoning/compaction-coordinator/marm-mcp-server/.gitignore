@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+.pytest_cache/
+.pytest_tmp*/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local data
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+cp dump.*
+.aider*
+
+# user-specific files
+.claude
+.codex
+.gemini
+.qwen
+dump.md
+docs\archived
+docs\core
+docs\core\extra
+docs\current
+docs\future
+docs\Visuals

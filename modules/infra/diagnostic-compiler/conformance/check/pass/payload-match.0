@@ -1,0 +1,16 @@
+choice Result {
+    ok: i32,
+    err: String,
+}
+
+pub fn main(world: World) -> Void raises {
+    let result: Result = Result.ok(42)
+    match result {
+        ok {
+            check world.out.write("payload match\n")
+        }
+        err {
+            check world.out.write("unexpected\n")
+        }
+    }
+}

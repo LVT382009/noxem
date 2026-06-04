@@ -1,0 +1,11 @@
+type Box {
+    value: ref<i32>,
+}
+
+pub fn make() -> Box {
+    let value: i32 = 1
+    return Box { value: &value }
+}
+
+pub fn main() -> Void {
+}

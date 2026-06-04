@@ -1,0 +1,259 @@
+{
+  "schemaVersion": 1,
+  "kind": "zero-provenance-surface-matrix",
+  "surfaces": [
+    {
+      "surface": "Identifier reads",
+      "action": "Preserve stored provenance or synthesize direct ref provenance",
+      "owners": ["expr_value_provenance", "expr_reference_provenance", "type_value_provenance_from_place"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/borrow-assignment-origin-tracking.0", "conformance/native/fail/generic-reference-borrow-origin.0"]
+      }
+    },
+    {
+      "surface": "Field reads",
+      "action": "Project provenance through value_path and root storage paths",
+      "owners": ["expr_reference_provenance", "place_storage_value_provenance_under_path"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/shape-field-reference-borrow-origin.0", "conformance/native/fail/receiver-return-field-origin.0"]
+      }
+    },
+    {
+      "surface": "Index reads",
+      "action": "Project indexed provenance and widen uncertain array paths to [*]",
+      "owners": ["expr_reference_provenance", "origin_path_join", "origin_path_overlaps"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/array-reference-borrow-origin.0", "conformance/native/fail/shape-array-reference-index-origin.0"]
+      }
+    },
+    {
+      "surface": "Direct borrows",
+      "action": "Create provenance for the borrowed place and check lexical conflicts",
+      "owners": ["expr_value_provenance", "check_borrow_conflict_at"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/borrow-conflict.0", "conformance/native/fail/borrow-assign-while-borrowed.0"]
+      }
+    },
+    {
+      "surface": "Mutable borrows",
+      "action": "Create mutable provenance and reject overlapping mutable/shared borrows",
+      "owners": ["expr_value_provenance", "check_borrow_conflict_at", "check_read_not_mutably_borrowed"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/read-while-mutably-borrowed.0", "conformance/native/fail/borrow-mutref-immutable.0"]
+      }
+    },
+    {
+      "surface": "Shape literals",
+      "action": "Preserve field provenance under field paths",
+      "owners": ["expr_reference_provenance", "value_provenance_add_all_with_prefix"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/return-shape-reference-escape.0", "conformance/native/fail/function-mutref-local-shape-reference-escape.0"]
+      }
+    },
+    {
+      "surface": "Array literals",
+      "action": "Preserve literal element provenance under precise paths and widen unknown paths to [*]",
+      "owners": ["expr_reference_provenance", "value_provenance_add_all_with_prefix"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/return-array-reference-escape.0", "conformance/native/fail/function-mutref-local-array-reference-escape.0"]
+      }
+    },
+    {
+      "surface": "Maybe<T> values",
+      "action": "Preserve nested provenance under .value",
+      "owners": ["type_value_provenance_from_place", "maybe_unwrapped_value_provenance"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/check-maybe-reference-origin.0", "conformance/native/fail/rescue-reference-origin.0"]
+      }
+    },
+    {
+      "surface": "Choice payloads",
+      "action": "Preserve constructor payload provenance under case paths and bind match payload provenance from the matched case",
+      "owners": ["type_value_provenance_from_place", "choice_constructor_value_provenance", "register_match_payload_binding_provenance"],
+      "fixtures": {
+        "fail": [
+          "conformance/native/fail/choice-payload-local-reference-escape.0",
+          "conformance/native/fail/choice-match-payload-reference-origin.0",
+          "conformance/native/fail/choice-match-payload-return-escape.0"
+        ],
+        "pass": [
+          "conformance/native/pass/choice-payload-reference-return.0",
+          "conformance/native/pass/choice-match-payload-reference-origin.0",
+          "conformance/native/pass/choice-match-payload-return-origin.0"
+        ]
+      }
+    },
+    {
+      "surface": "check unwraps",
+      "action": "Project successful value provenance and apply checked-call storage effects",
+      "owners": ["expr_reference_provenance", "apply_expr_call_storage_effects"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/check-maybe-reference-origin.0", "conformance/native/fail/check-array-reference-origin.0"]
+      }
+    },
+    {
+      "surface": "rescue values",
+      "action": "Merge fallible value and fallback provenance conservatively",
+      "owners": ["expr_reference_provenance", "provenance_scope_snapshot_restore_optional_branch", "apply_expr_call_storage_effects"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/rescue-reference-origin.0", "conformance/native/fail/rescue-side-effect-reference-origin.0"]
+      }
+    },
+    {
+      "surface": "Primitive casts",
+      "action": "Reject non-primitive casts before references can pass through",
+      "owners": ["check_expr_expected", "expr_reference_provenance"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/cast-int-to-span.0", "conformance/native/fail/cast-int-to-string.0"]
+      }
+    },
+    {
+      "surface": "Plain calls",
+      "action": "Resolve through the shared call resolver, instantiate return provenance, and replay storage effects",
+      "owners": ["resolve_provenance_call", "resolve_named_provenance_call", "call_result_value_provenance", "apply_checked_call_storage_effects"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/aggregate-call-reference-borrow-origin.0"],
+        "pass": ["conformance/native/pass/function-mutref-reference-store.0"]
+      }
+    },
+    {
+      "surface": "Generic calls",
+      "action": "Resolve generic bindings once and use the same summary pipeline",
+      "owners": ["resolve_provenance_call", "resolve_named_provenance_call", "call_result_value_provenance", "function_provenance_summary"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/generic-reference-borrow-origin.0", "conformance/native/fail/nested-generic-mutref-reference-origin.0"],
+        "pass": ["conformance/native/pass/generic-mutref-reference-store.0"]
+      }
+    },
+    {
+      "surface": "Shape namespace calls",
+      "action": "Resolve static shape methods through the shared call resolver",
+      "owners": ["resolve_provenance_call", "finish_shape_method_provenance_call", "build_shape_method_bindings", "apply_checked_call_storage_effects"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/local-reference-escape-method.0"],
+        "pass": ["conformance/native/pass/static-method-namespace.0"]
+      }
+    },
+    {
+      "surface": "Receiver calls",
+      "action": "Treat self as parameter zero and replay receiver storage effects",
+      "owners": ["resolve_provenance_call", "resolve_receiver_shape_provenance_call", "collect_effect_target_places", "apply_checked_call_storage_effects"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/receiver-method-side-effect-reference-origin.0", "conformance/native/fail/receiver-method-local-reference-escape.0"],
+        "pass": ["conformance/native/pass/receiver-method-reference-store.0"]
+      }
+    },
+    {
+      "surface": "Static interface calls",
+      "action": "Resolve constrained interface calls and concrete shape instantiations through the same summary/effect path",
+      "owners": ["resolve_provenance_call", "resolve_concrete_constrained_shape_provenance_call", "resolve_constrained_interface_provenance_call", "finish_shape_method_provenance_call", "build_constrained_interface_method_bindings", "apply_checked_call_storage_effects"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/static-interface-mutref-reference-origin.0", "conformance/native/fail/static-interface-return-reference-origin.0"],
+        "pass": ["conformance/native/pass/static-interface-return-reference-origin.0", "conformance/native/pass/static-interface-mutref-reference-store.0"]
+      }
+    },
+    {
+      "surface": "Incomplete summaries",
+      "action": "Reject incomplete mutable-parameter summaries instead of assuming no effects",
+      "owners": ["function_provenance_summary", "apply_provenance_call_storage_effects"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/recursive-mutref-summary-incomplete.0"]
+      }
+    },
+    {
+      "surface": "Let bindings",
+      "action": "Install initializer provenance on the binding",
+      "owners": ["register_borrow_binding", "scope_set_value_provenance"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/local-reference-escape-binding.0"],
+        "pass": ["conformance/native/pass/borrow-shadowed-root-reassignment.0"]
+      }
+    },
+    {
+      "surface": "Assignments",
+      "action": "Clear and install provenance at canonical target places",
+      "owners": ["assignment_provenance_snapshot_clear", "update_borrow_assignment", "collect_assignment_target_places"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/borrow-assignment-shorter-lived-root.0"],
+        "pass": ["conformance/native/pass/assignment-rhs-side-effect-clears-old-origin.0"]
+      }
+    },
+    {
+      "surface": "Field assignments",
+      "action": "Preserve sibling provenance and update only the overwritten field path",
+      "owners": ["collect_assignment_target_places", "update_borrow_assignment", "scope_set_value_provenance_path_in_scope"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/shape-field-reference-assignment-preserves-other-origin.0"],
+        "pass": ["conformance/native/pass/shape-field-reference-reassignment-clears-origin.0"]
+      }
+    },
+    {
+      "surface": "Index assignments",
+      "action": "Update indexed storage using precise or widened paths",
+      "owners": ["collect_assignment_target_places", "update_borrow_assignment", "origin_path_overlaps", "origin_path_is_definitely_within"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/ref-indexed-assignment.0", "conformance/native/fail/index-reference-assignment-preserves-other-origin.0"],
+        "pass": ["conformance/native/pass/index-reference-assignment-clears-origin.0"]
+      }
+    },
+    {
+      "surface": "Returns",
+      "action": "Reject local-origin escapes and summarize return provenance for callers",
+      "owners": ["check_return_reference_escape", "collect_return_value_provenance_from_stmt_vec", "function_provenance_summary"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/borrow-return-local.0", "conformance/native/fail/aggregate-call-reference-escape.0"]
+      }
+    },
+    {
+      "surface": "If joins",
+      "action": "Merge provenance from continuing branches",
+      "owners": ["provenance_scope_snapshot_restore_union", "collect_return_value_provenance_from_stmt_vec"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/borrow-branch-origin-merge.0", "conformance/native/fail/aggregate-if-reference-origin.0"],
+        "pass": ["conformance/native/pass/branch-overwrite-away-reference-origin.0"]
+      }
+    },
+    {
+      "surface": "Match joins",
+      "action": "Merge provenance from continuing match arms",
+      "owners": ["provenance_scope_snapshot_restore_union", "collect_return_value_provenance_from_stmt_vec"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/aggregate-match-reference-origin.0"],
+        "pass": ["conformance/native/pass/borrow-unreachable-match-return-origin.0"]
+      }
+    },
+    {
+      "surface": "Loop-carried values",
+      "action": "Merge before-loop and after-body provenance conservatively",
+      "owners": ["provenance_scope_snapshot_restore_union", "collect_return_value_provenance_from_stmt_vec"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/array-while-reference-origin.0", "conformance/native/fail/array-for-reference-origin.0"]
+      }
+    },
+    {
+      "surface": "Short-circuit expressions",
+      "action": "Merge skipped and evaluated RHS storage effects conservatively",
+      "owners": ["apply_expr_call_storage_effects", "provenance_scope_snapshot_restore_optional_branch"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/function-short-circuit-side-effect-reference-origin.0", "conformance/native/fail/short-circuit-side-effect-reference-origin.0"]
+      }
+    },
+    {
+      "surface": "Early returns",
+      "action": "Exclude unreachable post-return provenance from branch joins",
+      "owners": ["collect_return_value_provenance_from_stmt_vec", "stmt_vec_guarantees_exit"],
+      "fixtures": {
+        "pass": ["conformance/native/pass/borrow-unreachable-return-origin.0", "conformance/native/pass/borrow-unreachable-if-return-origin.0"]
+      }
+    },
+    {
+      "surface": "Mutref aliases",
+      "action": "Resolve alias targets to canonical storage before clearing or replaying effects",
+      "owners": ["collect_effect_target_places", "collect_assignment_target_places", "actual_storage_value_provenance_under_path"],
+      "fixtures": {
+        "fail": ["conformance/native/fail/mutref-alias-assignment-reference-origin.0"],
+        "pass": ["conformance/native/pass/mutref-alias-assignment-same-origin.0"]
+      }
+    }
+  ]
+}

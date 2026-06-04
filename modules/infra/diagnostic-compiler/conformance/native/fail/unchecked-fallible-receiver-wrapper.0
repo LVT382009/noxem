@@ -1,0 +1,14 @@
+type Counter {
+    value: u8,
+    fn risky(self: ref<Self>) -> Void raises [Bad] {
+        raise Bad
+    }
+    fn wrapper(self: ref<Self>) -> Void raises {
+        check self.risky()
+    }
+}
+
+pub fn main() -> Void {
+    let counter: Counter = Counter { value: 0 }
+    counter.wrapper()
+}

@@ -1,0 +1,14 @@
+type Cell<T: Type> {
+    value: ref<T>,
+}
+
+fn store<T: Type>(cell: mutref<Cell<T>>, next: ref<T>) -> Void {
+    cell.value = next
+}
+
+pub fn main() -> Void {
+    let old: i32 = 1
+    let next: i32 = 2
+    var cell: Cell<i32> = Cell { value: &old }
+    store<i32>(&mut cell, &next)
+}

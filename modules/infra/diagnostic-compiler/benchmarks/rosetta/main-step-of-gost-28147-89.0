@@ -1,0 +1,9 @@
+fn round(left: u32, key: u32) -> u32 {
+    return (left + key) % 256
+}
+
+pub fn main(world: World) -> Void raises {
+    if round(250, 10) == 4 {
+        check world.out.write("gost step ok\n")
+    }
+}

@@ -1,0 +1,7 @@
+type S {
+    x: i32,
+}
+
+pub fn main() -> Void {
+    let t: i32 = S
+}

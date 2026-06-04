@@ -1,0 +1,18 @@
+choice Result {
+    ok: i32,
+    err: String,
+}
+
+pub fn main(world: World) -> Void raises {
+    let result: Result = Result.ok(42)
+    match result {
+        .ok(value) {
+            if value == 42 {
+                check world.out.write("payload binding ok\n")
+            }
+        }
+        .err(message) {
+            check world.out.write(message)
+        }
+    }
+}

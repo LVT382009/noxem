@@ -1,0 +1,91 @@
+export c fn main() -> i32 {
+    if !std.http.statusIsInformational(100_u16) || !std.http.statusIsSuccess(201_u16) || !std.http.statusIsRedirect(302_u16) || !std.http.statusIsClientError(404_u16) || !std.http.statusIsServerError(503_u16) {
+        return 13
+    }
+    if !std.mem.eql(std.http.statusReason(404_u16), "Not Found") {
+        return 14
+    }
+    var request_buf: [256]u8 = [0_u8; 256]
+    let request: Maybe<Span<u8>> = std.http.writeJsonRequest(request_buf, "POST https://example.com/api?name=zero", "{\"ping\":1}")
+    if !request.has {
+        return 15
+    }
+    let method: Maybe<Span<u8>> = std.http.requestMethodName(request.value)
+    let target: Maybe<Span<u8>> = std.http.requestTarget(request.value)
+    let path: Maybe<Span<u8>> = std.http.requestPath(request.value)
+    let query: Maybe<Span<u8>> = std.http.requestQuery(request.value)
+    let content_type: Maybe<Span<u8>> = std.http.requestHeader(request.value, "content-type")
+    let body: Maybe<Span<u8>> = std.http.requestBody(request.value)
+    if !method.has || !std.mem.eql(method.value, "POST") {
+        return 16
+    }
+    if !target.has || !std.mem.eql(target.value, "https://example.com/api?name=zero") {
+        return 17
+    }
+    if !path.has || !std.mem.eql(path.value, "/api") {
+        return 18
+    }
+    if !query.has || !std.mem.eql(query.value, "name=zero") {
+        return 19
+    }
+    if !content_type.has || !std.mem.eql(content_type.value, "application/json") {
+        return 20
+    }
+    if !body.has || !std.mem.eql(body.value, "{\"ping\":1}") {
+        return 21
+    }
+    let name: Maybe<Span<u8>> = std.url.queryValue(query.value, "name")
+    if !name.has || !std.mem.eql(name.value, "zero") {
+        return 22
+    }
+    let query_name: Maybe<Span<u8>> = std.http.requestQueryValue(request.value, "name")
+    if !query_name.has || !std.mem.eql(query_name.value, "zero") {
+        return 28
+    }
+    let limited_body: Maybe<Span<u8>> = std.http.requestBodyWithin(request.value, 16)
+    let too_large_body: Maybe<Span<u8>> = std.http.requestBodyWithin(request.value, 4)
+    if !limited_body.has || !std.mem.eql(limited_body.value, "{\"ping\":1}") || too_large_body.has {
+        return 29
+    }
+    if !std.http.requestMatches(request.value, "POST", "/api") || std.http.requestMatches(request.value, "GET", "/api") {
+        return 30
+    }
+    var get_buf: [64]u8 = [0_u8; 64]
+    let get_request: Maybe<Span<u8>> = std.http.writeRequest(get_buf, "GET /health", "")
+    if !get_request.has || !std.mem.eql(get_request.value, "GET /health\n\n") {
+        return 23
+    }
+    var absolute_buf: [64]u8 = [0_u8; 64]
+    let absolute_request: Maybe<Span<u8>> = std.http.writeRequest(absolute_buf, "GET https://example.com", "")
+    if !absolute_request.has {
+        return 31
+    }
+    let absolute_path: Maybe<Span<u8>> = std.http.requestPath(absolute_request.value)
+    if !absolute_path.has || !std.mem.eql(absolute_path.value, "/") {
+        return 33
+    }
+    var invalid_buf: [64]u8 = [0_u8; 64]
+    let invalid_request: Maybe<Span<u8>> = std.http.writeRequest(invalid_buf, "GET", "")
+    if invalid_request.has {
+        return 34
+    }
+    var response_buf: [256]u8 = [0_u8; 256]
+    let response: Maybe<Span<u8>> = std.http.writeJsonResponse(response_buf, 201_u16, "{\"ok\":true}")
+    if !response.has {
+        return 24
+    }
+    let header: HttpHeaderValue = std.http.headerValue(response.value, "content-type")
+    let header_bytes: Maybe<Span<u8>> = std.http.headerBytes(response.value, header)
+    if !header_bytes.has || !std.mem.eql(header_bytes.value, "application/json") {
+        return 25
+    }
+    if std.http.responseBodyOffset(response.value) >= std.mem.len(response.value) {
+        return 26
+    }
+    var plain_response_buf: [128]u8 = [0_u8; 128]
+    let plain_response: Maybe<Span<u8>> = std.http.writeResponse(plain_response_buf, 204_u16, "")
+    if !plain_response.has || !std.str.contains(plain_response.value, "204 No Content") {
+        return 27
+    }
+    return 32
+}

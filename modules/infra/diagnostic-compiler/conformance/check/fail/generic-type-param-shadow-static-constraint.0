@@ -1,0 +1,19 @@
+const T: usize = 4
+
+type Bytes<static N: usize> {
+    items: [N]u8,
+    fn first(self: ref<Self>) -> u8 {
+        return self.items[0]
+    }
+}
+
+interface First<T: Type, static N: usize> {
+    fn first(self: ref<T>) -> u8
+}
+
+fn readFirst<T: First<T, T>>(value: ref<T>) -> u8 {
+    return T.first(value)
+}
+
+pub fn main() -> Void {
+}

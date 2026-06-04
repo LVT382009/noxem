@@ -1,0 +1,12 @@
+fn accept(r: ref<i32>) -> Void {
+}
+
+pub fn main() -> Void {
+    let x: i32 = 1
+    var r: ref<i32> = &x
+    if true {
+        let y: i32 = 2
+        r = &y
+    }
+    accept(r)
+}

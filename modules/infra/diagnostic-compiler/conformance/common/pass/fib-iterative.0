@@ -1,0 +1,18 @@
+fn fib(n: u32) -> u32 {
+    var index: u32 = 0
+    var a: u32 = 0
+    var b: u32 = 1
+    while index < n {
+        let next: u32 = a + b
+        a = b
+        b = next
+        index = index + 1
+    }
+    return a
+}
+
+pub fn main(world: World) -> Void raises {
+    if fib(10) == 55 {
+        check world.out.write("fib iterative ok\n")
+    }
+}

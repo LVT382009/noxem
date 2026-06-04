@@ -1,0 +1,6 @@
+fn mix(value: i32) -> i32 {
+    if value % 2 == 0 {
+        return value + 1
+    }
+    return value - 1
+}

@@ -1,0 +1,5 @@
+pub fn main(world: World) -> Void raises {
+    if std.math.modPowU32(4, 13, 497) == 445 {
+        check world.out.write("modular arithmetic ok\n")
+    }
+}

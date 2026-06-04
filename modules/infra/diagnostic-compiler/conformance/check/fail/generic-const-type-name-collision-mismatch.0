@@ -1,0 +1,23 @@
+const Foo: usize = 3
+
+const Bar: usize = 3
+
+type Foo {
+    value: i32,
+}
+
+type Bar {
+    value: i32,
+}
+
+type Holder<T: Type> {
+    value: T,
+}
+
+fn needsBar(holder: Holder<Bar>) -> Void {
+}
+
+pub fn main() -> Void {
+    let holder: Holder<Foo> = Holder { value: Foo { value: 1 } }
+    needsBar(holder)
+}

@@ -1,0 +1,14 @@
+pub fn main(world: World) -> Void raises {
+    let ascii: [4]u8 = [122_u8, 101_u8, 114_u8, 111_u8]
+    let e_acute: [2]u8 = [195_u8, 169_u8]
+    let euro: [3]u8 = [226_u8, 130_u8, 172_u8]
+    let smile: [4]u8 = [240_u8, 159_u8, 152_u8, 128_u8]
+    let overlong: [2]u8 = [192_u8, 128_u8]
+    let surrogate: [3]u8 = [237_u8, 160_u8, 128_u8]
+    let len: Maybe<usize> = std.text.utf8Len(e_acute)
+    let mixed: [9]u8 = [122_u8, 101_u8, 114_u8, 111_u8, 32_u8, 195_u8, 169_u8, 33_u8, 10_u8]
+    let mixed_len: Maybe<usize> = std.text.utf8Len(mixed)
+    if std.text.isAscii(ascii) && !std.text.isAscii(e_acute) && std.text.utf8Valid(e_acute) && std.text.utf8Valid(euro) && std.text.utf8Valid(smile) && !std.text.utf8Valid(overlong) && !std.text.utf8Valid(surrogate) && len.has && len.value == 1 && mixed_len.has && mixed_len.value == 8 {
+        check world.out.write("std text ok\n")
+    }
+}

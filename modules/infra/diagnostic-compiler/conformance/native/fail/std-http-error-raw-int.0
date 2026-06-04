@@ -1,0 +1,7 @@
+export c fn main() -> i32 {
+    let error: HttpError = std.http.errorTimeout()
+    if error == 6 {
+        return 1
+    }
+    return 0
+}

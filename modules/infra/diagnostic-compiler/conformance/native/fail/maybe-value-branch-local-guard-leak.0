@@ -1,0 +1,14 @@
+pub fn main() -> Void {
+    if true {
+        let value: Maybe<u8> = null
+        if !value.has {
+            return
+        }
+    } else {
+        return
+    }
+    if true {
+        let value: Maybe<u8> = null
+        let byte: u8 = value.value
+    }
+}

@@ -1,0 +1,106 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package clickhouse
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	yaml "github.com/goccy/go-yaml"
+	"github.com/googleapis/mcp-toolbox/internal/sources"
+	"github.com/googleapis/mcp-toolbox/internal/tools"
+	"github.com/googleapis/mcp-toolbox/internal/util"
+	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
+)
+
+const executeSQLType string = "clickhouse-execute-sql"
+
+func init() {
+	if !tools.Register(executeSQLType, newExecuteSQLConfig) {
+		panic(fmt.Sprintf("tool type %q already registered", executeSQLType))
+	}
+}
+
+func newExecuteSQLConfig(ctx context.Context, name string, decoder *yaml.Decoder) (tools.ToolConfig, error) {
+	actual := Config{ConfigBase: tools.ConfigBase{Name: name}}
+	if err := decoder.DecodeContext(ctx, &actual); err != nil {
+		return nil, err
+	}
+	return actual, nil
+}
+
+type compatibleSource interface {
+	RunSQL(context.Context, string, parameters.ParamValues) (any, error)
+}
+
+type Config struct {
+	tools.ConfigBase `yaml:",inline"`
+	Type             string                 `yaml:"type" validate:"required"`
+	Source           string                 `yaml:"source" validate:"required"`
+	Annotations      *tools.ToolAnnotations `yaml:"annotations,omitempty"`
+}
+
+var _ tools.ToolConfig = Config{}
+
+func (cfg Config) ToolConfigType() string {
+	return executeSQLType
+}
+
+func (cfg Config) Initialize(srcs map[string]sources.Source) (tools.Tool, error) {
+	if cfg.Description == "" {
+		return nil, fmt.Errorf("description is required for tool %q", cfg.Name)
+	}
+
+	sqlParameter := parameters.NewStringParameter("sql", "The SQL statement to execute.")
+	params := parameters.Parameters{sqlParameter}
+
+	return Tool{
+		BaseTool: tools.NewBaseTool(
+			cfg,
+			tools.GetAnnotationsOrDefault(cfg.Annotations, tools.NewDestructiveAnnotations),
+			tools.Manifest{Description: cfg.Description, Parameters: params.Manifest(), AuthRequired: cfg.AuthRequired},
+			params,
+		),
+	}, nil
+}
+
+var _ tools.Tool = Tool{}
+
+type Tool struct {
+	tools.BaseTool[Config]
+}
+
+func (t Tool) ToConfig() tools.ToolConfig {
+	return t.Cfg
+}
+
+func (t Tool) Invoke(ctx context.Context, resourceMgr tools.SourceProvider, params parameters.ParamValues, token tools.AccessToken) (any, util.ToolboxError) {
+	source, err := tools.GetCompatibleSource[compatibleSource](resourceMgr, t.Cfg.Source, t.Cfg.Name, t.Cfg.Type)
+	if err != nil {
+		return nil, util.NewClientServerError("source used is not compatible with the tool", http.StatusInternalServerError, err)
+	}
+
+	paramsMap := params.AsMap()
+	sql, ok := paramsMap["sql"].(string)
+	if !ok {
+		return nil, util.NewAgentError(fmt.Sprintf("unable to cast sql parameter %s", paramsMap["sql"]), nil)
+	}
+	resp, err := source.RunSQL(ctx, sql, nil)
+	if err != nil {
+		return nil, util.ProcessGeneralError(err)
+	}
+	return resp, nil
+}

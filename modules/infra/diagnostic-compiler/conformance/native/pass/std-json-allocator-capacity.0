@@ -1,0 +1,10 @@
+export c fn main() -> i32 {
+    let bytes: Span<u8> = std.mem.span("{\"ok\":1}")
+    var arena_buf: [2]u8 = [0, 0]
+    var arena: FixedBufAlloc = std.mem.fixedBufAlloc(arena_buf)
+    let parsed: Maybe<JsonDoc> = std.json.parseBytes(arena, bytes)
+    if parsed.has {
+        return 1
+    }
+    return 0
+}

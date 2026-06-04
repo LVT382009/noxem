@@ -1,0 +1,23 @@
+fn balanced(text: Span<u8>) -> Bool {
+    var depth: i32 = 0
+    var i: usize = 0
+    while i < std.mem.len(text) {
+        if text[i] == 91 {
+            depth = depth + 1
+        }
+        if text[i] == 93 {
+            depth = depth - 1
+        }
+        if depth < 0 {
+            return false
+        }
+        i = i + 1
+    }
+    return depth == 0
+}
+
+pub fn main(world: World) -> Void raises {
+    if balanced(std.mem.span("[[][]]")) && balanced(std.mem.span("[][]")) && (!balanced(std.mem.span("[]][[]")) && !balanced(std.mem.span("][]["))) {
+        check world.out.write("balanced brackets ok\n")
+    }
+}

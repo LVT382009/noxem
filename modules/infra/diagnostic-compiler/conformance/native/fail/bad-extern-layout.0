@@ -1,0 +1,8 @@
+extern type BadExtern {
+    bytes: Span<u8>,
+}
+
+pub fn main(world: World) -> Void raises {
+    let value: BadExtern = BadExtern { bytes: std.mem.span("bad") }
+    check world.out.write("bad extern layout")
+}

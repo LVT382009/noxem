@@ -1,0 +1,26 @@
+type FixedVec<T: Type, static N: usize> {
+    len: usize = 0,
+    items: [N]T,
+    fn init(items: [N]T) -> Self {
+        return FixedVec { items: items }
+    }
+    fn push(self: mutref<Self>, value: T) -> Void raises [Full] {
+        if self.len == N {
+            raise Full
+        }
+        self.items[self.len] = value
+        self.len = self.len + 1
+    }
+    fn get(self: ref<Self>, index: usize) -> Maybe<T> {
+        return std.mem.get(self.items, index)
+    }
+}
+
+pub fn main(world: World) -> Void raises {
+    var vec: FixedVec<u8, 4> = FixedVec.init<u8, 4>([0, 0, 0, 0])
+    check vec.push(42)
+    let first: Maybe<u8> = vec.get(0)
+    if first.has && first.value == 42 {
+        check world.out.write("constructors defaults ok\n")
+    }
+}

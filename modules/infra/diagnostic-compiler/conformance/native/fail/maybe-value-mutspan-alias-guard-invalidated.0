@@ -1,0 +1,10 @@
+pub fn main() -> Void {
+    let input: [1]u8 = [1]
+    var values: [1]Maybe<u8> = [std.mem.get(input, 0)]
+    let view: MutSpan<Maybe<u8>> = values
+    let other: MutSpan<Maybe<u8>> = values
+    if view[0].has {
+        other[0] = null
+        let byte: u8 = view[0].value
+    }
+}

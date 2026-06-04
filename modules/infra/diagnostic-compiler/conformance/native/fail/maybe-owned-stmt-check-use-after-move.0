@@ -1,0 +1,18 @@
+type File {
+    fd: i32,
+}
+
+fn consume(file: owned<File>) -> Void {
+}
+
+fn unwrapTwice(maybe: Maybe<owned<File>>) -> Maybe<Void> raises {
+    check maybe
+    let second: owned<File> = check maybe
+    consume(second)
+    return null
+}
+
+pub fn main() -> Void raises {
+    let maybe: Maybe<owned<File>> = null
+    let ignored: Maybe<Void> = unwrapTwice(maybe)
+}

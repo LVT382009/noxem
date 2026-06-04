@@ -1,0 +1,11 @@
+pub fn main(world: World) -> Void raises {
+    let matrix: [4]u32 = [1, 1, 1, 0]
+    var square: [4]u32 = [0; 4]
+    square[0] = matrix[0] * matrix[0] + matrix[1] * matrix[2]
+    square[1] = matrix[0] * matrix[1] + matrix[1] * matrix[3]
+    square[2] = matrix[2] * matrix[0] + matrix[3] * matrix[2]
+    square[3] = matrix[2] * matrix[1] + matrix[3] * matrix[3]
+    if square[0] == 2 && square[3] == 1 {
+        check world.out.write("matrix exponent ok\n")
+    }
+}

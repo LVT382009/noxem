@@ -1,0 +1,5 @@
+use worker
+
+pub fn main(world: World) -> Void raises {
+    check world.out.write(message())
+}

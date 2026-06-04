@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    let text: Span<u8> = "{\"ok\":true}"[0..11]
+    if std.mem.len(text) == 11 && std.mem.eqlBytes(text, "{\"ok\":true}"[0..11]) {
+        check world.out.write("json\n")
+    }
+}

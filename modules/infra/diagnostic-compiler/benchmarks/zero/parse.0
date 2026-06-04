@@ -1,0 +1,13 @@
+use std.parse
+
+pub fn main(world: World) -> Void raises {
+    var i: i32 = 0
+    var digits: usize = 0
+    while i < 100000 {
+        digits = std.parse.scanDigits("1234567890abcdef")
+        i = i + 1
+    }
+    if digits == 10 && std.parse.isIdentifierStart("_") {
+        check world.out.write("parse\n")
+    }
+}

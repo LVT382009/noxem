@@ -1,0 +1,17 @@
+type Holder {
+    value: ref<i32>,
+    fn replace(self: mutref<Self>, next: ref<i32>) -> Void {
+        self.value = next
+    }
+    fn replaceVia(self: mutref<Self>, next: ref<i32>) -> Void {
+        self.replace(next)
+    }
+}
+
+pub fn main() -> Void {
+    var x: i32 = 1
+    let y: i32 = 2
+    var holder: Holder = Holder { value: &y }
+    holder.replaceVia(&x)
+    x = 3
+}

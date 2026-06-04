@@ -1,0 +1,12 @@
+export c fn main() -> u8 {
+    var dst: [5]u8 = [0_u8, 0_u8, 0_u8, 0_u8, 0_u8]
+    let span: MutSpan<u8> = dst
+    let filled: usize = std.mem.fill(span, 33_u8)
+    let copied: usize = std.mem.copy(span, "token"[0..5])
+    if filled == 5 {
+        if copied == 5 {
+            return dst[1]
+        }
+    }
+    return 0_u8
+}

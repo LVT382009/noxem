@@ -1,0 +1,24 @@
+fn rot13(c: u8) -> u8 {
+    if c >= 97 && c <= 122 {
+        return (c - 97 + 13) % 26 + 97
+    }
+    if c >= 65 && c <= 90 {
+        return (c - 65 + 13) % 26 + 65
+    }
+    return c
+}
+
+pub fn main(world: World) -> Void raises {
+    let source: Span<u8> = std.mem.span("Hello, zero!")
+    var encoded: [12]u8 = [0_u8; 12]
+    var decoded: [12]u8 = [0_u8; 12]
+    var i: usize = 0
+    while i < std.mem.len(source) {
+        encoded[i] = rot13(source[i])
+        decoded[i] = rot13(encoded[i])
+        i = i + 1
+    }
+    if encoded[0] == 85 && encoded[1] == 114 && (encoded[7] == 109 && encoded[11] == 33 && (decoded[0] == source[0] && decoded[7] == source[7])) {
+        check world.out.write("rot13 ok\n")
+    }
+}

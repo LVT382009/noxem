@@ -1,0 +1,18 @@
+fn fibWordLen(n: u32) -> u32 {
+    var a: u32 = 1
+    var b: u32 = 1
+    var i: u32 = 0
+    while i < n {
+        let next: u32 = a + b
+        a = b
+        b = next
+        i = i + 1
+    }
+    return a
+}
+
+pub fn main(world: World) -> Void raises {
+    if fibWordLen(6) == 13 {
+        check world.out.write("fibonacci word ok\n")
+    }
+}

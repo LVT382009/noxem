@@ -1,0 +1,17 @@
+fn chowla(n: u32) -> u32 {
+    var sum: u32 = 0
+    var d: u32 = 2
+    while d < n {
+        if n % d == 0 {
+            sum = sum + d
+        }
+        d = d + 1
+    }
+    return sum
+}
+
+pub fn main(world: World) -> Void raises {
+    if chowla(12) == 15 {
+        check world.out.write("chowla ok\n")
+    }
+}

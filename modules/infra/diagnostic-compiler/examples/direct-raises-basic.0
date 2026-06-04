@@ -1,0 +1,15 @@
+fn parse(ok: Bool) -> u8 raises [Invalid] {
+    if ok {
+        return 7_u8
+    }
+    raise Invalid
+}
+
+fn run() -> u8 raises [Invalid] {
+    let value: u8 = check parse(true)
+    return value
+}
+
+export c fn main() -> u8 {
+    return rescue run() err 0_u8
+}

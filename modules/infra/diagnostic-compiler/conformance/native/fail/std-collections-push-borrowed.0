@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    var values: [3]i32 = [1, 2, 0]
+    let live: Span<i32> = values[..2]
+    let next: usize = std.collections.push(values, 2_usize, 3)
+    if next == 3 && std.mem.len(live) == 2 {
+        check world.out.write("unreachable\n")
+    }
+}

@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    let ok: Bool = true
+    if ok {
+        check world.out.write("branch yes\n")
+    } else {
+        check world.out.write("branch no\n")
+    }
+}

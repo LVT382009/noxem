@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    let identity: [5]u8 = [0, 1, 2, 1, 0]
+    if identity[2] == 2 {
+        check world.out.write("sandpile identity ok\n")
+    }
+}

@@ -1,0 +1,48 @@
+{
+  "name": "zero-lang",
+  "displayName": "Zero Language",
+  "description": "Syntax highlighting for the Zero programming language.",
+  "publisher": "zero-lang",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "categories": [
+    "Programming Languages"
+  ],
+  "scripts": {
+    "install:cursor": "node scripts/install-cursor-extension.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=24",
+    "vscode": "^1.100.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "zero",
+        "aliases": [
+          "Zero",
+          "zero"
+        ],
+        "extensions": [
+          ".0"
+        ],
+        "configuration": "./language-configuration/zero.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "zero",
+        "scopeName": "source.zero",
+        "path": "./syntaxes/zero.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "zero",
+        "path": "./snippets/zero.json"
+      }
+    ]
+  }
+}

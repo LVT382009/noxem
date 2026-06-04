@@ -1,0 +1,6 @@
+export c fn zero_fail() -> i32 raises [Failed] {
+    raise Failed
+}
+
+pub fn main() -> Void {
+}

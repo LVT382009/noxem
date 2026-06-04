@@ -1,0 +1,15 @@
+const N: usize = 4
+
+fn needsConstGeneric<T: Type>(items: ref<[N]i32>, value: T) -> T {
+    return value
+}
+
+fn caller<static N: usize>(items: ref<[N]i32>) -> i32 {
+    return needsConstGeneric(items, 1)
+}
+
+pub fn main() -> Void {
+    let values: [3]i32 = [1, 2, 3]
+    let value: i32 = caller(&values)
+    expect (value == 1)
+}

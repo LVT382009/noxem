@@ -1,0 +1,4 @@
+pub fn main(world: World) -> Void raises {
+    let out: WorldStream = world.out
+    check world.out.write("ok\n")
+}

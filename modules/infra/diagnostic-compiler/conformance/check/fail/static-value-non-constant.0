@@ -1,0 +1,9 @@
+fn keep<T: Type, static N: usize>(value: T) -> T {
+    return value
+}
+
+pub fn main(world: World) -> Void raises {
+    let runtime_len: usize = 4
+    let _value: u8 = keep<u8, runtime_len>(1)
+    check world.out.write("bad static value\n")
+}

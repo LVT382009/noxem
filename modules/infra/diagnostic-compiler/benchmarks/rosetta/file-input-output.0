@@ -1,0 +1,9 @@
+fn readLen(bytes: Span<u8>) -> usize {
+    return std.mem.len(bytes)
+}
+
+pub fn main(world: World) -> Void raises {
+    if readLen(std.mem.span("file")) == 4 {
+        check world.out.write("file io ok\n")
+    }
+}

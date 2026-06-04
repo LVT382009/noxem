@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    var backing: [4]u8 = [0, 0, 0, 0]
+    let alloc: FixedBufAlloc = std.mem.fixedBufAlloc(backing)
+    let bytes: i32 = std.mem.allocBytes(alloc, 1)
+    if bytes.has {
+        check world.out.write("allocated")
+    }
+}

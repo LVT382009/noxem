@@ -1,0 +1,88 @@
+pub fn main(world: World) -> Void raises {
+    var reversed_buf: [6]u8 = [0_u8; 6]
+    let reversed: Maybe<Span<u8>> = std.str.reverse(reversed_buf, "drawer")
+    let trimmed: Span<u8> = std.str.trimAscii("  zero text  ")
+    let left_trimmed: Span<u8> = std.str.trimStartAscii("  left")
+    let right_trimmed: Span<u8> = std.str.trimEndAscii("right  ")
+    var small: [3]u8 = [0_u8; 3]
+    let overflow: Maybe<Span<u8>> = std.str.reverse(small, "drawer")
+    var copy_buf: [4]u8 = [0_u8; 4]
+    var concat_buf: [8]u8 = [0_u8; 8]
+    var repeat_buf: [6]u8 = [0_u8; 6]
+    var lower_buf: [4]u8 = [0_u8; 4]
+    var upper_buf: [4]u8 = [0_u8; 4]
+    let copied: Maybe<Span<u8>> = std.str.copy(copy_buf, "zero")
+    let joined: Maybe<Span<u8>> = std.str.concat(concat_buf, "zero", "lang")
+    let repeated: Maybe<Span<u8>> = std.str.repeat(repeat_buf, "ha", 3)
+    let lowered: Maybe<Span<u8>> = std.str.toLowerAscii(lower_buf, "ZERO")
+    let uppered: Maybe<Span<u8>> = std.str.toUpperAscii(upper_buf, "zero")
+    var ok: Bool = true
+    if !reversed.has {
+        ok = false
+    }
+    if reversed.has {
+        if !std.mem.eql(reversed.value, "reward") {
+            ok = false
+        }
+    }
+    if overflow.has {
+        ok = false
+    }
+    if std.str.countByte("banana", 97_u8) != 3 {
+        ok = false
+    }
+    if !std.str.startsWith("zero text syntax", "zero") {
+        ok = false
+    }
+    if !std.str.endsWith("zero text syntax", "syntax") {
+        ok = false
+    }
+    if !std.str.contains("zero text syntax", "text") {
+        ok = false
+    }
+    if std.str.contains("zero text syntax", "column") {
+        ok = false
+    }
+    if !std.str.contains("zero", "") {
+        ok = false
+    }
+    if !std.mem.eql(trimmed, "zero text") {
+        ok = false
+    }
+    if !std.mem.eql(left_trimmed, "left") || !std.mem.eql(right_trimmed, "right") {
+        ok = false
+    }
+    if !copied.has || !joined.has || !repeated.has || !lowered.has || !uppered.has {
+        ok = false
+    }
+    if copied.has && !std.mem.eql(copied.value, "zero") {
+        ok = false
+    }
+    if joined.has && !std.mem.eql(joined.value, "zerolang") {
+        ok = false
+    }
+    if repeated.has && !std.mem.eql(repeated.value, "hahaha") {
+        ok = false
+    }
+    if lowered.has && !std.mem.eql(lowered.value, "zero") {
+        ok = false
+    }
+    if uppered.has && !std.mem.eql(uppered.value, "ZERO") {
+        ok = false
+    }
+    if std.str.count("aaaa", "aa") != 2 {
+        ok = false
+    }
+    if std.str.indexOf("zero text syntax", "text") != 5 || std.str.lastIndexOf("one two one", "one") != 8 {
+        ok = false
+    }
+    if !std.str.eqlIgnoreAsciiCase("Zero", "zero") {
+        ok = false
+    }
+    if std.str.wordCountAscii("zero text syntax") != 3 {
+        ok = false
+    }
+    if ok {
+        check world.out.write("std str ok\n")
+    }
+}

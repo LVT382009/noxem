@@ -1,0 +1,7 @@
+pub fn main() -> Void {
+    var value: Maybe<u8> = null
+    if value.has {
+        value = null
+        let byte: u8 = value.value
+    }
+}

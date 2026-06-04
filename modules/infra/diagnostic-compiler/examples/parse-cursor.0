@@ -1,0 +1,13 @@
+use std.parse
+
+pub fn main(world: World) -> Void raises {
+    let digit: Bool = std.parse.isAsciiDigit("7")
+    let ident: Bool = std.parse.isIdentifierStart("_")
+    let digits: usize = std.parse.scanDigits("123abc")
+    let port: Maybe<u16> = std.parse.parseU16("8080")
+    let signed: Maybe<i32> = std.parse.parseI32("-42")
+    let token: Span<u8> = std.parse.tokenAscii("  zero text")
+    if digit && ident && digits == 3 && port.has && port.value == 8080 && signed.has && signed.value == -42 && std.mem.eql(token, "zero") {
+        check world.out.write("parse primitives ok\n")
+    }
+}

@@ -1,0 +1,8 @@
+enum Status {
+    ready,
+}
+
+pub fn main(world: World) -> Void raises {
+    let status: Status = Status.failed
+    check world.out.write("bad enum\n")
+}

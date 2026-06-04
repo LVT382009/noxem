@@ -1,0 +1,74 @@
+fn __zero_std_io_write_byte(buffer: MutSpan<u8>, offset: usize, byte: u8) -> Maybe<usize> {
+    if offset >= std.mem.len(buffer) {
+        return null
+    }
+    buffer[offset] = byte
+    return offset + 1
+}
+
+fn __zero_std_io_write_span(buffer: MutSpan<u8>, offset: usize, bytes: Span<u8>) -> Maybe<usize> {
+    if offset > std.mem.len(buffer) {
+        return null
+    }
+    if std.mem.len(bytes) > std.mem.len(buffer) - offset {
+        return null
+    }
+    var index: usize = 0
+    while index < std.mem.len(bytes) {
+        buffer[offset + index] = bytes[index]
+        index = index + 1
+    }
+    return offset + std.mem.len(bytes)
+}
+
+fn __zero_std_io_written(buffer: Span<u8>, len: usize) -> Span<u8> {
+    if len > std.mem.len(buffer) {
+        return buffer
+    }
+    return buffer[..len]
+}
+
+fn __zero_std_io_remaining(buffer: Span<u8>, offset: usize) -> usize {
+    if offset >= std.mem.len(buffer) {
+        return 0
+    }
+    return std.mem.len(buffer) - offset
+}
+
+fn __zero_std_io_next_line(bytes: Span<u8>, start: usize) -> Maybe<Span<u8>> {
+    if start >= std.mem.len(bytes) {
+        return null
+    }
+    var end: usize = start
+    while end < std.mem.len(bytes) && bytes[end] != 10_u8 {
+        end = end + 1
+    }
+    if end > start && bytes[end - 1] == 13_u8 {
+        return bytes[start..end - 1]
+    }
+    return bytes[start..end]
+}
+
+fn __zero_std_io_next_line_start(bytes: Span<u8>, start: usize) -> usize {
+    if start >= std.mem.len(bytes) {
+        return std.mem.len(bytes)
+    }
+    var end: usize = start
+    while end < std.mem.len(bytes) && bytes[end] != 10_u8 {
+        end = end + 1
+    }
+    if end < std.mem.len(bytes) {
+        return end + 1
+    }
+    return std.mem.len(bytes)
+}
+
+fn __zero_std_io_count_lines(bytes: Span<u8>) -> usize {
+    var start: usize = 0
+    var count: usize = 0
+    while start < std.mem.len(bytes) {
+        count = count + 1
+        start = __zero_std_io_next_line_start(bytes, start)
+    }
+    return count
+}

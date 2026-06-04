@@ -1,0 +1,16 @@
+{
+  "package": { "name": "c-interop", "version": "0.1.0" },
+  "targets": { "cli": { "kind": "exe", "main": "src/main.0" } },
+  "c": {
+    "libs": {
+      "math": {
+        "headers": ["vendor/include/mathshim.h"],
+        "include": ["vendor/include"],
+        "lib": ["vendor/lib/libmathshim.a"],
+        "link": ["mathshim"],
+        "mode": "static",
+        "pkg_config": "mathshim"
+      }
+    }
+  }
+}

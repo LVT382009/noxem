@@ -1,0 +1,7 @@
+fn identity<T: Type>(value: T) -> T {
+    return value
+}
+
+export c fn main() -> u8 {
+    return identity<u8>(42_u8)
+}

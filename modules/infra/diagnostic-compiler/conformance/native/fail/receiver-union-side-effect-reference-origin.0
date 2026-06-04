@@ -1,0 +1,24 @@
+type Holder {
+    value: ref<i32>,
+    fn replace(self: mutref<Self>, next: ref<i32>) -> Void {
+        self.value = next
+    }
+}
+
+fn choose(flag: Bool, left: mutref<Holder>, right: mutref<Holder>) -> mutref<Holder> {
+    if flag {
+        return left
+    }
+    return right
+}
+
+pub fn main(flag: Bool) -> Void {
+    var x: i32 = 1
+    let y: i32 = 2
+    let z: i32 = 3
+    var left: Holder = Holder { value: &x }
+    var right: Holder = Holder { value: &y }
+    let selected: mutref<Holder> = choose(flag, &mut left, &mut right)
+    selected.replace(&z)
+    x = 4
+}

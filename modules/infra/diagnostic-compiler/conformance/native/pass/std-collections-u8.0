@@ -1,0 +1,14 @@
+pub fn main(world: World) -> Void raises {
+    var values: [4]u8 = [1, 2, 3, 4]
+    var len: usize = 4
+    len = std.collections.moveToFront(values, len, 2)
+    len = std.collections.removeSwap(values, len, 1)
+    let invalid_remove: usize = std.collections.removeSwap(values, 9_usize, 0_usize)
+    let invalid_move: usize = std.collections.moveToFront(values, 9_usize, 1_usize)
+    let live: Span<u8> = std.collections.view(values, len)
+    let first: usize = std.search.indexOf(live, 3_u8)
+    let last: usize = std.search.lastIndexOf(live, 4_u8)
+    if len == 3 && invalid_remove == 9 && invalid_move == 9 && values[0] == 3_u8 && values[1] == 4_u8 && first == 0 && last == 1 {
+        check world.out.write("std collections u8 ok\n")
+    }
+}

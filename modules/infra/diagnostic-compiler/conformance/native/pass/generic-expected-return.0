@@ -1,0 +1,10 @@
+fn none<T: Type>() -> Maybe<T> {
+    return null
+}
+
+pub fn main(world: World) -> Void raises {
+    let value: Maybe<i32> = none()
+    if !value.has {
+        check world.out.write("generic expected return ok\n")
+    }
+}

@@ -1,0 +1,28 @@
+pub fn main(world: World) -> Void raises {
+    let fs: Fs = std.fs.host()
+    let created: Maybe<owned<File>> = std.fs.create(fs, ".zero/bench/zero-readall-input.txt")
+    if created.has {
+        var file: owned<File> = created.value
+        if !std.fs.writeAll(&mut file, std.mem.span("readall payload\n")) {
+            return
+        }
+    }
+    var storage: [64]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    var alloc: FixedBufAlloc = std.mem.fixedBufAlloc(storage)
+    var i: i32 = 0
+    var hits: i32 = 0
+    while i < 1000 {
+        std.mem.reset(&mut alloc)
+        let body: Maybe<owned<ByteBuf>> = std.fs.readAll(alloc, fs, ".zero/bench/zero-readall-input.txt", 64)
+        if body.has {
+            var buf: owned<ByteBuf> = body.value
+            if std.mem.eqlBytes(std.mem.bufBytes(&buf), std.mem.span("readall payload\n")) {
+                hits = hits + 1
+            }
+        }
+        i = i + 1
+    }
+    if hits == 1000 {
+        check world.out.write("readall\n")
+    }
+}

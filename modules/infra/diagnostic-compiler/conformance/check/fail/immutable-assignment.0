@@ -1,0 +1,5 @@
+pub fn main(world: World) -> Void raises {
+    let count: i32 = 0
+    count = count + 1
+    check world.out.write("bad assignment\n")
+}

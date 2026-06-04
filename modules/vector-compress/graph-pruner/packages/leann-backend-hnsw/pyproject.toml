@@ -1,0 +1,27 @@
+# packages/leann-backend-hnsw/pyproject.toml
+
+[build-system]
+requires = ["scikit-build-core>=0.10", "numpy", "swig"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "leann-backend-hnsw"
+version = "0.3.7"
+description = "Custom-built HNSW (Faiss) backend for the Leann toolkit."
+dependencies = [
+    "leann-core==0.3.7",
+    "numpy",
+    "pyzmq>=23.0.0",
+    "msgpack>=1.0.0",
+]
+
+[tool.scikit-build]
+wheel.packages = ["leann_backend_hnsw"]
+editable.mode = "redirect"
+cmake.build-type = "Release"
+build.verbose = true
+
+# CMake definitions to optimize compilation and find Homebrew packages
+[tool.scikit-build.cmake.define]
+CMAKE_PREFIX_PATH = {env = "CMAKE_PREFIX_PATH"}
+OpenMP_ROOT = {env = "OpenMP_ROOT"}

@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.2)'
+        required: true
+        type: string
+
+jobs:
+  verify-ci:
+    name: Verify main CI
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Require latest main CI success
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          MAIN_SHA=$(gh api repos/${GITHUB_REPOSITORY}/commits/main --jq '.sha')
+          RUN_ID=$(gh api repos/${GITHUB_REPOSITORY}/actions/workflows/build-and-publish.yml/runs \
+            --method GET \
+            --field branch=main \
+            --field head_sha="${MAIN_SHA}" \
+            --field per_page=1 \
+            --jq '.workflow_runs[0].id')
+
+          if [ -z "${RUN_ID}" ] || [ "${RUN_ID}" = "null" ]; then
+            echo "❌ No CI run found for main @ ${MAIN_SHA}"
+            exit 1
+          fi
+
+          STATUS=$(gh api repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID} --jq '.status')
+          CONCLUSION=$(gh api repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID} --jq '.conclusion')
+          URL=$(gh api repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID} --jq '.html_url')
+
+          echo "CI run: ${URL}"
+          if [ "${STATUS}" != "completed" ] || [ "${CONCLUSION}" != "success" ]; then
+            echo "❌ CI not successful for main @ ${MAIN_SHA}"
+            echo "Status: ${STATUS}"
+            echo "Conclusion: ${CONCLUSION}"
+            exit 1
+          fi
+
+          echo "✅ CI succeeded for main @ ${MAIN_SHA}"
+
+  update-version:
+    name: Update Version
+    needs: verify-ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      commit-sha: ${{ steps.push.outputs.commit-sha }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version
+        run: |
+          # Remove 'v' prefix if present for validation
+          VERSION_CLEAN="${{ inputs.version }}"
+          VERSION_CLEAN="${VERSION_CLEAN#v}"
+          if ! [[ "$VERSION_CLEAN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Invalid version format. Expected format: X.Y.Z or vX.Y.Z"
+            exit 1
+          fi
+          echo "✅ Version format valid: ${{ inputs.version }}"
+
+      - name: Update versions and push
+        id: push
+        run: |
+          # Check current version
+          CURRENT_VERSION=$(grep "^version" packages/leann-core/pyproject.toml | cut -d'"' -f2)
+          echo "Current version: $CURRENT_VERSION"
+          echo "Target version: ${{ inputs.version }}"
+
+          if [ "$CURRENT_VERSION" = "${{ inputs.version }}" ]; then
+            echo "⚠️  Version is already ${{ inputs.version }}, skipping update"
+            COMMIT_SHA=$(git rev-parse HEAD)
+          else
+            ./scripts/bump_version.sh ${{ inputs.version }}
+            git config user.name "GitHub Actions"
+            git config user.email "actions@github.com"
+            git add packages/*/pyproject.toml
+            git commit -m "chore: release v${{ inputs.version }}"
+            git push origin main
+            COMMIT_SHA=$(git rev-parse HEAD)
+            echo "✅ Pushed version update: $COMMIT_SHA"
+          fi
+
+          echo "commit-sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+
+  build-packages:
+    name: Build packages
+    needs: update-version
+    uses: ./.github/workflows/build-reusable.yml
+    with:
+      ref: 'main'
+
+  publish:
+    name: Publish and Release
+    needs: [update-version, build-packages]
+    if: always() && needs.update-version.result == 'success' && needs.build-packages.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 'main'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+
+      - name: Collect packages
+        run: |
+          mkdir -p dist
+          find dist-artifacts -name "*.whl" -exec cp {} dist/ \;
+          find dist-artifacts -name "*.tar.gz" -exec cp {} dist/ \;
+
+          echo "📦 Packages to publish:"
+          ls -la dist/
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then
+            echo "❌ PYPI_API_TOKEN not configured!"
+            exit 1
+          fi
+
+          pip install twine
+          twine upload dist/* --skip-existing --verbose
+
+          echo "✅ Published to PyPI!"
+
+      - name: Create release
+        run: |
+          # Check if tag already exists
+          if git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "⚠️  Tag v${{ inputs.version }} already exists, skipping tag creation"
+          else
+            git tag "v${{ inputs.version }}"
+            git push origin "v${{ inputs.version }}"
+            echo "✅ Created and pushed tag v${{ inputs.version }}"
+          fi
+
+          # Check if release already exists
+          if gh release view "v${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "⚠️  Release v${{ inputs.version }} already exists, skipping release creation"
+          else
+            gh release create "v${{ inputs.version }}" \
+              --title "Release v${{ inputs.version }}" \
+              --notes "🚀 Released to PyPI: https://pypi.org/project/leann/${{ inputs.version }}/" \
+              --latest
+            echo "✅ Created GitHub release v${{ inputs.version }}"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

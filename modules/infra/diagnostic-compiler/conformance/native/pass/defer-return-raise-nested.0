@@ -1,0 +1,27 @@
+fn mark(marker: MutSpan<u8>, value: u8) -> Void {
+    marker[0] = value
+}
+
+fn early(marker: MutSpan<u8>) -> Void {
+    defer mark(marker, 1)
+    return
+}
+
+fn fail(marker: MutSpan<u8>) -> i32 raises [Boom] {
+    defer mark(marker, 2)
+    raise Boom
+}
+
+pub fn main(world: World) -> Void raises {
+    var early_marker: [1]u8 = [0]
+    var raise_marker: [1]u8 = [0]
+    var nested_marker: [1]u8 = [0]
+    early(early_marker)
+    let recovered: i32 = rescue fail(raise_marker) err 7
+    if true {
+        defer mark(nested_marker, 3)
+    }
+    if early_marker[0] == 1 && raise_marker[0] == 2 && nested_marker[0] == 3 && recovered == 7 {
+        check world.out.write("defer return raise nested ok\n")
+    }
+}

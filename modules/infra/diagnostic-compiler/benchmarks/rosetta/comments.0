@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    let value: i32 = 1 + 1
+    if value == 2 {
+        check world.out.write("comments ok\n")
+    }
+}

@@ -1,0 +1,13 @@
+type Point {
+    x: i32,
+}
+
+fn leak() -> ref<Point> {
+    let point: Point = Point { x: 1 }
+    return &point
+}
+
+pub fn main(world: World) -> Void raises {
+    let leaked: ref<Point> = leak()
+    check world.out.write("returned local borrow")
+}

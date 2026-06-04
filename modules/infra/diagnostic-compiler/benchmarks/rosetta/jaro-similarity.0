@@ -1,0 +1,17 @@
+fn samePositions(left: Span<u8>, right: Span<u8>) -> u32 {
+    var count: u32 = 0
+    var i: usize = 0
+    while i < std.mem.len(left) {
+        if left[i] == right[i] {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    return count
+}
+
+pub fn main(world: World) -> Void raises {
+    if samePositions(std.mem.span("MARTHA"), std.mem.span("MARHTA")) == 4 {
+        check world.out.write("jaro similarity ok\n")
+    }
+}

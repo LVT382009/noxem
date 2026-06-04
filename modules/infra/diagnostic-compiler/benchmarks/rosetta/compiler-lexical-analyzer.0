@@ -1,0 +1,15 @@
+fn tokenKind(c: u8) -> u8 {
+    if c >= 48 && c <= 57 {
+        return 1
+    }
+    if c >= 97 && c <= 122 {
+        return 2
+    }
+    return 0
+}
+
+pub fn main(world: World) -> Void raises {
+    if tokenKind(52) == 1 && tokenKind(97) == 2 {
+        check world.out.write("lexer ok\n")
+    }
+}

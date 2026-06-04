@@ -1,0 +1,16 @@
+fn read() -> u8 raises [Bad] {
+    raise Bad
+}
+
+fn consume(value: u8) -> u8 raises [Other] {
+    return value
+}
+
+fn wrapper() -> u8 raises {
+    let value: u8 = check consume(check read())
+    return value
+}
+
+pub fn main() -> Void raises [Other] {
+    let value: u8 = check wrapper()
+}

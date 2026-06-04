@@ -1,0 +1,19 @@
+type File {
+    fd: i32,
+}
+
+type Holder {
+    file: owned<File>,
+    tag: u8,
+}
+
+fn close(file: owned<File>) -> Void {
+}
+
+pub fn main() -> Void {
+    var holder: Holder = Holder { file: File { fd: 1 }, tag: 1_u8 }
+    close(holder.file)
+    holder.tag = 2_u8
+    holder.file = File { fd: 2 }
+    close(holder.file)
+}

@@ -1,0 +1,15 @@
+fn value() -> i32 raises [BadInput] {
+    return 42
+}
+
+fn run() -> i32 raises [BadInput] {
+    let result: i32 = check value()
+    return result
+}
+
+pub fn main(world: World) -> Void raises {
+    let result: i32 = check run()
+    if result == 42 {
+        check world.out.write("check value ok\n")
+    }
+}

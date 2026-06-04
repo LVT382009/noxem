@@ -1,0 +1,32 @@
+type File {
+    fd: i32,
+}
+
+fn make(fd: i32) -> owned<File> {
+    return File { fd: fd }
+}
+
+fn pass(file: owned<File>) -> owned<File> {
+    return file
+}
+
+fn close(file: owned<File>) -> Void {
+}
+
+fn fd(file: owned<File>) -> i32 {
+    return file.fd
+}
+
+pub fn main(world: World) -> Void raises {
+    var current: owned<File> = make(1)
+    let next: owned<File> = pass(make(42))
+    current = next
+    let value: i32 = fd(current)
+    let cleanup: owned<File> = make(7)
+    defer close(cleanup)
+    if value == 42 {
+        check world.out.write("owned transfer ok\n")
+    } else {
+        check world.out.write("owned transfer failed\n")
+    }
+}

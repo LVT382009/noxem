@@ -1,0 +1,18 @@
+fn firstOctet(text: Span<u8>) -> u32 {
+    var value: u32 = 0
+    var i: usize = 0
+    while i < std.mem.len(text) {
+        if text[i] == 46 {
+            return value
+        }
+        value = value * 10 + (text[i] - 48) as u32
+        i = i + 1
+    }
+    return value
+}
+
+pub fn main(world: World) -> Void raises {
+    if firstOctet(std.mem.span("127.0.0.1")) == 127 {
+        check world.out.write("parse ip ok\n")
+    }
+}

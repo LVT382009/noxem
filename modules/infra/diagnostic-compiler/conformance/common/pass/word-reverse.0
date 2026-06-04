@@ -1,0 +1,13 @@
+pub fn main(world: World) -> Void raises {
+    var bytes: [9]u8 = [122, 101, 114, 111, 32, 108, 97, 110, 103]
+    var index: usize = 0
+    while index < 4 {
+        let saved: u8 = bytes[index]
+        bytes[index] = bytes[index + 5]
+        bytes[index + 5] = saved
+        index = index + 1
+    }
+    if bytes[0] == 108 as u8 && bytes[1] == 97 as u8 && bytes[2] == 110 as u8 && bytes[3] == 103 as u8 && bytes[4] == 32 as u8 && bytes[5] == 122 as u8 && bytes[6] == 101 as u8 && bytes[7] == 114 as u8 && bytes[8] == 111 as u8 {
+        check world.out.write("word reverse ok\n")
+    }
+}

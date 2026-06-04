@@ -1,0 +1,205 @@
+[build-system]
+requires = ["setuptools>=61.0", "cmake>=3.24"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leann-workspace"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+dependencies = [
+    "leann-core",
+    "leann-backend-hnsw",
+    "typer>=0.12.3",
+    "numpy>=1.26.0",
+    "torch",
+    "tqdm",
+    "datasets>=2.15.0",
+    "evaluate",
+    "colorama",
+    "boto3",
+    "protobuf==4.25.3",
+    "sglang",
+    "ollama",
+    "requests>=2.25.0",
+    "sentence-transformers>=3.0.0",
+    # Keep Py3.9 compatible below 4.46; allow newer for Py>=3.10 (e.g., ColQwen/ColPali).
+    "transformers<4.46; python_version < '3.10'",
+    "transformers>=4.53.1,<4.58; python_version >= '3.10'",
+    "openai>=1.0.0",
+    # PDF parsing dependencies - essential for document processing
+    "PyPDF2>=3.0.0",
+    "pdfplumber>=0.11.0",
+    "pymupdf>=1.26.0",
+    "pypdfium2>=4.30.0",
+    # LlamaIndex core and readers - updated versions
+    "llama-index>=0.12.44",
+    "llama-index-readers-file>=0.4.0", # Essential for PDF parsing
+    # "llama-index-readers-docling",  # Requires Python >= 3.10
+    # "llama-index-node-parser-docling",  # Requires Python >= 3.10
+    "llama-index-vector-stores-faiss>=0.4.0",
+    "llama-index-embeddings-huggingface>=0.5.5",
+    # Other dependencies
+    "ipykernel==6.29.5",
+    "msgpack>=1.1.1",
+    "mlx>=0.26.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.26.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "psutil>=5.8.0",
+    "pybind11>=3.0.0",
+    "pathspec>=0.12.1",
+    "nbconvert>=7.16.6",
+    "gitignore-parser>=0.1.12",
+    # AST-aware code chunking dependencies
+    "astchunk>=0.1.0",
+    "tree-sitter>=0.20.0",
+    "tree-sitter-python>=0.20.0",
+    "tree-sitter-java>=0.20.0",
+    "tree-sitter-c-sharp>=0.20.0",
+    "tree-sitter-typescript>=0.20.0",
+    "torchvision>=0.23.0",
+    "einops",
+    "seaborn",
+]
+
+[project.optional-dependencies]
+diskann = [
+    "leann-backend-diskann",
+]
+
+# GPU-accelerated FlashLib (exact k-NN on Triton/CuteDSL) backend. Requires a CUDA GPU.
+flashlib = [
+    "leann-backend-flashlib",
+]
+
+# GPU-accelerated FlashLib IVF-Flat (approximate-NN) backend. Requires a CUDA GPU.
+flashlib-ivf = [
+    "leann-backend-flashlib-ivf",
+]
+
+# Add a new optional dependency group for document processing
+documents = [
+    "beautifulsoup4>=4.13.0",  # For HTML parsing
+    "python-docx>=0.8.11",     # For Word documents (creating/editing)
+    "docx2txt>=0.9",           # For Word documents (text extraction)
+    "openpyxl>=3.1.0",         # For Excel files
+    "pandas>=2.2.0",           # For data processing
+]
+
+[tool.setuptools]
+py-modules = []
+packages = ["wechat_exporter"]
+package-dir = { "wechat_exporter" = "packages/wechat-exporter" }
+
+[project.scripts]
+wechat-exporter = "wechat_exporter.main:main"
+
+
+[tool.uv.sources]
+leann-core = { path = "packages/leann-core", editable = true }
+leann-backend-diskann = { path = "packages/leann-backend-diskann", editable = true }
+leann-backend-hnsw = { path = "packages/leann-backend-hnsw", editable = true }
+leann-backend-flashlib = { path = "packages/leann-backend-flashlib", editable = true }
+leann-backend-flashlib-ivf = { path = "packages/leann-backend-flashlib-ivf", editable = true }
+astchunk = { path = "packages/astchunk-leann", editable = true }
+
+[dependency-groups]
+# Minimal lint toolchain for CI and local hooks
+lint = [
+    "pre-commit>=3.5.0",
+    "ruff==0.12.7",  # Fixed version to ensure consistent formatting across all environments
+]
+
+# Test toolchain (no heavy project runtime deps)
+test = [
+    "pytest>=9.0",
+    "pytest-cov>=4.0",
+    "pytest-xdist>=3.0",
+    "pytest-timeout>=2.0",
+    "python-dotenv>=1.0.0",
+]
+
+# dependencies by apps/ should list here
+dev = [
+    "matplotlib",
+    "huggingface-hub>=0.20.0",
+]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+extend-exclude = [
+    "third_party",
+    "apps/multimodal/vision-based-pdf-multi-vector/multi-vector-leann-paper-example.py",
+    "apps/multimodal/vision-based-pdf-multi-vector/multi-vector-leann-similarity-map.py"
+]
+
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "N",      # pep8-naming
+    "RUF",    # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B904",   # raise without from
+    "N812",   # lowercase imported as non-lowercase
+    "N806",   # variable in function should be lowercase
+    "RUF012", # mutable class attributes should be annotated with typing.ClassVar
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.lychee]
+accept = ["200", "403", "429", "503"]
+timeout = 20
+max_retries = 2
+exclude = ["localhost", "127.0.0.1", "example.com"]
+exclude_path = [".git/", ".venv/", "__pycache__/", "third_party/"]
+scheme = ["https", "http"]
+
+[tool.ty]
+# Type checking with ty (Astral's fast Python type checker)
+# ty is 10-100x faster than mypy. See: https://docs.astral.sh/ty/
+
+[tool.ty.environment]
+python-version = "3.11"
+extra-paths = ["apps", "packages/leann-core/src"]
+
+[tool.ty.rules]
+# Disable some noisy rules that have many false positives
+possibly-missing-attribute = "ignore"
+unresolved-import = "ignore"  # Many optional dependencies
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "openai: marks tests that require OpenAI API key",
+    "integration: marks tests that require live services (Ollama, LM Studio, etc.)",
+]
+timeout = 300  # Reduced from 600s (10min) to 300s (5min) for CI safety
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+]
+env = [
+    "HF_HUB_DISABLE_SYMLINKS=1",
+    "TOKENIZERS_PARALLELISM=false",
+]

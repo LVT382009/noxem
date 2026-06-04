@@ -1,0 +1,13 @@
+use helper
+
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+test "package main addition" {
+    expect (add(20, 22) == 42)
+}
+
+pub fn main(world: World) -> Void raises {
+    check world.out.write("package tests\n")
+}

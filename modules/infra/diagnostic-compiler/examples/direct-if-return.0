@@ -1,0 +1,7 @@
+export c fn main(a: i32) -> i32 {
+    if a > 10 {
+        return 7
+    } else {
+        return 3
+    }
+}

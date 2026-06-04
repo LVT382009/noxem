@@ -1,0 +1,7 @@
+fn fail() -> Void raises [BadInput] {
+    raise MissingInput
+}
+
+pub fn main(world: World) -> Void raises {
+    check world.out.write("unreachable\n")
+}

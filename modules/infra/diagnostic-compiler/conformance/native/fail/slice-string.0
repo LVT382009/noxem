@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    let part: Span<u8> = "abcd"[0..5]
+    if std.mem.len(part) == 0 {
+        check world.out.write("unreachable\n")
+    }
+}

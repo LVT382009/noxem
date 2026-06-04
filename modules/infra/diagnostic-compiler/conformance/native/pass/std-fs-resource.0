@@ -1,0 +1,25 @@
+fn write_auto(fs: Fs) -> Bool {
+    let created: Maybe<owned<File>> = std.fs.create(fs, ".zero/conformance/std-fs-resource.txt")
+    if created.has {
+        var file: owned<File> = created.value
+        let bytes: [10]u8 = [122, 101, 114, 111, 32, 102, 105, 108, 101, 10]
+        return std.fs.writeAll(&mut file, bytes)
+    }
+    return false
+}
+
+pub fn main(world: World) -> Void raises {
+    let fs: Fs = std.fs.host()
+    let wrote: Bool = write_auto(fs)
+    let missing: Maybe<owned<File>> = std.fs.open(fs, ".zero/conformance/std-fs-resource-missing.txt")
+    let opened: Maybe<owned<File>> = std.fs.open(fs, ".zero/conformance/std-fs-resource.txt")
+    if wrote && !missing.has && opened.has {
+        var file: owned<File> = opened.value
+        var buf: [10]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        let read: Maybe<usize> = std.fs.read(&mut file, buf)
+        std.fs.close(&mut file)
+        if read.has && read.value == 10 && buf[0] == 122 as u8 && buf[9] == 10_u8 {
+            check world.out.write("fs resource ok\n")
+        }
+    }
+}

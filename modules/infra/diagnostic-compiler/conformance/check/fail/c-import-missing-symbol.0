@@ -1,0 +1,5 @@
+extern c "conformance/c/simple.h" as c
+
+pub fn main() -> Void {
+    let value: i32 = c.zero_c_missing(1, 2)
+}

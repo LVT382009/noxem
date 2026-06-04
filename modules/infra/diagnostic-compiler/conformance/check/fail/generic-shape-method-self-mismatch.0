@@ -1,0 +1,16 @@
+type FixedVec<T: Type, static N: usize> {
+    len: usize,
+    items: [N]T,
+    fn push(self: mutref<Self>, value: T) -> Void raises [Full] {
+        if self.len == N {
+            raise Full
+        }
+        self.items[self.len] = value
+        self.len = self.len + 1
+    }
+}
+
+pub fn main() -> Void raises {
+    var vec: FixedVec<u8, 4> = FixedVec { len: 0, items: [0, 0, 0, 0] }
+    check FixedVec.push<u8, 8>(&mut vec, 1)
+}

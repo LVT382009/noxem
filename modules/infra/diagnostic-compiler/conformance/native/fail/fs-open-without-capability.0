@@ -1,0 +1,6 @@
+pub fn main(world: World) -> Void raises {
+    let opened: i32 = std.fs.open("not an Fs capability", ".zero/conformance/fs-open-without-capability.txt")
+    if opened.has {
+        check world.out.write("unexpected file\n")
+    }
+}

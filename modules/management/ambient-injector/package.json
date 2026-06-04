@@ -1,0 +1,67 @@
+{
+  "name": "lemma-mcp",
+  "version": "0.11.5",
+  "description": "Persistent memory layer for LLMs via MCP",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "lemma": "./dist/index.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./memory": "./dist/memory/index.js",
+    "./guides": "./dist/guides/index.js",
+    "./server": "./dist/server/index.js"
+  },
+  "files": [
+    "dist",
+    "assets/visualizer.html",
+    "assets/visualizer-demo.gif",
+    "README.md",
+    "README.tr.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"const fs=require('fs');const p=require('path');const s=p.join('assets','visualizer.html');const d=p.join('dist','server','visualizer.html');if(fs.existsSync(s)){fs.mkdirSync(p.dirname(d),{recursive:true});fs.copyFileSync(s,d);console.log('Copied visualizer.html to dist/server/')}else{console.warn('Warning: assets/visualizer.html not found')}\"",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit --project tsconfig.test.json",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build",
+    "test": "node --import tsx --import ./tests/_setup.ts --test tests/db/*.test.ts tests/memory/*.test.ts tests/guides/*.test.ts tests/sessions/*.test.ts tests/server/*.test.ts tests/intelligence/*.test.ts",
+    "test:memory": "node --import tsx --import ./tests/_setup.ts --test tests/memory/*.test.ts",
+    "test:guides": "node --import tsx --import ./tests/_setup.ts --test tests/guides/*.test.ts",
+    "test:sessions": "node --import tsx --import ./tests/_setup.ts --test tests/sessions/*.test.ts",
+    "test:server": "node --import tsx --import ./tests/_setup.ts --test tests/server/*.test.ts"
+  },
+  "keywords": [
+    "mcp",
+    "memory",
+    "llm",
+    "claude",
+    "persistent",
+    "guides",
+    "context"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^12.9.0",
+    "sqlite-vec": "^0.1.9"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xenitV1/lemma.git"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.6.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.4"
+  }
+}

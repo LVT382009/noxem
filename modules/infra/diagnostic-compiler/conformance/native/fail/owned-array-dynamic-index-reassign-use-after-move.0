@@ -1,0 +1,14 @@
+type File {
+    fd: i32,
+}
+
+fn close(file: owned<File>) -> Void {
+}
+
+pub fn main() -> Void {
+    var files: [2]owned<File> = [File { fd: 1 }, File { fd: 2 }]
+    let index: usize = 1
+    close(files[index])
+    files[0] = File { fd: 3 }
+    close(files[1])
+}

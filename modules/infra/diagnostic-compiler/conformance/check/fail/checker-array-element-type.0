@@ -1,0 +1,4 @@
+pub fn main(world: World) -> Void raises {
+    let bytes: [2]u8 = [1, "bad"]
+    check world.out.write("bad array element\n")
+}

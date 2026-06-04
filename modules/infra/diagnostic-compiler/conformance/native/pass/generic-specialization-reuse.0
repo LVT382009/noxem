@@ -1,0 +1,13 @@
+fn identity<T: Type>(value: T) -> T {
+    return value
+}
+
+pub fn main(world: World) -> Void raises {
+    let a: i32 = identity<i32>(1)
+    let b: i32 = identity<i32>(2)
+    if a + b == 3 {
+        check world.out.write("generic specialization reuse ok\n")
+    } else {
+        check world.out.write("generic specialization reuse broke\n")
+    }
+}

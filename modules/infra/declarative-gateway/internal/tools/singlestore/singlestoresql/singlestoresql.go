@@ -1,0 +1,157 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package singlestoresql
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net/http"
+
+	yaml "github.com/goccy/go-yaml"
+	"github.com/googleapis/mcp-toolbox/internal/embeddingmodels"
+	"github.com/googleapis/mcp-toolbox/internal/sources"
+	"github.com/googleapis/mcp-toolbox/internal/tools"
+	"github.com/googleapis/mcp-toolbox/internal/util"
+	"github.com/googleapis/mcp-toolbox/internal/util/parameters"
+)
+
+const resourceType string = "singlestore-sql"
+
+func init() {
+	if !tools.Register(resourceType, newConfig) {
+		panic(fmt.Sprintf("tool type %q already registered", resourceType))
+	}
+}
+
+func newConfig(ctx context.Context, name string, decoder *yaml.Decoder) (tools.ToolConfig, error) {
+	actual := Config{ConfigBase: tools.ConfigBase{Name: name}}
+	if err := decoder.DecodeContext(ctx, &actual); err != nil {
+		return nil, err
+	}
+	return actual, nil
+}
+
+type compatibleSource interface {
+	SingleStorePool() *sql.DB
+	RunSQL(context.Context, string, []any) (any, error)
+}
+
+// Config defines the configuration for a SingleStore SQL tool.
+type Config struct {
+	tools.ConfigBase   `yaml:",inline"`
+	Type               string                 `yaml:"type" validate:"required"`
+	Source             string                 `yaml:"source" validate:"required"`
+	Statement          string                 `yaml:"statement" validate:"required"`
+	Parameters         parameters.Parameters  `yaml:"parameters"`
+	TemplateParameters parameters.Parameters  `yaml:"templateParameters"`
+	Annotations        *tools.ToolAnnotations `yaml:"annotations,omitempty"`
+}
+
+// validate interface
+var _ tools.ToolConfig = Config{}
+
+// ToolConfigType returns the type of the tool configuration.
+func (cfg Config) ToolConfigType() string {
+	return resourceType
+}
+
+// Initialize sets up and returns a new Tool instance based on the provided configuration and available sources.
+// It verifies that the specified source exists and is compatible, processes tool parameters, and constructs
+// the necessary manifests for tool operation. Returns an initialized Tool or an error if setup fails.
+//
+// Parameters:
+//
+//	srcs - a map of available sources, keyed by source name.
+//
+// Returns:
+//
+//	tools.Tool - the initialized tool instance.
+//	error      - an error if the source is missing, incompatible, or setup fails.
+func (cfg Config) Initialize(srcs map[string]sources.Source) (tools.Tool, error) {
+	if cfg.Description == "" {
+		return nil, fmt.Errorf("description is required for tool %q", cfg.Name)
+	}
+
+	allParameters, paramManifest, err := parameters.ProcessParameters(cfg.TemplateParameters, cfg.Parameters)
+	if err != nil {
+		return nil, err
+	}
+
+	return Tool{
+		BaseTool: tools.NewBaseTool(
+			cfg,
+			tools.GetAnnotationsOrDefault(cfg.Annotations, tools.NewDestructiveAnnotations),
+			tools.Manifest{Description: cfg.Description, Parameters: paramManifest, AuthRequired: cfg.AuthRequired},
+			allParameters,
+		),
+	}, nil
+}
+
+// validate interface
+var _ tools.Tool = Tool{}
+
+// Tool represents a SingleStore SQL tool instance.
+type Tool struct {
+	tools.BaseTool[Config]
+}
+
+// Invoke executes the SQL statement defined in the Tool using the provided context and parameter values.
+// It resolves template parameters and standard parameters, executes the query, and processes the result rows.
+// Each row is returned as a map with column names as keys and their corresponding values, handling special
+// cases for JSON and string types. Returns a slice of maps representing the result set, or an error if any
+// step fails.
+//
+// Parameters:
+//
+//	ctx    - The context for controlling cancellation and timeouts.
+//	params - The parameter values to be used for the SQL statement.
+//
+// Returns:
+//   - A slice of maps, where each map represents a row with column names as keys.
+//   - An error if template resolution, parameter extraction, query execution, or result processing fails.
+func (t Tool) Invoke(ctx context.Context, resourceMgr tools.SourceProvider, params parameters.ParamValues, accessToken tools.AccessToken) (any, util.ToolboxError) {
+	source, err := tools.GetCompatibleSource[compatibleSource](resourceMgr, t.Cfg.Source, t.Cfg.Name, t.Cfg.Type)
+	if err != nil {
+		return nil, util.NewClientServerError("source used is not compatible with the tool", http.StatusInternalServerError, err)
+	}
+
+	paramsMap := params.AsMap()
+	newStatement, err := parameters.ResolveTemplateParams(t.Cfg.TemplateParameters, t.Cfg.Statement, paramsMap)
+	if err != nil {
+		return nil, util.NewAgentError("unable to extract template params", err)
+	}
+
+	newParams, err := parameters.GetParams(t.Cfg.Parameters, paramsMap)
+	if err != nil {
+		return nil, util.NewAgentError("unable to extract standard params", err)
+	}
+
+	sliceParams := newParams.AsSlice()
+	resp, err := source.RunSQL(ctx, newStatement, sliceParams)
+	if err != nil {
+		return nil, util.ProcessGeneralError(err)
+	}
+	return resp, nil
+}
+
+// EmbedParams overrides BaseTool to apply the pgvector formatter.
+func (t Tool) EmbedParams(ctx context.Context, paramValues parameters.ParamValues, embeddingModelsMap map[string]embeddingmodels.EmbeddingModel) (parameters.ParamValues, error) {
+	return parameters.EmbedParams(ctx, t.StaticParameters, paramValues, embeddingModelsMap, embeddingmodels.FormatVectorForPgvector)
+}
+
+func (t Tool) ToConfig() tools.ToolConfig {
+	return t.Cfg
+}

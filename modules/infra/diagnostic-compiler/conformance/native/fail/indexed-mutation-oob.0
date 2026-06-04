@@ -1,0 +1,5 @@
+pub fn main(world: World) -> Void raises {
+    var values: [2]i32 = [1, 2]
+    values[2] = 3
+    check world.out.write("unreachable\n")
+}

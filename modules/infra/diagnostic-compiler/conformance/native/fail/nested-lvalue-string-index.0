@@ -1,0 +1,9 @@
+type View {
+    text: String,
+}
+
+pub fn main(world: World) -> Void raises {
+    var view: View = View { text: "hi" }
+    view.text[0] = 72
+    check world.out.write("bad nested lvalue\n")
+}

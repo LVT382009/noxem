@@ -1,0 +1,10 @@
+export c fn main() -> i32 {
+    let bytes: Span<u8> = std.mem.span("{\"a\":1,\"a\":2}")
+    var arena_buf: [16]u8 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    var arena: FixedBufAlloc = std.mem.fixedBufAlloc(arena_buf)
+    let parsed: Maybe<JsonDoc> = std.json.parseBytes(arena, bytes)
+    if std.json.validateBytes(bytes) && parsed.has && std.json.streamTokensBytes(bytes) == 5 {
+        return 0
+    }
+    return 1
+}

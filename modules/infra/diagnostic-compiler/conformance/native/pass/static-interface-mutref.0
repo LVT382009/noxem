@@ -1,0 +1,24 @@
+type Counter {
+    value: i32,
+    fn increment(self: mutref<Self>) -> i32 {
+        self.value = self.value + 1
+        return self.value
+    }
+}
+
+interface Incrementable<T: Type> {
+    fn increment(self: mutref<T>) -> i32
+}
+
+fn bump<T: Incrementable<T>>(value: mutref<T>) -> i32 {
+    return T.increment(value)
+}
+
+pub fn main(world: World) -> Void raises {
+    var counter: Counter = Counter { value: 41 }
+    if bump<Counter>(&mut counter) == 42 {
+        check world.out.write("static interface mutref ok\n")
+    } else {
+        check world.out.write("static interface mutref broke\n")
+    }
+}

@@ -1,0 +1,8 @@
+pub fn main(world: World) -> Void raises {
+    let value: Maybe<u32> = std.math.binomialU32(5_u32, 2_u32)
+    if value.has {
+        if value.value == 10_u32 {
+            check world.out.write("binomial coefficients ok\n")
+        }
+    }
+}

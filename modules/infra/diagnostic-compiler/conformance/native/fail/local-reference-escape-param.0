@@ -1,0 +1,6 @@
+pub fn leak(x: i32) -> ref<i32> {
+    return &x
+}
+
+pub fn main() -> Void {
+}

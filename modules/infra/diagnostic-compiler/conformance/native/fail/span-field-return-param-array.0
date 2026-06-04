@@ -1,0 +1,12 @@
+type Holder {
+    bytes: [2]u8,
+}
+
+fn view(holder: Holder) -> Span<u8> {
+    return holder.bytes
+}
+
+pub fn main() -> Void {
+    let holder: Holder = Holder { bytes: [1, 2] }
+    let span: Span<u8> = view(holder)
+}

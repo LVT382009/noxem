@@ -1,0 +1,15 @@
+pub fn main(world: World) -> Void raises {
+    let input: Span<u8> = "alpha\nzero beta\nzero gamma\n"
+    var start: usize = 0
+    var matches: usize = 0
+    while start < std.mem.len(input) {
+        let line: Maybe<Span<u8>> = std.io.nextLine(input, start)
+        if line.has && std.str.contains(line.value, "zero") {
+            matches = matches + 1
+        }
+        start = std.io.nextLineStart(input, start)
+    }
+    if matches == 2 && std.io.countLines(input) == 3 {
+        check world.out.write("grep scan ok\n")
+    }
+}

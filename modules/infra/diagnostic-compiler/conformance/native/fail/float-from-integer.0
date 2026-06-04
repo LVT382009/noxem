@@ -1,0 +1,4 @@
+pub fn main(world: World) -> Void raises {
+    let value: f64 = 1
+    check world.out.write("bad float\n")
+}
