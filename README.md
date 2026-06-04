@@ -1,8 +1,10 @@
 <div align="center">
 
-<a href="https://freeimage.host/"><img src="https://iili.io/BmitHp2.png" alt="Hermes Memory" border="0" /></a>
+<a href="https://freeimage.host/"><img src="https://iili.io/CKglYN9.png" alt="Noxem" border="0" /></a>
 
-### Hierarchical memory for AI coding agents. Sub-25ms search, auto-dedup, cone extraction.
+### Noxem
+
+Hierarchical memory for AI coding agents. Sub-25ms search, auto-dedup, cone extraction.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Node.js 22+](https://img.shields.io/badge/Node.js-22+-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
