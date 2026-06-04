@@ -832,7 +832,7 @@ app.post('/memory/store', async (req, res) => {
 
 	// v2: Wire graph edge extraction
  await extractAndStoreEdges(id, trimmed, session_id);
-  onMemoryStored(session_id || 'default');
+  onMemoryStored(session_id || '');
 
 	invalidateQueryCacheForEntity(entity, attribute);
   res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped' });
@@ -1432,7 +1432,7 @@ app.get('/memory/pipeline/status', (_req, res) => {
 app.post('/memory/learn', async (req, res) => {
   try {
     const { session_id, memory_ids } = req.body;
-    const sessionId = session_id || 'pipeline';
+    const sessionId = session_id || '';
     const targetIds = memory_ids || [];
 
     // Get the requested memories or recent session memories

@@ -627,9 +627,10 @@ export function generateContextPrefix(text, type, session_id = '') {
   if (entAttr.entity && entAttr.attribute) {
     parts.push(`about ${entAttr.entity}'s ${entAttr.attribute.replace(/_/g, ' ')}`);
   }
-  if (session_id) {
-    parts.push(`in session ${session_id.slice(0, 8)}`);
-  }
+   // Removed session_id from context_prefix — session is metadata, not semantic content.
+  // Baking session ID into the prefix caused the "injected from another session" bug:
+  // callers assign different default session IDs (REST → '', MCP → 'mcp', pipeline → 'pipeline')
+  // for the same real session, making memories appear cross-session when they aren't.
   return parts.length > 0 ? parts.join(', ') + ':' : '';
 }
 
