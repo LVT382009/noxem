@@ -36,6 +36,7 @@
 
 
 
+
 export function initSpatialFilter(db, deps = {}) {
   _db = db;
   _getMemoriesByEntityAttr = deps.getMemoriesByEntityAttr;

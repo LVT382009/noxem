@@ -1,0 +1,24 @@
+name: cocoindex-neo4j-community
+services:
+  neo4j:
+    image: neo4j:2025.08-community-ubi9
+    volumes:
+        - /$HOME/neo4j/community/logs:/logs
+        - /$HOME/neo4j/community/config:/config
+        - /$HOME/neo4j/community/data:/data
+        - /$HOME/neo4j/community/plugins:/plugins
+    environment:
+        - NEO4J_AUTH=neo4j/cocoindex
+        - NEO4J_PLUGINS='["graph-data-science"]'
+
+        # Uncomment to enable query logging
+        # - NEO4J_db_logs_query_enabled=VERBOSE
+        # - NEO4J_db_logs_query_transaction_enabled=VERBOSE
+        # - NEO4J_db_logs_query_parameter__logging__enabled=true
+        # - NEO4J_dbms_logs_http_enabled=true
+        # - NEO4J_server_logs_debug_enabled=true
+
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    restart: always

@@ -1,0 +1,46 @@
+/target
+# Rust example workspaces each produce their own target/ and Cargo.lock
+examples/rust/*/target/
+# LMDB runtime data created by Rust SDK pipelines/tests
+.cocoindex_db/
+examples/rust/files-transform/output_html/
+examples/rust/pdf-to-markdown/out/
+# Downloaded embedding model cache (fastembed) — e.g. code-embedding example
+.fastembed_cache/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.venv*/
+dist/
+uv.lock
+
+.DS_Store
+
+*.egg-info/
+
+/.vscode
+/*.session.sql
+
+.mypy_cache
+.dmypy.json
+
+# LMDB files
+*.mdb
+
+# Output of `cocoindex eval`
+examples/**/eval_*
+examples/**/uv.lock
+**/lancedb_data/
+
+# CocoIndex Code (ccc)
+/.cocoindex_code/
+
+# Claude Code local state
+.claude/*.lock

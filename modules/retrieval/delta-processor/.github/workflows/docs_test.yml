@@ -1,0 +1,28 @@
+name: Test Docs
+
+on:
+  pull_request:
+    branches: [main, v1]
+    paths:
+      - docs/**
+      - ".github/workflows/docs_test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Install dependencies
+        run: npm --prefix docs ci
+      - name: Build docs site
+        run: npm --prefix docs run build

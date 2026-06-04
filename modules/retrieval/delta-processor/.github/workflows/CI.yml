@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, v1]
+    paths:
+      - rust/**
+      - python/**
+      - "*.toml"
+      - ".github/workflows/*.yml"
+      - "docs/docs/cli.mdx"
+  push:
+    branches: [main, v1]
+    paths:
+      - rust/**
+      - python/**
+      - "*.toml"
+      - ".github/workflows/*.yml"
+      - "docs/docs/cli.mdx"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & Test
+    uses: ./.github/workflows/_test.yml

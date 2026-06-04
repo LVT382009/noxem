@@ -1,0 +1,184 @@
+"""
+PostgreSQL Source (v1) - CocoIndex pipeline example.
+
+Index (one-shot catch-up; live mode is not supported for the postgres source):
+    cocoindex update main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: read product rows -> compute derived fields + embeddings -> store in pgvector.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from dataclasses import dataclass
+from dotenv import load_dotenv
+from typing import Annotated, AsyncIterator
+
+import asyncpg
+from pgvector.asyncpg import register_vector
+from numpy.typing import NDArray
+
+import cocoindex as coco
+from cocoindex.connectors import postgres
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+
+
+DATABASE_URL = os.getenv(
+    "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+)
+SOURCE_DATABASE_URL = os.getenv("SOURCE_DATABASE_URL", DATABASE_URL)
+TABLE_NAME = "output"
+PG_SCHEMA_NAME = "coco_examples_v1"
+TOP_K = 5
+
+
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+PG_DB = coco.ContextKey[asyncpg.Pool]("postgres_source_db")
+SOURCE_POOL = coco.ContextKey[asyncpg.Pool]("source_pool")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
+
+
+@dataclass
+class SourceProduct:
+    product_category: str
+    product_name: str
+    description: str
+    price: float
+    amount: int
+
+
+@dataclass
+class OutputProduct:
+    product_category: str
+    product_name: str
+    description: str
+    price: float
+    amount: int
+    total_value: float
+    embedding: Annotated[NDArray, EMBEDDER]
+
+
+@coco.lifespan
+async def coco_lifespan(
+    builder: coco.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    async with (
+        asyncpg.create_pool(DATABASE_URL) as target_pool,
+        asyncpg.create_pool(SOURCE_DATABASE_URL) as source_pool,
+    ):
+        builder.provide(PG_DB, target_pool)
+        builder.provide(SOURCE_POOL, source_pool)
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
+        yield
+
+
+@coco.fn(memo=True)
+async def process_product(
+    product: SourceProduct,
+    table: postgres.TableTarget[OutputProduct],
+) -> None:
+    full_description = f"Category: {product.product_category}\nName: {product.product_name}\n\n{product.description}"
+    total_value = product.price * product.amount
+    embedding = await coco.use_context(EMBEDDER).embed(full_description)
+    table.declare_row(
+        row=OutputProduct(
+            product_category=product.product_category,
+            product_name=product.product_name,
+            description=product.description,
+            price=product.price,
+            amount=product.amount,
+            total_value=total_value,
+            embedding=embedding,
+        ),
+    )
+
+
+@coco.fn
+async def app_main() -> None:
+    target_table = await postgres.mount_table_target(
+        PG_DB,
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            OutputProduct,
+            primary_key=["product_category", "product_name"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+
+    source = postgres.PgTableSource(
+        coco.use_context(SOURCE_POOL),
+        table_name="source_products",
+        row_type=SourceProduct,
+    )
+
+    await coco.mount_each(
+        process_product,
+        source.fetch_rows().items(lambda p: (p.product_category, p.product_name)),
+        target_table,
+    )
+
+
+app = coco.App(
+    coco.AppConfig(name="PostgresSourceV1"),
+    app_main,
+)
+
+
+async def query_once(
+    pool: asyncpg.Pool,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
+) -> None:
+    query_vec = await embedder.embed(query)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                product_category,
+                product_name,
+                description,
+                amount,
+                total_value,
+                embedding <=> $1 AS distance
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
+            ORDER BY distance ASC
+            LIMIT $2
+            """,
+            query_vec,
+            top_k,
+        )
+
+    for r in rows:
+        score = 1.0 - float(r["distance"])
+        print(
+            f"[{score:.3f}] {r['product_category']} | {r['product_name']} | {r['amount']} | {r['total_value']}"
+        )
+        print(f"    {r['description']}")
+        print("---")
+
+
+async def query(initial_query: str | None = None) -> None:
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
+    async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
+            return
+
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(pool, embedder, q)
+
+
+if __name__ == "__main__":
+    load_dotenv()
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

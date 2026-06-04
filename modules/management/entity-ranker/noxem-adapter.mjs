@@ -27,6 +27,10 @@
 
 
 
+let _db, _listEntities, _getEntity, _touchEntity, _traverseMemoryGraph, _storeEdge,
+  _getActiveMemories, _incrementRecallCounts, _extractEntityAttribute;
+let _booted = false;
+
 export function initEntityRanker(db, deps = {}) {
   _db = db;
   _listEntities = deps.listEntities;
@@ -54,9 +58,6 @@ const GRAPH_EXPANSION_DEPTH = 2;
 const GRAPH_EXPANSION_LIMIT = 50;
 
 // ── Lazy init state ──────────────────────────────────────────────
-let _db, _listEntities, _getEntity, _touchEntity, _traverseMemoryGraph, _storeEdge,
-  _getActiveMemories, _incrementRecallCounts, _extractEntityAttribute;
-let _booted = false;
 let stmtGetRankedEntities, stmtUpdateLastMentioned, stmtGetEntityMentionsByDay,
   stmtGetMemoriesByEntityRanked, stmtUpsertEntityWithTimestamp;
 
