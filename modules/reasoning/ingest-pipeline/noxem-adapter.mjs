@@ -16,6 +16,7 @@
 
 // Dependencies injected via initIngestPipeline(db, deps)
 let _db, _llmFetch;
+let _storeMemory, _getAllActiveMemoriesNoEmbed, _traverseMemoryGraph, _storeEdge;
 import { createHash } from 'node:crypto';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
@@ -28,6 +29,10 @@ const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-p
 export function initIngestPipeline(db, deps = {}) {
   _db = db;
   _llmFetch = deps.llmFetch;
+  _storeMemory = deps.storeMemory;
+  _getAllActiveMemoriesNoEmbed = deps.getAllActiveMemoriesNoEmbed;
+  _traverseMemoryGraph = deps.traverseMemoryGraph;
+  _storeEdge = deps.storeEdge;
   _boot();
 }
 
@@ -366,22 +371,23 @@ Return a JSON array of analysis items: [{"action":"new|update|known","text":"the
         metadata: { source_memory_ids: sourceIds },
       });
     } else {
-      // Direct store via memory-store
-      try {
-        const { storeMemory } = await import('../../server/memory-store.mjs');
-        storeMemory({
-          text: atom.text,
-          type: atom.type,
-          session_id: sessionId,
-          entity: atom.entity || '',
-          attribute: atom.attribute || '',
-          cone_layer: 1,
-          embedding,
-          metadata: { source_memory_ids: sourceIds },
-        });
-      } catch (e) {
-        LOG_DEBUG && console.error('[IngestPipeline] Store failed:', e.message);
-        continue;
+      // Direct store via injected dep
+      if (_storeMemory) {
+        try {
+          _storeMemory({
+            text: atom.text,
+            type: atom.type,
+            session_id: sessionId,
+            entity: atom.entity || '',
+            attribute: atom.attribute || '',
+            cone_layer: 1,
+            embedding,
+            metadata: { source_memory_ids: sourceIds },
+          });
+        } catch (e) {
+          LOG_DEBUG && console.error('[IngestPipeline] Store failed:', e.message);
+          continue;
+        }
       }
     }
 
@@ -481,8 +487,8 @@ export async function expandWithGraphSignals(hitIds, opts = {}) {
   if (!hitIds || hitIds.length === 0) return [];
 
   // Fetch all active memories for candidate pool (no embeddings for perf)
-  const { getAllActiveMemoriesNoEmbed } = await import('../../server/memory-store.mjs');
-  const allMems = getAllActiveMemoriesNoEmbed();
+  if (!_getAllActiveMemoriesNoEmbed) return [];
+  const allMems = _getAllActiveMemoriesNoEmbed();
   const memById = new Map(allMems.map(m => [m.id, m]));
   const hitSet = new Set(hitIds);
 
@@ -498,8 +504,8 @@ export async function expandWithGraphSignals(hitIds, opts = {}) {
 
   for (const hit of hits) {
     // Get graph neighbors of this hit
-    const { traverseMemoryGraph } = await import('../../server/memory-store.mjs');
-    const edges = traverseMemoryGraph(hit.id, 1, 20);
+    if (!_traverseMemoryGraph) continue;
+    const edges = _traverseMemoryGraph(hit.id, 1, 20);
 
     // Score each neighbor that is not already a hit
     for (const edge of edges) {
@@ -606,14 +612,14 @@ export async function autoGenerateCrossLinks(opts = {}) {
   const limit = opts.limit || 50;
   const sourceSessionId = opts.sourceSessionId || 'maintenance';
 
-  const { storeEdge } = await import('../../server/memory-store.mjs');
+  if (!_storeEdge) return [];
 
   const pairs = getEntityPairsSharedNoEdge.all(minShared, limit);
   const created = [];
 
   for (const pair of pairs) {
     try {
-      const edgeId = storeEdge({
+      const edgeId = _storeEdge({
         from_id: pair.entity_a_id || pair.entity_a,
         to_id: pair.entity_b_id || pair.entity_b,
         relation: 'related_to',
@@ -653,10 +659,10 @@ export async function autoLinkMemoriesBySharedEntity(opts = {}) {
   const limit = opts.limit || 50;
   const sourceSessionId = opts.sourceSessionId || 'maintenance';
 
-  const { storeEdge, getAllActiveMemoriesNoEmbed } = await import('../../server/memory-store.mjs');
+  if (!_storeEdge || !_getAllActiveMemoriesNoEmbed) return [];
 
   // Group active memories by entity
-  const allMems = getAllActiveMemoriesNoEmbed();
+  const allMems = _getAllActiveMemoriesNoEmbed();
   const memsByEntity = new Map();
   for (const mem of allMems) {
     if (!mem.entity) continue;
@@ -684,7 +690,7 @@ export async function autoLinkMemoriesBySharedEntity(opts = {}) {
         if (existingEdge) { seen.add(key); continue; }
 
         try {
-          const edgeId = storeEdge({
+          const edgeId = _storeEdge({
             from_id: mems[i].id,
             to_id: mems[j].id,
             relation: 'related_to',

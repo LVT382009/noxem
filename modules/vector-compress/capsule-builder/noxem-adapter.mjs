@@ -145,6 +145,9 @@ export function installSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_triplets_spo ON memory_triplets(subject, predicate, object);
   `);
 
+  // Ensure 'weight' column exists on memory_corecalls (may be missing from older schema)
+  try { db.exec('ALTER TABLE memory_corecalls ADD COLUMN weight INTEGER NOT NULL DEFAULT 1'); } catch (e) { if (!e.message.includes('duplicate column') && !e.message.includes('already exists')) throw e; }
+
   _prepareStatements(db);
 }
 

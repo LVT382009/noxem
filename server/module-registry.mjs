@@ -21,6 +21,7 @@ import {
   getMemory,
   getActiveMemories,
   getAllActiveMemories,
+  getAllActiveMemoriesNoEmbed,
   incrementRecallCounts,
   traverseMemoryGraph,
   storeEdge,
@@ -177,7 +178,7 @@ if (m.strategyDistiller) { try {
 } catch (e) { console.error('[module-registry] strategyDistiller init failed:', e.message); } }
 
 if (m.ingestPipeline) { try {
-  m.ingestPipeline.initIngestPipeline(db, { llmFetch });
+  m.ingestPipeline.initIngestPipeline(db, { llmFetch, storeMemory, getAllActiveMemoriesNoEmbed, traverseMemoryGraph, storeEdge });
 } catch (e) { console.error('[module-registry] ingestPipeline init failed:', e.message); } }
 
 // Schema bootstraps

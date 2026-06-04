@@ -72,7 +72,7 @@ function _boot() {
   LIMIT ?
   `);
   getReasoningByTextSearch = _db.prepare(`
-  SELECT id, text, metadata, importance, entity, type, created_at
+  SELECT m.id, m.text, m.metadata, m.importance, m.entity, m.type, m.created_at
   FROM memories_fts f
   JOIN memories m ON m.id = f.rowid
   WHERE memories_fts MATCH @query AND m.type = 'reasoning' AND m.status = 'active'

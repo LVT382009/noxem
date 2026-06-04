@@ -68,7 +68,11 @@ function _ensureColumn(table, column, def) {
 }
 
 function runEntityRankerMigration() {
-  _ensureColumn('entities', 'last_mentioned_at', "TEXT NOT NULL DEFAULT (datetime('now'))");
+  _ensureColumn('entities', 'last_mentioned_at', "TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'");
+  // Backfill existing rows that still have the placeholder default
+  try {
+    _db.exec("UPDATE entities SET last_mentioned_at = datetime('now') WHERE last_mentioned_at = '1970-01-01 00:00:00'");
+  } catch (_) { /* ignore if column just added and already populated */ }
   _db.exec('CREATE INDEX IF NOT EXISTS idx_entities_last_mentioned ON entities(last_mentioned_at DESC)');
 }
 
