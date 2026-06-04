@@ -27,6 +27,7 @@ const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-p
 export function initStrategyDistiller(db, deps = {}) {
   _db = db;
   _llmFetch = deps.llmFetch;
+  _boot();
 }
 
 // Failure signal keywords detected in L0 episode text
@@ -40,41 +41,46 @@ const SUCCESS_SIGNALS = [
   'working', 'solved', 'passed', 'verified',
 ];
 
-// ── Prepared statements ──────────────────────────────────────────────
+// ── Lazy init ───────────────────────────────────────────────
+let _booted = false;
+let getReasoningByTextSearch;
+let insertReasoning;
+let getReasoningByOutcome;
+let getReasoningByEntity;
 
-const insertReasoning = _db.prepare(`
+function _boot() {
+  if (_booted) return;
+  insertReasoning = _db.prepare(`
   INSERT INTO memories (session_id, type, text, embedding, metadata, importance,
-    context_prefix, entity, attribute, valid_from, cone_layer)
+  context_prefix, entity, attribute, valid_from, cone_layer)
   VALUES (@session_id, 'reasoning', @text, @embedding, @metadata, @importance,
-    @context_prefix, @entity, @attribute, @valid_from, 1)
-`);
-
-const getReasoningByOutcome = _db.prepare(`
+  @context_prefix, @entity, @attribute, @valid_from, 1)
+  `);
+  getReasoningByOutcome = _db.prepare(`
   SELECT id, text, metadata, importance, entity, created_at
   FROM memories
   WHERE type = 'reasoning' AND status = 'active'
-    AND json_extract(metadata, '$.reasoning_meta.outcome') = ?
+  AND json_extract(metadata, '$.reasoning_meta.outcome') = ?
   ORDER BY importance DESC, created_at DESC
   LIMIT ?
-`);
-
-const getReasoningByEntity = _db.prepare(`
+  `);
+  getReasoningByEntity = _db.prepare(`
   SELECT id, text, metadata, importance, entity, created_at
   FROM memories
   WHERE type = 'reasoning' AND status = 'active' AND entity = ?
   ORDER BY importance DESC, created_at DESC
   LIMIT ?
-`);
-
-const getReasoningByTextSearch = _db.prepare(`
+  `);
+  getReasoningByTextSearch = _db.prepare(`
   SELECT id, text, metadata, importance, entity, type, created_at
   FROM memories_fts f
   JOIN memories m ON m.id = f.rowid
   WHERE memories_fts MATCH @query AND m.type = 'reasoning' AND m.status = 'active'
   ORDER BY rank
   LIMIT @limit
-`);
-
+  `);
+  _booted = true;
+}
 // ── Utility ──────────────────────────────────────────────────────────
 
 function ensureEmbeddingBuffer(embedding) {

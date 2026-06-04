@@ -47,6 +47,7 @@ export function initSpatialFilter(db, deps = {}) {
   _extractEntityAttribute = deps.extractEntityAttribute;
   _findDuplicates = deps.findDuplicates;
   _getEntityRanking = deps.getEntityRanking;
+  _boot();
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -63,85 +64,87 @@ const TUNNEL_MIN_ENTITY_PAIRS = 2;
 const TUNNEL_MIN_SHARED_ATTRIBUTES = 2;
 const CLOSET_RANK_BOOSTS = [0.40, 0.25, 0.15, 0.08, 0.04];
 
-// ── Prepared statements ──────────────────────────────────────────────
+// ── Lazy init ───────────────────────────────────────────────
+let _booted = false;
+let stmtSearchByEntityAttrHard;
+let stmtGetSharedAttributes;
+let stmtInsertTunnel;
+let stmtGetEntityPairsForAttribute;
+let stmtSearchByEntityOnly;
+let stmtSearchActiveByIds;
+let stmtGetDistinctEntities;
+let stmtGetAttributesForEntity;
 
-const stmtSearchByEntityOnly = _db.prepare(`
+function _boot() {
+  if (_booted) return;
+  stmtSearchByEntityOnly = _db.prepare(`
   SELECT id, session_id, type, text, importance, recall_count, entity, attribute,
-    summary, created_at, 0.9 AS score
+  summary, created_at, 0.9 AS score
   FROM memories
   WHERE entity = ? AND status = 'active'
   ORDER BY importance DESC, created_at DESC
   LIMIT ?
-`);
-
-const stmtSearchByEntityAttrHard = _db.prepare(`
+  `);
+  stmtSearchByEntityAttrHard = _db.prepare(`
   SELECT id, session_id, type, text, importance, recall_count, entity, attribute,
-    summary, created_at, 0.95 AS score
+  summary, created_at, 0.95 AS score
   FROM memories
   WHERE entity = ? AND attribute = ? AND status = 'active'
   ORDER BY importance DESC, created_at DESC
   LIMIT ?
-`);
-
-const stmtSearchActiveByIds = _db.prepare(`
+  `);
+  stmtSearchActiveByIds = _db.prepare(`
   SELECT id, session_id, type, text, importance, recall_count, entity, attribute,
-    summary, created_at
+  summary, created_at
   FROM memories
   WHERE id IN (${Array(50).fill('?').join(',')}) AND status = 'active'
-`);
-
-const stmtGetDistinctEntities = _db.prepare(`
+  `);
+  stmtGetDistinctEntities = _db.prepare(`
   SELECT DISTINCT entity FROM memories WHERE entity != '' AND status = 'active' ORDER BY entity
-`);
-
-const stmtGetAttributesForEntity = _db.prepare(`
+  `);
+  stmtGetAttributesForEntity = _db.prepare(`
   SELECT DISTINCT attribute FROM memories
   WHERE entity = ? AND attribute != '' AND status = 'active'
   ORDER BY attribute
-`);
-
-const stmtGetSharedAttributes = _db.prepare(`
+  `);
+  stmtGetSharedAttributes = _db.prepare(`
   SELECT m1.attribute, COUNT(DISTINCT m1.entity) AS entity_count
   FROM memories m1
   WHERE m1.attribute != '' AND m1.status = 'active'
   GROUP BY m1.attribute
   HAVING entity_count >= ?
   ORDER BY entity_count DESC
-`);
-
-const stmtGetEntityPairsForAttribute = _db.prepare(`
+  `);
+  stmtGetEntityPairsForAttribute = _db.prepare(`
   SELECT m1.entity AS entity_a, m2.entity AS entity_b, COUNT(*) AS overlap_count
   FROM memories m1
   JOIN memories m2 ON m1.attribute = m2.attribute AND m1.entity != m2.entity
   WHERE m1.attribute = ? AND m1.status = 'active' AND m2.status = 'active'
   GROUP BY m1.entity, m2.entity
   HAVING overlap_count >= ?
-`);
-
-// ── Tunnel detection table (auto-create) ─────────────────────────────
-
-_db.exec(`
+  `);
+  _db.exec(`
   CREATE TABLE IF NOT EXISTS memory_tunnels (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    attribute TEXT NOT NULL,
-    entity_a TEXT NOT NULL,
-    entity_b TEXT NOT NULL,
-    overlap_count INTEGER NOT NULL DEFAULT 0,
-    discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(attribute, entity_a, entity_b)
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attribute TEXT NOT NULL,
+  entity_a TEXT NOT NULL,
+  entity_b TEXT NOT NULL,
+  overlap_count INTEGER NOT NULL DEFAULT 0,
+  discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(attribute, entity_a, entity_b)
   )
-`);
-_db.exec('CREATE INDEX IF NOT EXISTS idx_tunnels_attribute ON memory_tunnels(attribute)');
-_db.exec('CREATE INDEX IF NOT EXISTS idx_tunnels_entity ON memory_tunnels(entity_a, entity_b)');
-
-const stmtInsertTunnel = _db.prepare(`
+  `);
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_tunnels_attribute ON memory_tunnels(attribute)');
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_tunnels_entity ON memory_tunnels(entity_a, entity_b)');
+  stmtInsertTunnel = _db.prepare(`
   INSERT INTO memory_tunnels (attribute, entity_a, entity_b, overlap_count)
   VALUES (@attribute, @entity_a, @entity_b, @overlap_count)
   ON CONFLICT(attribute, entity_a, entity_b) DO UPDATE SET
-    overlap_count = @overlap_count,
-    discovered_at = datetime('now')
-`);
-
+  overlap_count = @overlap_count,
+  discovered_at = datetime('now')
+  `);
+  _booted = true;
+}
 // ── 1. Structural Pre-Filtering for Search ──────────────────────────
 
 /**

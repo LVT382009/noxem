@@ -55,6 +55,7 @@ export function initAmbientInjector(db, deps = {}) {
   _getEdgesFromMemory = deps.getEdgesFromMemory;
   _getEdgesToMemory = deps.getEdgesToMemory;
   _getEntityRanking = deps.getEntityRanking;
+  _boot();
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -80,188 +81,184 @@ const AUDIT_STALE_DAYS = 90;
 const AUDIT_BM25_DUPE_THRESHOLD = 0.85;
 const SESSION_MAX_AUTO_LINKS = 10;
 
-// ── Auto-create tables ───────────────────────────────────────────────
+// ── Lazy init ───────────────────────────────────────────────
+let _booted = false;
+let stmtBoostImportance;
+let stmtFindBrokenEdges;
+let stmtArchiveMemory;
+let stmtCountStale;
+let stmtFindStaleMemories;
+let stmtFindOrphans;
+let stmtIncrementCorecall;
+let stmtCountOrphans;
+let stmtCloseSession;
+let stmtInsertFeedback;
+let stmtBoostRecallCount;
+let stmtFindInvalidEmbeddings;
+let stmtCountActiveMemories;
+let stmtUpsertSession;
+let stmtGetActiveSession;
+let stmtDecayImportance;
+let stmtGetCorecallPairs;
+let stmtCountBrokenEdges;
+let stmtGetSessionMemories;
+let stmtGetMemoryImportance;
+let stmtExpireSessions;
+let stmtCountEdgesBetween;
+let stmtInsertCorecallEdge;
 
-_db.exec(`
+function _boot() {
+  if (_booted) return;
+  _db.exec(`
   CREATE TABLE IF NOT EXISTS memory_sessions (
-    session_id TEXT PRIMARY KEY,
-    started_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_activity TEXT NOT NULL DEFAULT (datetime('now')),
-    memory_count INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'active',
-    end_summary TEXT DEFAULT ''
+  session_id TEXT PRIMARY KEY,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_activity TEXT NOT NULL DEFAULT (datetime('now')),
+  memory_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  end_summary TEXT DEFAULT ''
   )
-`);
-_db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_status ON memory_sessions(status)');
-
-_db.exec(`
+  `);
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_status ON memory_sessions(status)');
+  _db.exec(`
   CREATE TABLE IF NOT EXISTS memory_corecalls (
-    memory_a INTEGER NOT NULL,
-    memory_b INTEGER NOT NULL,
-    count INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (memory_a, memory_b),
-    CHECK (memory_a < memory_b)
+  memory_a INTEGER NOT NULL,
+  memory_b INTEGER NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (memory_a, memory_b),
+  CHECK (memory_a < memory_b)
   )
-`);
-_db.exec('CREATE INDEX IF NOT EXISTS idx_corecalls_memory_a ON memory_corecalls(memory_a)');
-
-_db.exec(`
+  `);
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_corecalls_memory_a ON memory_corecalls(memory_a)');
+  _db.exec(`
   CREATE TABLE IF NOT EXISTS memory_feedback_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_id INTEGER NOT NULL,
-    signal TEXT NOT NULL CHECK(signal IN ('positive', 'negative')),
-    importance_before REAL,
-    importance_after REAL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  memory_id INTEGER NOT NULL,
+  signal TEXT NOT NULL CHECK(signal IN ('positive', 'negative')),
+  importance_before REAL,
+  importance_after REAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )
-`);
-_db.exec('CREATE INDEX IF NOT EXISTS idx_feedback_memory ON memory_feedback_log(memory_id)');
-
-// ── Prepared statements ──────────────────────────────────────────────
-
-const stmtUpsertSession = _db.prepare(`
+  `);
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_feedback_memory ON memory_feedback_log(memory_id)');
+  stmtUpsertSession = _db.prepare(`
   INSERT INTO memory_sessions (session_id, started_at, last_activity, memory_count)
   VALUES (@sid, datetime('now'), datetime('now'), 1)
   ON CONFLICT(session_id) DO UPDATE SET
-    last_activity = datetime('now'),
-    memory_count = memory_count + 1
-`);
-
-const stmtCloseSession = _db.prepare(`
+  last_activity = datetime('now'),
+  memory_count = memory_count + 1
+  `);
+  stmtCloseSession = _db.prepare(`
   UPDATE memory_sessions SET status = 'closed', end_summary = @summary,
-    last_activity = datetime('now')
+  last_activity = datetime('now')
   WHERE session_id = @sid
-`);
-
-const stmtGetActiveSession = _db.prepare(`
+  `);
+  stmtGetActiveSession = _db.prepare(`
   SELECT * FROM memory_sessions WHERE session_id = ? AND status = 'active'
-`);
-
-const stmtExpireSessions = _db.prepare(`
+  `);
+  stmtExpireSessions = _db.prepare(`
   UPDATE memory_sessions SET status = 'expired'
   WHERE status = 'active'
-    AND last_activity < datetime('now', '-${SESSION_AUTO_EXPIRY_MINUTES} minutes')
-`);
-
-const stmtGetSessionMemories = _db.prepare(`
+  AND last_activity < datetime('now', '-${SESSION_AUTO_EXPIRY_MINUTES} minutes')
+  `);
+  stmtGetSessionMemories = _db.prepare(`
   SELECT id, entity, attribute, type, text FROM memories
   WHERE session_id = ? AND status = 'active' ORDER BY created_at
-`);
-
-const stmtIncrementCorecall = _db.prepare(`
+  `);
+  stmtIncrementCorecall = _db.prepare(`
   INSERT INTO memory_corecalls (memory_a, memory_b, count)
   VALUES (@a, @b, 1)
   ON CONFLICT(memory_a, memory_b) DO UPDATE SET count = count + 1
-`);
-
-const stmtGetCorecallPairs = _db.prepare(`
+  `);
+  stmtGetCorecallPairs = _db.prepare(`
   SELECT memory_a, memory_b, count FROM memory_corecalls
   WHERE count >= ? ORDER BY count DESC LIMIT ?
-`);
-
-const stmtCountEdgesBetween = _db.prepare(`
+  `);
+  stmtCountEdgesBetween = _db.prepare(`
   SELECT COUNT(*) AS cnt FROM memory_edges
   WHERE from_id = ? AND to_id = ? AND relation = 'related_to'
-    AND (valid_until IS NULL OR valid_until > datetime('now'))
-`);
-
-const stmtInsertCorecallEdge = _db.prepare(`
+  AND (valid_until IS NULL OR valid_until > datetime('now'))
+  `);
+  stmtInsertCorecallEdge = _db.prepare(`
   INSERT INTO memory_edges (from_id, to_id, relation, strength, source_session_id, metadata)
   VALUES (@from_id, @to_id, 'related_to', @strength, 'ambient-injector', '{"source":"corecall_auto"}')
-`);
-
-const stmtBoostImportance = _db.prepare(`
+  `);
+  stmtBoostImportance = _db.prepare(`
   UPDATE memories SET importance = MIN(1.0, importance + ?), updated_at = datetime('now')
   WHERE id = ? AND status = 'active'
-`);
-
-const stmtDecayImportance = _db.prepare(`
+  `);
+  stmtDecayImportance = _db.prepare(`
   UPDATE memories SET importance = MAX(0.05, importance - ?), updated_at = datetime('now')
   WHERE id = ? AND status = 'active'
-`);
-
-const stmtGetMemoryImportance = _db.prepare(`
+  `);
+  stmtGetMemoryImportance = _db.prepare(`
   SELECT importance, status FROM memories WHERE id = ?
-`);
-
-const stmtArchiveMemory = _db.prepare(`
+  `);
+  stmtArchiveMemory = _db.prepare(`
   UPDATE memories SET status = 'archived', updated_at = datetime('now')
   WHERE id = ? AND status = 'active'
-`);
-
-const stmtBoostRecallCount = _db.prepare(`
+  `);
+  stmtBoostRecallCount = _db.prepare(`
   UPDATE memories SET recall_count = recall_count + ?, updated_at = datetime('now')
   WHERE id = ? AND status = 'active'
-`);
-
-const stmtInsertFeedback = _db.prepare(`
+  `);
+  stmtInsertFeedback = _db.prepare(`
   INSERT INTO memory_feedback_log (memory_id, signal, importance_before, importance_after)
   VALUES (?, ?, ?, ?)
-`);
-
-// Audit prepared statements
-const stmtFindOrphans = _db.prepare(`
+  `);
+  stmtFindOrphans = _db.prepare(`
   SELECT m.id, m.entity FROM memories m
   LEFT JOIN memory_entities me ON m.id = me.memory_id
   WHERE m.entity != '' AND m.status = 'active' AND me.memory_id IS NULL
   LIMIT ?
-`);
-
-const stmtCountOrphans = _db.prepare(`
+  `);
+  stmtCountOrphans = _db.prepare(`
   SELECT COUNT(*) AS cnt FROM memories m
   LEFT JOIN memory_entities me ON m.id = me.memory_id
   WHERE m.entity != '' AND m.status = 'active' AND me.memory_id IS NULL
-`);
-
-const stmtFindBrokenEdges = _db.prepare(`
+  `);
+  stmtFindBrokenEdges = _db.prepare(`
   SELECT e.id AS edge_id, e.from_id, e.to_id, e.relation,
-    CASE WHEN m1.id IS NULL THEN 'from_missing' ELSE 'to_missing' END AS break_type
+  CASE WHEN m1.id IS NULL THEN 'from_missing' ELSE 'to_missing' END AS break_type
   FROM memory_edges e
   LEFT JOIN memories m1 ON e.from_id = m1.id
   LEFT JOIN memories m2 ON e.to_id = m2.id
   WHERE (m1.id IS NULL OR m2.id IS NULL)
   LIMIT ?
-`);
-
-const stmtCountBrokenEdges = _db.prepare(`
+  `);
+  stmtCountBrokenEdges = _db.prepare(`
   SELECT COUNT(*) AS cnt FROM memory_edges e
   LEFT JOIN memories m1 ON e.from_id = m1.id
   LEFT JOIN memories m2 ON e.to_id = m2.id
   WHERE m1.id IS NULL OR m2.id IS NULL
-`);
-
-const stmtFindStaleMemories = _db.prepare(`
+  `);
+  stmtFindStaleMemories = _db.prepare(`
   SELECT id, type, created_at, recall_count FROM memories
   WHERE status = 'active' AND recall_count = 0
-    AND created_at < datetime('now', '-${AUDIT_STALE_DAYS} days')
+  AND created_at < datetime('now', '-${AUDIT_STALE_DAYS} days')
   LIMIT ?
-`);
-
-const stmtCountStale = _db.prepare(`
+  `);
+  stmtCountStale = _db.prepare(`
   SELECT COUNT(*) AS cnt FROM memories
   WHERE status = 'active' AND recall_count = 0
-    AND created_at < datetime('now', '-${AUDIT_STALE_DAYS} days')
-`);
-
-const stmtFindInvalidEmbeddings = _db.prepare(`
+  AND created_at < datetime('now', '-${AUDIT_STALE_DAYS} days')
+  `);
+  stmtFindInvalidEmbeddings = _db.prepare(`
   SELECT m.id FROM memories m
   LEFT JOIN memory_vecs v ON v.rowid = m.id
   WHERE m.status = 'active'
-    AND ((m.embedding IS NULL AND v.rowid IS NOT NULL)
-      OR (m.embedding IS NOT NULL AND v.rowid IS NULL))
+  AND ((m.embedding IS NULL AND v.rowid IS NOT NULL)
+  OR (m.embedding IS NOT NULL AND v.rowid IS NULL))
   LIMIT ?
-`);
-
-const stmtCountActiveMemories = _db.prepare(`
+  `);
+  stmtCountActiveMemories = _db.prepare(`
   SELECT COUNT(*) AS cnt FROM memories WHERE status = 'active'
-`);
-
-// ── Injection cache ──────────────────────────────────────────────────
-
-let _injectCache = null;
-let _injectCacheTime = 0;
-let _agentsMdCache = { content: null, ts: 0, path: '' };
-
+  `);
+  let _injectCache = null;
+  let _injectCacheTime = 0;
+  let _agentsMdCache = { content: null, ts: 0, path: '' };
+  _booted = true;
+}
 // ── 1. Tool-Description Memory Injection ────────────────────────────
 
 /**

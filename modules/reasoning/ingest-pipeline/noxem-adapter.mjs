@@ -28,6 +28,7 @@ const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-p
 export function initIngestPipeline(db, deps = {}) {
   _db = db;
   _llmFetch = deps.llmFetch;
+  _boot();
 }
 
 // 4-signal weights from LLM Wiki's graph-relevance.ts
@@ -49,97 +50,102 @@ const TYPE_AFFINITY = {
   reasoning:  { fact: 0.8, preference: 0.8, project: 1.0, entity: 1.0, setup: 0.8, goal: 1.0, reasoning: 0.8 },
 };
 
-// ── Prepared statements ──────────────────────────────────────────────
+// ── Lazy init ───────────────────────────────────────────────
+let _booted = false;
+let getActiveL1ByEntity;
+let getEntityPairsSharedNoEdge;
+let getActiveL0BySession;
+let getNeighborsOfMemory;
+let getActiveL1BySession;
+let getEntitiesWithL1NoL2;
+let getEntitiesWithNoEdges;
+let getEdgesByMemoryPair;
 
-const getActiveL0BySession = _db.prepare(`
+function _boot() {
+  if (_booted) return;
+  getActiveL0BySession = _db.prepare(`
   SELECT id, text, type, entity, created_at
   FROM memories
   WHERE session_id = ? AND (cone_layer = 0 OR cone_layer IS NULL) AND status = 'active'
   ORDER BY created_at DESC
   LIMIT ?
-`);
-
-const getActiveL1BySession = _db.prepare(`
+  `);
+  getActiveL1BySession = _db.prepare(`
   SELECT id, text, type, entity, attribute, importance, metadata, created_at
   FROM memories
   WHERE session_id = ? AND cone_layer = 1 AND status = 'active'
   ORDER BY created_at DESC
   LIMIT ?
-`);
-
-const getActiveL1ByEntity = _db.prepare(`
+  `);
+  getActiveL1ByEntity = _db.prepare(`
   SELECT id, text, type, entity, attribute, importance
   FROM memories
   WHERE entity = ? AND cone_layer = 1 AND status = 'active'
   ORDER BY importance DESC
   LIMIT ?
-`);
-
-const getEntitiesWithL1NoL2 = _db.prepare(`
+  `);
+  getEntitiesWithL1NoL2 = _db.prepare(`
   SELECT m.entity, COUNT(*) as l1_count
   FROM memories m
   WHERE m.cone_layer = 1 AND m.status = 'active' AND m.entity != ''
-    AND NOT EXISTS (
-      SELECT 1 FROM memories m2
-      WHERE m2.entity = m.entity AND m2.cone_layer = 2 AND m2.status = 'active'
-    )
+  AND NOT EXISTS (
+  SELECT 1 FROM memories m2
+  WHERE m2.entity = m.entity AND m2.cone_layer = 2 AND m2.status = 'active'
+  )
   GROUP BY m.entity
   ORDER BY l1_count DESC
   LIMIT ?
-`);
-
-const getEntitiesWithNoEdges = _db.prepare(`
+  `);
+  getEntitiesWithNoEdges = _db.prepare(`
   SELECT m.entity, COUNT(*) as mem_count
   FROM memories m
   WHERE m.status = 'active' AND m.entity != ''
-    AND NOT EXISTS (
-      SELECT 1 FROM memory_entities me
-      JOIN memory_edges e ON (e.from_id = me.memory_id OR e.to_id = me.memory_id)
-      WHERE me.entity_id = (
-        SELECT e2.id FROM entities e2 WHERE e2.canonical_name = m.entity
-      )
-      AND (e.valid_until IS NULL OR e.valid_until > datetime('now'))
-    )
+  AND NOT EXISTS (
+  SELECT 1 FROM memory_entities me
+  JOIN memory_edges e ON (e.from_id = me.memory_id OR e.to_id = me.memory_id)
+  WHERE me.entity_id = (
+  SELECT e2.id FROM entities e2 WHERE e2.canonical_name = m.entity
+  )
+  AND (e.valid_until IS NULL OR e.valid_until > datetime('now'))
+  )
   GROUP BY m.entity
   ORDER BY mem_count DESC
   LIMIT ?
-`);
-
-const getEntityPairsSharedNoEdge = _db.prepare(`
+  `);
+  getEntityPairsSharedNoEdge = _db.prepare(`
   SELECT m1.entity as entity_a, m2.entity as entity_b, COUNT(*) as shared_count
   FROM memories m1
   JOIN memories m2 ON m1.entity != m2.entity AND m1.entity != '' AND m2.entity != ''
   JOIN memory_entities me1 ON me1.memory_id = m1.id
   JOIN memory_entities me2 ON me2.memory_id = m2.id
   WHERE me1.entity_id = me2.entity_id
-    AND m1.status = 'active' AND m2.status = 'active'
-    AND m1.id < m2.id
-    AND NOT EXISTS (
-      SELECT 1 FROM memory_edges e
-      WHERE (e.from_id = m1.id AND e.to_id = m2.id)
-         OR (e.from_id = m2.id AND e.to_id = m1.id)
-      AND (e.valid_until IS NULL OR e.valid_until > datetime('now'))
-    )
+  AND m1.status = 'active' AND m2.status = 'active'
+  AND m1.id < m2.id
+  AND NOT EXISTS (
+  SELECT 1 FROM memory_edges e
+  WHERE (e.from_id = m1.id AND e.to_id = m2.id)
+  OR (e.from_id = m2.id AND e.to_id = m1.id)
+  AND (e.valid_until IS NULL OR e.valid_until > datetime('now'))
+  )
   GROUP BY m1.entity, m2.entity
   HAVING shared_count >= ?
   ORDER BY shared_count DESC
   LIMIT ?
-`);
-
-const getEdgesByMemoryPair = _db.prepare(`
+  `);
+  getEdgesByMemoryPair = _db.prepare(`
   SELECT id, strength, relation
   FROM memory_edges
   WHERE ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))
-    AND (valid_until IS NULL OR valid_until > datetime('now'))
-`);
-
-const getNeighborsOfMemory = _db.prepare(`
+  AND (valid_until IS NULL OR valid_until > datetime('now'))
+  `);
+  getNeighborsOfMemory = _db.prepare(`
   SELECT me.entity_id, e.canonical_name
   FROM memory_entities me
   JOIN entities e ON e.id = me.entity_id
   WHERE me.memory_id = ?
-`);
-
+  `);
+  _booted = true;
+}
 // ── Incremental extraction guard ─────────────────────────────────────
 
 const sessionL0HashCache = new Map(); // sessionId -> { hash, lastL0Count }

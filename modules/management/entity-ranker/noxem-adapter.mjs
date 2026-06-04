@@ -37,6 +37,7 @@ export function initEntityRanker(db, deps = {}) {
   _getActiveMemories = deps.getActiveMemories;
   _incrementRecallCounts = deps.incrementRecallCounts;
   _extractEntityAttribute = deps.extractEntityAttribute;
+  _boot();
 }
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -52,7 +53,12 @@ const EVICTION_SUMMARY_TARGET_WORDS = 50;
 const GRAPH_EXPANSION_DEPTH = 2;
 const GRAPH_EXPANSION_LIMIT = 50;
 
-// ── Migration v6: Add last_mentioned_at to entities ──────────────────
+// ── Lazy init state ──────────────────────────────────────────────
+let _db, _listEntities, _getEntity, _touchEntity, _traverseMemoryGraph, _storeEdge,
+  _getActiveMemories, _incrementRecallCounts, _extractEntityAttribute;
+let _booted = false;
+let stmtGetRankedEntities, stmtUpdateLastMentioned, stmtGetEntityMentionsByDay,
+  stmtGetMemoriesByEntityRanked, stmtUpsertEntityWithTimestamp;
 
 function _ensureColumn(table, column, def) {
   if (!/^[a-zA-Z_]\w*$/.test(column)) throw new Error(`Invalid column name: ${column}`);
@@ -65,49 +71,45 @@ function runEntityRankerMigration() {
   _db.exec('CREATE INDEX IF NOT EXISTS idx_entities_last_mentioned ON entities(last_mentioned_at DESC)');
 }
 
-// Auto-run migration on import
-try { runEntityRankerMigration(); } catch (e) { console.error('[EntityRanker] Migration failed:', e.message); }
-
-// ── Prepared statements ──────────────────────────────────────────────
-
-const stmtGetRankedEntities = _db.prepare(`
-  SELECT id, canonical_name, entity_type, mention_count, last_mentioned_at,
-    mention_count * exp(-(julianday('now') - julianday(last_mentioned_at)) / @half_life) AS composite_score
-  FROM entities
-  WHERE mention_count > 0
-  ORDER BY composite_score DESC
-  LIMIT @limit
-`);
-
-const stmtUpdateLastMentioned = _db.prepare(
-  "UPDATE entities SET last_mentioned_at = datetime('now'), mention_count = mention_count + 1 WHERE canonical_name = ?"
-);
-
-const stmtGetEntityMentionsByDay = _db.prepare(`
-  SELECT entity, DATE(created_at) AS day, COUNT(*) AS count
-  FROM memories
-  WHERE status = 'active' AND entity != ''
-  GROUP BY entity, day
-  ORDER BY entity, day
-`);
-
-const stmtGetMemoriesByEntityRanked = _db.prepare(`
-  SELECT m.id, m.type, m.text, m.importance, m.recall_count, m.created_at,
-    m.entity, m.attribute, m.summary
-  FROM memories m
-  WHERE m.status = 'active' AND m.entity = ?
-  ORDER BY m.importance DESC, m.recall_count DESC, m.created_at DESC
-  LIMIT ?
-`);
-
-const stmtUpsertEntityWithTimestamp = _db.prepare(`
-  INSERT INTO entities (canonical_name, entity_type, normalized_name, mention_count, last_mentioned_at)
-  VALUES (@name, @type, @norm, 1, datetime('now'))
-  ON CONFLICT(canonical_name) DO UPDATE SET
-    mention_count = mention_count + 1,
-    last_mentioned_at = datetime('now'),
-    updated_at = datetime('now')
-`);
+function _boot() {
+  if (_booted) return;
+  runEntityRankerMigration();
+  stmtGetRankedEntities = _db.prepare(`
+    SELECT id, canonical_name, entity_type, mention_count, last_mentioned_at,
+      mention_count * exp(-(julianday('now') - julianday(last_mentioned_at)) / @half_life) AS composite_score
+    FROM entities
+    WHERE mention_count > 0
+    ORDER BY composite_score DESC
+    LIMIT @limit
+  `);
+  stmtUpdateLastMentioned = _db.prepare(
+    "UPDATE entities SET last_mentioned_at = datetime('now'), mention_count = mention_count + 1 WHERE canonical_name = ?"
+  );
+  stmtGetEntityMentionsByDay = _db.prepare(`
+    SELECT entity, DATE(created_at) AS day, COUNT(*) AS count
+    FROM memories
+    WHERE status = 'active' AND entity != ''
+    GROUP BY entity, day
+    ORDER BY entity, day
+  `);
+  stmtGetMemoriesByEntityRanked = _db.prepare(`
+    SELECT m.id, m.type, m.text, m.importance, m.recall_count, m.created_at,
+      m.entity, m.attribute, m.summary
+    FROM memories m
+    WHERE m.status = 'active' AND m.entity = ?
+    ORDER BY m.importance DESC, m.recall_count DESC, m.created_at DESC
+    LIMIT ?
+  `);
+  stmtUpsertEntityWithTimestamp = _db.prepare(`
+    INSERT INTO entities (canonical_name, entity_type, normalized_name, mention_count, last_mentioned_at)
+    VALUES (@name, @type, @norm, 1, datetime('now'))
+    ON CONFLICT(canonical_name) DO UPDATE SET
+      mention_count = mention_count + 1,
+      last_mentioned_at = datetime('now'),
+      updated_at = datetime('now')
+  `);
+  _booted = true;
+}
 
 // ── 1. Entity Recency+Frequency Composite Ranking ───────────────────
 
