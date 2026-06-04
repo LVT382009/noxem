@@ -37,6 +37,10 @@
 
 
 
+let _db, _getMemoriesByEntityAttr, _searchMemories, _storeMemory,
+  _storeEdge, _getActiveMemories, _getAllCoreBlocks, _extractEntityAttribute,
+  _findDuplicates, _getEntityRanking;
+
 export function initSpatialFilter(db, deps = {}) {
   _db = db;
   _getMemoriesByEntityAttr = deps.getMemoriesByEntityAttr;

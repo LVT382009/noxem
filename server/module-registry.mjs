@@ -148,75 +148,57 @@ export async function initModules(embedFn) {
   // 2. Wire DI adapters with server dependencies
   const m = _modules;
 
-  if (m.entityRanker) {
-    m.entityRanker.initEntityRanker(db, {
-      listEntities,
-      getEntity,
-      touchEntity,
-      traverseMemoryGraph,
-      storeEdge,
-      getActiveMemories,
-      incrementRecallCounts,
-      extractEntityAttribute,
-    });
-  }
+if (m.entityRanker) { try {
+  m.entityRanker.initEntityRanker(db, {
+    listEntities, getEntity, touchEntity, traverseMemoryGraph,
+    storeEdge, getActiveMemories, incrementRecallCounts, extractEntityAttribute,
+  });
+} catch (e) { console.error('[module-registry] entityRanker init failed:', e.message); } }
 
-  if (m.spatialFilter) {
-    m.spatialFilter.initSpatialFilter(db, {
-      getMemoriesByEntityAttr,
-      searchMemories,
-      storeMemory,
-      storeEdge,
-      getActiveMemories,
-      getAllCoreBlocks,
-      extractEntityAttribute,
-      findDuplicates,
-      getEntityRanking: m.entityRanker?.getEntityRanking,
-    });
-  }
+if (m.spatialFilter) { try {
+  m.spatialFilter.initSpatialFilter(db, {
+    getMemoriesByEntityAttr, searchMemories, storeMemory, storeEdge,
+    getActiveMemories, getAllCoreBlocks, extractEntityAttribute, findDuplicates,
+    getEntityRanking: m.entityRanker?.getEntityRanking,
+  });
+} catch (e) { console.error('[module-registry] spatialFilter init failed:', e.message); } }
 
-  if (m.ambientInjector) {
-    m.ambientInjector.initAmbientInjector(db, {
-      storeEdge,
-      searchMemories,
-      getActiveMemories,
-      incrementRecallCounts,
-      traverseMemoryGraph,
-      getAllCoreBlocks,
-      getMemory,
-      getEdgesFromMemory,
-      getEdgesToMemory,
-      getEntityRanking: m.entityRanker?.getEntityRanking,
-    });
-  }
+if (m.ambientInjector) { try {
+  m.ambientInjector.initAmbientInjector(db, {
+    storeEdge, searchMemories, getActiveMemories, incrementRecallCounts,
+    traverseMemoryGraph, getAllCoreBlocks, getMemory,
+    getEdgesFromMemory, getEdgesToMemory,
+    getEntityRanking: m.entityRanker?.getEntityRanking,
+  });
+} catch (e) { console.error('[module-registry] ambientInjector init failed:', e.message); } }
 
-  if (m.strategyDistiller) {
-    m.strategyDistiller.initStrategyDistiller(db, { llmFetch });
-  }
+if (m.strategyDistiller) { try {
+  m.strategyDistiller.initStrategyDistiller(db, { llmFetch });
+} catch (e) { console.error('[module-registry] strategyDistiller init failed:', e.message); } }
 
-  if (m.ingestPipeline) {
-    m.ingestPipeline.initIngestPipeline(db, { llmFetch });
-  }
+if (m.ingestPipeline) { try {
+  m.ingestPipeline.initIngestPipeline(db, { llmFetch });
+} catch (e) { console.error('[module-registry] ingestPipeline init failed:', e.message); } }
 
-  // Schema bootstraps — safe no-ops if adapter missing
-  if (m.deltaProcessor) {
-    m.deltaProcessor.bootstrapSchema(db);
-    m.deltaProcessor.initStaleEmbeddingDetector(db);
-    m.deltaProcessor.initLogicVersioning(db);
-    m.deltaProcessor.initSourceLineage(db);
-    m.deltaProcessor.initDeltaSync(db);
-    m.deltaProcessor.initModelVersionGate(db);
-  }
+// Schema bootstraps
+if (m.deltaProcessor) { try {
+  m.deltaProcessor.bootstrapSchema(db);
+  m.deltaProcessor.initStaleEmbeddingDetector(db);
+  m.deltaProcessor.initLogicVersioning(db);
+  m.deltaProcessor.initSourceLineage(db);
+  m.deltaProcessor.initDeltaSync(db);
+  m.deltaProcessor.initModelVersionGate(db);
+} catch (e) { console.error('[module-registry] deltaProcessor schema failed:', e.message); } }
 
-  if (m.graphPruner)         m.graphPruner.ensureSchema(db);
-  if (m.capsuleBuilder)      m.capsuleBuilder.installSchema(db);
-  if (m.contextCompressor)   m.contextCompressor.initCompressionPatternsTable(db);
-  if (m.compactionCoordinator) m.compactionCoordinator.initCompactionTables(db);
-  if (m.diagnosticCompiler)  m.diagnosticCompiler.initDiagnosticAdapter(db);
+if (m.graphPruner) { try { m.graphPruner.ensureSchema(db); } catch (e) { console.error('[module-registry] graphPruner schema failed:', e.message); } }
+if (m.capsuleBuilder) { try { m.capsuleBuilder.installSchema(db); } catch (e) { console.error('[module-registry] capsuleBuilder schema failed:', e.message); } }
+if (m.contextCompressor) { try { m.contextCompressor.initCompressionPatternsTable(db); } catch (e) { console.error('[module-registry] contextCompressor schema failed:', e.message); } }
+if (m.compactionCoordinator) { try { m.compactionCoordinator.initCompactionTables(db); } catch (e) { console.error('[module-registry] compactionCoordinator schema failed:', e.message); } }
+if (m.diagnosticCompiler) { try { m.diagnosticCompiler.initDiagnosticAdapter(db); } catch (e) { console.error('[module-registry] diagnosticCompiler init failed:', e.message); } }
 
-  if (m.declarativeGateway) {
-    m.declarativeGateway.initDeclarativeGateway(db, { brain2Fn: null });
-  }
+if (m.declarativeGateway) { try {
+  m.declarativeGateway.initDeclarativeGateway(db, { brain2Fn: null });
+} catch (e) { console.error('[module-registry] declarativeGateway init failed:', e.message); } }
 
   _initialized = true;
   _ready = true;
