@@ -814,7 +814,9 @@ app.post('/memory/store', async (req, res) => {
     const { entity, attribute } = extractEntityAttribute(trimmed);
     const contextPrefix = generateContextPrefix(trimmed, catType, session_id);
 
-    // Store immediately without waiting for embedding (non-blocking)
+    // v2.1: Storage-time structural dedup (MemPalace pattern)
+ try { const _dup = spatialFilter.checkStorageTimeDuplicate(trimmed, entity, attribute); if (_dup) return res.json({ ok: true, id: _dup.id, embedding: 'duplicate', duplicate_of: _dup.id }); } catch {}
+ // Store immediately without waiting for embedding (non-blocking)
     const id = storeMemory({
       session_id: session_id || '',
       type: catType,
@@ -834,8 +836,12 @@ app.post('/memory/store', async (req, res) => {
 	// v2: Wire graph edge extraction
  await extractAndStoreEdges(id, trimmed, session_id);
   onMemoryStored(session_id || '');
+	// v2.1: Track session activity for ambient injection (Lemma pattern)
+	try { if (session_id) ambientInjector.trackSessionActivity(session_id); } catch {}
 
 	invalidateQueryCacheForEntity(entity, attribute);
+	// v2.1: Touch entity recency (Memary pattern)
+	try { if (entity) entityRanker.touchEntityWithRecency(entity); } catch {}
   res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -993,6 +999,13 @@ app.get("/memory/search", async (req, res) => {
 
         let embeddingResults = null;
 
+ // v2.1: Structural pre-filter (MemPalace — 34pp recall gain)
+ let _prefilter = null;
+ try { _prefilter = spatialFilter.prefilterByStructure(q.trim()); } catch {}
+ if (_prefilter?.prefiltered && _prefilter.results.length > 0) {
+   searchMethod = "prefilter+" + (_prefilter.wing || '') + "/" + (_prefilter.room || '');
+ }
+
  // v2: Single-pass RRF — collect all variant lists first, merge once
  const intent = classifyQueryIntent(q);
  const allLists = [];
@@ -1052,6 +1065,8 @@ app.get("/memory/search", async (req, res) => {
 	const intent = classifyQueryIntent(q);
 	searchResults = applyCodeRerank(searchResults, q, intent);
 	searchResults = applyEntitySaturationDecay(searchResults);
+  // v2.1: Entity-centric search boost (Memary pattern)
+  try { searchResults = entityRanker.applyEntityBoost(searchResults); } catch {}
 	// Apply session filter BEFORE final limit to avoid returning fewer results than requested
 	if (session_id) searchResults = searchResults.filter(r => r.session_id === session_id);
 	searchResults = searchResults.slice(0, limitNum);
@@ -1194,7 +1209,12 @@ app.get('/memory/release', async (req, res) => {
       chars += line.length;
     }
 
-    const coreBlocks = getAllCoreBlocks();
+// v2.1: Inject wake-up context layer (MemPalace L0+L1 facts)
+  let _wakeup = '';
+  try { const wc = spatialFilter.generateWakeUpContext(); if (wc) _wakeup = String.fromCharCode(10) + wc; } catch {}
+
+
+  const coreBlocks = getAllCoreBlocks();
 res.json({
 ok: true,
 memories: lines.length,
@@ -1908,7 +1928,9 @@ app.post('/memory/session/end', async (req, res) => {
       }
     }
 
-    res.json({ ok: true, extracted: newMemories.length, stored_ids: ids });
+     // v2.1: Auto-link co-accessed memories (Lemma corecalls)
+ try { ambientInjector.createCorecallEdges(); } catch {}
+ res.json({ ok: true, extracted: newMemories.length, stored_ids: ids });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
