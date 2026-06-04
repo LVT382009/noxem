@@ -664,10 +664,16 @@ export function getMemory(id) {
   return getById.get(id);
 }
 
+const _getMemByIdsCache = new Map();
 export function getMemoriesByIds(ids) {
   if (!ids || ids.length === 0) return [];
-  const placeholders = ids.map(() => '?').join(',');
-  return db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`).all(...ids);
+  let stmt = _getMemByIdsCache.get(ids.length);
+  if (!stmt) {
+    const placeholders = ids.map(() => '?').join(',');
+    stmt = db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`);
+    _getMemByIdsCache.set(ids.length, stmt);
+  }
+  return stmt.all(...ids);
 }
 
 export function getActiveMemories(limit = 50) {

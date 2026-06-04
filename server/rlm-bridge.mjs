@@ -77,6 +77,7 @@ function ensureProcess() {
       LLM_API_KEY: process.env.LLM_API_KEY || '',
       NOXEM_CONTEXT_WINDOW: process.env.NOXEM_CONTEXT_WINDOW || '',
       VIRTUAL_ENV: process.env.VIRTUAL_ENV || '',
+    RLM_LLM_TIMEOUT: process.env.RLM_LLM_TIMEOUT || '',
     },
     });
 

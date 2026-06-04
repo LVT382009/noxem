@@ -13,7 +13,6 @@
 import { storeMemory, getAllActiveMemoriesNoEmbed, getMemoriesByEntityAttr, traverseMemoryGraph, getActiveMemories, getMemoriesByIds, db } from './memory-store.mjs';
 import { isEmbeddingReady, embed, searchByEmbedding } from './embedding-engine.mjs';
 import { knnSearch, knnSearchHybrid, getVectorBackend } from './vector-index.mjs';
-import { vectorKnnSearchAsync } from './memory-store.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const BUNDLE_TOP_K = parseInt(process.env.BUNDLE_TOP_K || '5');
