@@ -1,29 +1,16 @@
 /**
  * Module Registry — wires all 15 Noxem adapter modules with server dependencies.
  *
+ * Uses dynamic imports with graceful fallback so the server starts even if
+ * some adapters are missing (e.g. fresh clone without vendor repos).
  * Call initModules(embedFn) once at startup after the embedding engine is ready.
- * Adapter namespaces are re-exported for convenient access.
  *
  * @module module-registry
  */
 
-// ── Adapter imports (namespaces) ──────────────────────────────────────
-
-import * as multiSourceRouter from '../modules/retrieval/multi-source-router/noxem-adapter.mjs';
-import * as crossModalExtractor from '../modules/retrieval/cross-modal-extractor/noxem-adapter.mjs';
-import * as deltaProcessor from '../modules/retrieval/delta-processor/noxem-adapter.mjs';
-import * as entityRanker from '../modules/management/entity-ranker/noxem-adapter.mjs';
-import * as spatialFilter from '../modules/management/spatial-filter/noxem-adapter.mjs';
-import * as ambientInjector from '../modules/management/ambient-injector/noxem-adapter.mjs';
-import * as graphPruner from '../modules/vector-compress/graph-pruner/noxem-adapter.mjs';
-import * as capsuleBuilder from '../modules/vector-compress/capsule-builder/noxem-adapter.mjs';
-import * as contextCompressor from '../modules/vector-compress/context-compressor/noxem-adapter.mjs';
-import * as strategyDistiller from '../modules/reasoning/strategy-distiller/noxem-adapter.mjs';
-import * as ingestPipeline from '../modules/reasoning/ingest-pipeline/noxem-adapter.mjs';
-import * as compactionCoordinator from '../modules/reasoning/compaction-coordinator/noxem-adapter.mjs';
-import * as lessonVault from '../modules/infra/lesson-vault/noxem-adapter.mjs';
-import * as declarativeGateway from '../modules/infra/declarative-gateway/noxem-adapter.mjs';
-import * as diagnosticCompiler from '../modules/infra/diagnostic-compiler/noxem-adapter.mjs';
+import { readFile } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // ── Server dependency imports ─────────────────────────────────────────
 
@@ -70,147 +57,186 @@ import {
 // ── State ─────────────────────────────────────────────────────────────
 
 let _initialized = false;
+const _modules = {};
+
+// ── Adapter definitions ───────────────────────────────────────────────
+
+const ADAPTER_DEFS = [
+  { key: 'multiSourceRouter',    path: '../modules/retrieval/multi-source-router/noxem-adapter.mjs' },
+  { key: 'crossModalExtractor',  path: '../modules/retrieval/cross-modal-extractor/noxem-adapter.mjs' },
+  { key: 'deltaProcessor',       path: '../modules/retrieval/delta-processor/noxem-adapter.mjs' },
+  { key: 'entityRanker',         path: '../modules/management/entity-ranker/noxem-adapter.mjs' },
+  { key: 'spatialFilter',        path: '../modules/management/spatial-filter/noxem-adapter.mjs' },
+  { key: 'ambientInjector',      path: '../modules/management/ambient-injector/noxem-adapter.mjs' },
+  { key: 'graphPruner',          path: '../modules/vector-compress/graph-pruner/noxem-adapter.mjs' },
+  { key: 'capsuleBuilder',       path: '../modules/vector-compress/capsule-builder/noxem-adapter.mjs' },
+  { key: 'contextCompressor',    path: '../modules/vector-compress/context-compressor/noxem-adapter.mjs' },
+  { key: 'strategyDistiller',    path: '../modules/reasoning/strategy-distiller/noxem-adapter.mjs' },
+  { key: 'ingestPipeline',       path: '../modules/reasoning/ingest-pipeline/noxem-adapter.mjs' },
+  { key: 'compactionCoordinator',path: '../modules/reasoning/compaction-coordinator/noxem-adapter.mjs' },
+  { key: 'lessonVault',          path: '../modules/infra/lesson-vault/noxem-adapter.mjs' },
+  { key: 'declarativeGateway',   path: '../modules/infra/declarative-gateway/noxem-adapter.mjs' },
+  { key: 'diagnosticCompiler',   path: '../modules/infra/diagnostic-compiler/noxem-adapter.mjs' },
+];
+
+// ── Dynamic import with fallback ──────────────────────────────────────
+
+async function _loadAdapter(def) {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const absPath = join(__dirname, def.path);
+  try {
+    const mod = await import(absPath);
+    _modules[def.key] = mod;
+  } catch (err) {
+    if (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'ENOENT') {
+      console.warn(`[module-registry] Adapter "${def.key}" not found — skipping (${def.path})`);
+      _modules[def.key] = null;
+    } else {
+      console.error(`[module-registry] Adapter "${def.key}" load error:`, err.message);
+      _modules[def.key] = null;
+    }
+  }
+}
+
+// ── Lazy namespace accessors ──────────────────────────────────────────
+
+function _ns(key) {
+  const mod = _modules[key];
+  if (!mod) return new Proxy({}, { get: () => () => { console.warn(`[module-registry] ${key} not available`); return null; } });
+  return mod;
+}
+
+// Lazy getters — these appear as namespace objects after initModules() completes
+let _ready = false;
+
+export const multiSourceRouter     = new Proxy({}, { get: (_, p) => _ns('multiSourceRouter')[p] });
+export const crossModalExtractor   = new Proxy({}, { get: (_, p) => _ns('crossModalExtractor')[p] });
+export const deltaProcessor        = new Proxy({}, { get: (_, p) => _ns('deltaProcessor')[p] });
+export const entityRanker          = new Proxy({}, { get: (_, p) => _ns('entityRanker')[p] });
+export const spatialFilter         = new Proxy({}, { get: (_, p) => _ns('spatialFilter')[p] });
+export const ambientInjector       = new Proxy({}, { get: (_, p) => _ns('ambientInjector')[p] });
+export const graphPruner           = new Proxy({}, { get: (_, p) => _ns('graphPruner')[p] });
+export const capsuleBuilder        = new Proxy({}, { get: (_, p) => _ns('capsuleBuilder')[p] });
+export const contextCompressor     = new Proxy({}, { get: (_, p) => _ns('contextCompressor')[p] });
+export const strategyDistiller     = new Proxy({}, { get: (_, p) => _ns('strategyDistiller')[p] });
+export const ingestPipeline        = new Proxy({}, { get: (_, p) => _ns('ingestPipeline')[p] });
+export const compactionCoordinator = new Proxy({}, { get: (_, p) => _ns('compactionCoordinator')[p] });
+export const lessonVault           = new Proxy({}, { get: (_, p) => _ns('lessonVault')[p] });
+export const declarativeGateway    = new Proxy({}, { get: (_, p) => _ns('declarativeGateway')[p] });
+export const diagnosticCompiler    = new Proxy({}, { get: (_, p) => _ns('diagnosticCompiler')[p] });
 
 // ── Initialization ────────────────────────────────────────────────────
 
 /**
- * Initialize all DI-enabled adapter modules with their server dependencies.
+ * Load and initialize all adapter modules.
  *
  * Must be called once at startup after the embedding engine is ready.
- * Adapters that receive db/deps per function call (multi-source-router,
- * cross-modal-extractor, graph-pruner, capsule-builder, lesson-vault,
- * compaction-coordinator) do NOT need init — they are stateless namespaces.
+ * Missing adapters are silently skipped — the server stays functional.
  *
  * @param {Function} embedFn - The embed() function from embedding-engine
  */
-export function initModules(embedFn) {
+export async function initModules(embedFn) {
   const _embed = embedFn || embed;
 
-  // ── 1. Entity Ranker (Memary) ──────────────────────────────────────
-  entityRanker.initEntityRanker(db, {
-    listEntities,
-    getEntity,
-    touchEntity,
-    traverseMemoryGraph,
-    storeEdge,
-    getActiveMemories,
-    incrementRecallCounts,
-    extractEntityAttribute,
-  });
+  // 1. Load all adapters dynamically
+  await Promise.all(ADAPTER_DEFS.map(def => _loadAdapter(def)));
 
-  // ── 2. Spatial Filter (MemPalace) ──────────────────────────────────
-  spatialFilter.initSpatialFilter(db, {
-    getMemoriesByEntityAttr,
-    searchMemories,
-    storeMemory,
-    storeEdge,
-    getActiveMemories,
-    getAllCoreBlocks,
-    extractEntityAttribute,
-    findDuplicates,
-    getEntityRanking: entityRanker.getEntityRanking,
-  });
+  const loaded = ADAPTER_DEFS.filter(d => _modules[d.key] !== null).length;
+  const skipped = ADAPTER_DEFS.length - loaded;
+  console.log(`[module-registry] Loaded ${loaded}/${ADAPTER_DEFS.length} adapters${skipped ? ` (${skipped} skipped)` : ''}`);
 
-  // ── 3. Ambient Injector (Lemma) ────────────────────────────────────
-  ambientInjector.initAmbientInjector(db, {
-    storeEdge,
-    searchMemories,
-    getActiveMemories,
-    incrementRecallCounts,
-    traverseMemoryGraph,
-    getAllCoreBlocks,
-    getMemory,
-    getEdgesFromMemory,
-    getEdgesToMemory,
-    getEntityRanking: entityRanker.getEntityRanking,
-  });
+  // 2. Wire DI adapters with server dependencies
+  const m = _modules;
 
-  // ── 4. Strategy Distiller (ReasoningBank) ──────────────────────────
-  strategyDistiller.initStrategyDistiller(db, { llmFetch });
+  if (m.entityRanker) {
+    m.entityRanker.initEntityRanker(db, {
+      listEntities,
+      getEntity,
+      touchEntity,
+      traverseMemoryGraph,
+      storeEdge,
+      getActiveMemories,
+      incrementRecallCounts,
+      extractEntityAttribute,
+    });
+  }
 
-  // ── 5. Ingest Pipeline (LLM Wiki) ──────────────────────────────────
-  ingestPipeline.initIngestPipeline(db, { llmFetch });
+  if (m.spatialFilter) {
+    m.spatialFilter.initSpatialFilter(db, {
+      getMemoriesByEntityAttr,
+      searchMemories,
+      storeMemory,
+      storeEdge,
+      getActiveMemories,
+      getAllCoreBlocks,
+      extractEntityAttribute,
+      findDuplicates,
+      getEntityRanking: m.entityRanker?.getEntityRanking,
+    });
+  }
 
-  // ── 6. Schema bootstrap: delta-processor (CocoIndex) ───────────────
-  deltaProcessor.bootstrapSchema(db);
-  deltaProcessor.initStaleEmbeddingDetector(db);
-  deltaProcessor.initLogicVersioning(db);
-  deltaProcessor.initSourceLineage(db);
-  deltaProcessor.initDeltaSync(db);
-  deltaProcessor.initModelVersionGate(db);
+  if (m.ambientInjector) {
+    m.ambientInjector.initAmbientInjector(db, {
+      storeEdge,
+      searchMemories,
+      getActiveMemories,
+      incrementRecallCounts,
+      traverseMemoryGraph,
+      getAllCoreBlocks,
+      getMemory,
+      getEdgesFromMemory,
+      getEdgesToMemory,
+      getEntityRanking: m.entityRanker?.getEntityRanking,
+    });
+  }
 
-  // ── 7. Schema bootstrap: graph-pruner (LEANN) ──────────────────────
-  graphPruner.ensureSchema(db);
+  if (m.strategyDistiller) {
+    m.strategyDistiller.initStrategyDistiller(db, { llmFetch });
+  }
 
-  // ── 8. Schema bootstrap: capsule-builder (Memvid) ──────────────────
-  capsuleBuilder.installSchema(db);
+  if (m.ingestPipeline) {
+    m.ingestPipeline.initIngestPipeline(db, { llmFetch });
+  }
 
-  // ── 9. Schema bootstrap: context-compressor (Headroom) ─────────────
-  contextCompressor.initCompressionPatternsTable(db);
+  // Schema bootstraps — safe no-ops if adapter missing
+  if (m.deltaProcessor) {
+    m.deltaProcessor.bootstrapSchema(db);
+    m.deltaProcessor.initStaleEmbeddingDetector(db);
+    m.deltaProcessor.initLogicVersioning(db);
+    m.deltaProcessor.initSourceLineage(db);
+    m.deltaProcessor.initDeltaSync(db);
+    m.deltaProcessor.initModelVersionGate(db);
+  }
 
-  // ── 10. Schema bootstrap: compaction-coordinator (MARM) ─────────────
-  compactionCoordinator.initCompactionTables(db);
+  if (m.graphPruner)         m.graphPruner.ensureSchema(db);
+  if (m.capsuleBuilder)      m.capsuleBuilder.installSchema(db);
+  if (m.contextCompressor)   m.contextCompressor.initCompressionPatternsTable(db);
+  if (m.compactionCoordinator) m.compactionCoordinator.initCompactionTables(db);
+  if (m.diagnosticCompiler)  m.diagnosticCompiler.initDiagnosticAdapter(db);
 
-  // ── 11. Schema bootstrap: diagnostic-compiler (zerolang) ───────────
-  diagnosticCompiler.initDiagnosticAdapter(db);
-
-  // ── 12. Declarative Gateway (MCP Toolbox) ──────────────────────────
-  // Async init — call without await so startup is not blocked.
-  // The gateway sets _ready=true internally when complete.
-  declarativeGateway.initDeclarativeGateway(db, { brain2Fn: null });
-
-  // lesson-vault and multi-source-router are pass-by-param — no init needed.
+  if (m.declarativeGateway) {
+    m.declarativeGateway.initDeclarativeGateway(db, { brain2Fn: null });
+  }
 
   _initialized = true;
+  _ready = true;
 }
-
-// ── Namespace re-exports ──────────────────────────────────────────────
-
-export {
-  multiSourceRouter,
-  crossModalExtractor,
-  deltaProcessor,
-  entityRanker,
-  spatialFilter,
-  ambientInjector,
-  graphPruner,
-  capsuleBuilder,
-  contextCompressor,
-  strategyDistiller,
-  ingestPipeline,
-  compactionCoordinator,
-  lessonVault,
-  declarativeGateway,
-  diagnosticCompiler,
-};
 
 // ── Status ────────────────────────────────────────────────────────────
 
 /**
  * Return the initialization state of all adapter modules.
- * @returns {{ initialized: boolean, moduleCount: number, modules: string[] }}
+ * @returns {{ initialized: boolean, moduleCount: number, loaded: number, skipped: number, modules: string[] }}
  */
 export function getModuleStatus() {
-  const modules = [
-    'multiSourceRouter',
-    'crossModalExtractor',
-    'deltaProcessor',
-    'entityRanker',
-    'spatialFilter',
-    'ambientInjector',
-    'graphPruner',
-    'capsuleBuilder',
-    'contextCompressor',
-    'strategyDistiller',
-    'ingestPipeline',
-    'compactionCoordinator',
-    'lessonVault',
-    'declarativeGateway',
-    'diagnosticCompiler',
-  ];
+  const all = ADAPTER_DEFS.map(d => d.key);
+  const loaded = all.filter(k => _modules[k] !== null);
   return {
     initialized: _initialized,
-    moduleCount: modules.length,
-    modules,
+    moduleCount: all.length,
+    loaded: loaded.length,
+    skipped: all.length - loaded.length,
+    modules: all,
+    loadedModules: loaded,
   };
 }

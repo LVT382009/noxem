@@ -2331,8 +2331,10 @@ app.get('/memory/sliding-window', (req, res) => {
 
 
 // ─── Initialize Module Registry (v2.1 adapters) ────────────────
-initModules(embed);
-if (LOG_DEBUG) console.log('[Server] Modules initialized:', getModuleStatus().moduleCount);
+initModules(embed).then(() => {
+  const status = getModuleStatus();
+  if (LOG_DEBUG) console.log('[Server] Modules initialized:', status.loaded, '/', status.moduleCount, status.skipped ? `(${status.skipped} skipped)` : '');
+}).catch(err => console.error('[Server] Module init failed:', err.message));
 
 // ─── Start ────────────────────────────────────────────────────────
 const server = app.listen(PORT, '127.0.0.1', () => {

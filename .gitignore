@@ -24,5 +24,8 @@ __pycache__/
 .claude/
 .understand-anything/
 
-# Vendored reference modules (git clones — too large for repo)
-modules/
+# Vendored reference modules — .git dirs from clones, but code is tracked
+modules/**/.git/
+modules/**/node_modules/
+modules/**/__pycache__/
+modules/**/*.pyc
