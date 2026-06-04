@@ -1185,7 +1185,9 @@ app.get('/memory/release', async (req, res) => {
     let chars = 0;
     for (const m of deduped) {
       const prefix = m.context_prefix ? `[${m.context_prefix}] ` : '';
-      const line = `- (${m.type}) ${prefix}${m.text}`;
+  const sessionTag = (sessionId && m.session_id && m.session_id !== sessionId)
+    ? `[from session ${m.session_id.slice(0, 8)}]` : '';
+  const line = `- (${m.type}) ${prefix}${sessionTag}${sessionTag ? ' ' : ''}${m.text}`;
       if (chars + line.length > charBudget) break;
       lines.push(line);
       chars += line.length;

@@ -156,7 +156,9 @@ server.registerTool(
 const bullets = memories.slice(0, maxMems).map(m => {
         const prefix = m.context_prefix || `[${m.type}]`;
         const text = m.summary || m.text;
-        return `- ${prefix} ${text}`;
+        const sessionTag = (session_id && m.session_id && m.session_id !== session_id)
+          ? `[from session ${m.session_id.slice(0, 8)}]` : '';
+        return `- ${prefix}${sessionTag ? ' ' + sessionTag : ''} ${text}`;
       });
       return {
         content: [{ type: 'text', text: bullets.join('\n') || 'No active memories.' }],
