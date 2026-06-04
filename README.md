@@ -1,6 +1,6 @@
 <div align="center">
 
-<a href="https://freeimage.host/"><img src="https://iili.io/CKgex3P.png" alt="Noxem" border="0" /></a>
+<a href="https://freeimage.host/"><img src="https://iili.io/CKg8UAX.png" alt="Noxem" border="0" /></a>
 
 ### Noxem
 
