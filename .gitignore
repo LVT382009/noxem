@@ -23,3 +23,6 @@ __pycache__/
 *.pyc
 .claude/
 .understand-anything/
+
+# Vendored reference modules (git clones — too large for repo)
+modules/

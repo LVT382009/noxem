@@ -27,6 +27,7 @@ import {
 import { getAdvice, analyzeBeforeCompress } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { getResearchStatus, getRecentResearch } from './research-engine.mjs';
+import { initModules, ambientInjector, strategyDistiller, compactionCoordinator, contextCompressor, declarativeGateway, diagnosticCompiler } from './module-registry.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
@@ -35,6 +36,7 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 await initVectorIndex(db);
 const embeddingReady = await initEmbeddingEngine();
 if (LOG_DEBUG) console.error(`[MCP] Embedding: ${embeddingReady ? 'ready' : 'not available'}, Vector: ${isVecReady()}`);
+initModules(embed);
 
 // ── Create MCP Server ──────────────────────────────────
 
@@ -317,6 +319,195 @@ server.registerTool(
       return {
         content: [{ type: 'text', text: JSON.stringify(results, null, 2) }],
       };
+    } catch (err) {
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
+    }
+  }
+);
+
+// ── Tool 9: memory_audit ─────────────────────────────────
+
+server.registerTool(
+  'memory_audit',
+  {
+    description: 'Run a 5-category memory audit: orphaned memories, broken edges, duplicate pairs, stale entries, invalid embeddings.',
+    inputSchema: {
+      scope: z.string().optional().describe('Audit scope: all, orphans, edges, duplicates, stale, embeddings'),
+    },
+  },
+  async ({ scope }) => {
+    try {
+      const fullReport = ambientInjector.runMemoryAudit();
+      if (scope && scope !== 'all') {
+        const key = scope === 'orphans' ? 'orphaned_memories'
+          : scope === 'edges' ? 'broken_edges'
+          : scope === 'duplicates' ? 'duplicate_pairs'
+          : scope === 'stale' ? 'stale_memories'
+          : scope === 'embeddings' ? 'invalid_embeddings'
+          : null;
+        if (key) {
+          const subset = { [key]: fullReport[key], total_checked: fullReport.total_checked, checked_at: fullReport.checked_at };
+          return { content: [{ type: 'text', text: ambientInjector.formatAuditReport(subset) }] };
+        }
+      }
+      return { content: [{ type: 'text', text: ambientInjector.formatAuditReport(fullReport) }] };
+    } catch (err) {
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
+    }
+  }
+);
+
+// ── Tool 10: memory_feedback ─────────────────────────────
+
+server.registerTool(
+  'memory_feedback',
+  {
+    description: 'Submit positive or negative feedback on a memory. Positive boosts importance + recall; negative decays importance and archives if below threshold.',
+    inputSchema: {
+      memory_id: z.number().int().positive().describe('Memory ID to provide feedback on'),
+      signal: z.enum(['positive', 'negative']).describe('Feedback signal'),
+    },
+  },
+  async ({ memory_id, signal }) => {
+    try {
+      const result = ambientInjector.processMemoryFeedback(memory_id, signal);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
+    }
+  }
+);
+
+// ── Tool 11: memory_reasoning_recall ──────────────────────
+
+server.registerTool(
+  'memory_reasoning_recall',
+  {
+    description: 'Retrieve reasoning memories (strategies, failures, learnings) relevant to the current task. Returns success/failure/consolidated breakdown.',
+    inputSchema: {
+      entity: z.string().optional().describe('Filter by entity name'),
+      task_type: z.string().optional().describe('Filter by task type (e.g., debugging, refactoring, deployment)'),
+      limit: z.number().optional().default(5).describe('Max memories per outcome category'),
+    },
+  },
+  async ({ entity, task_type, limit = 5 }) => {
+    try {
+      const description = [entity, task_type].filter(Boolean).join(' ') || 'general';
+      const recalled = await strategyDistiller.reasoningRecall(description, { limit, task_type });
+      const formatted = strategyDistiller.formatReasoningContext(recalled);
+      return { content: [{ type: 'text', text: formatted }] };
+    } catch (err) {
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
+    }
+  }
+);
+
+// ── Tool 12: memory_compaction_review ─────────────────────
+
+server.registerTool(
+  'memory_compaction_review',
+  {
+    description: 'Agent-assisted dedup review: check status, list candidates, review staged compactions, apply or discard merges.',
+    inputSchema: {
+      action: z.enum(['status', 'candidates', 'review', 'apply', 'discard']).describe('Compaction action to perform'),
+      data: z.object({}).optional().describe('Action-specific data: { candidate_id, suggested_summary, limit }'),
+    },
+  },
+  async ({ action, data = {} }) => {
+    try {
+      const compactionDeps = { storeMemory, updateMemoryStatus };
+      const result = compactionCoordinator.compactionDispatch(db, action, data, compactionDeps);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
+    }
+  }
+);
+
+// ── Tool 13: memory_nl_query ──────────────────────────────
+
+server.registerTool(
+  'memory_nl_query',
+  {
+    description: 'Natural language SQL query via Brain 2 — ask questions about memories in plain English, get structured results.',
+    inputSchema: {
+      query: z.string().describe('Natural language question about memories'),
+    },
+  },
+  async ({ query }) => {
+    try {
+      const result = await declarativeGateway.nlQuery(query);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
+    }
+  }
+);
+
+// ── Tool 14: memory_diagnostic_explain ────────────────────
+
+server.registerTool(
+  'memory_diagnostic_explain',
+  {
+    description: 'Explain a diagnostic code (e.g., STORE_001, EDGE_002) with description, severity, and remediation steps.',
+    inputSchema: {
+      code: z.string().describe('Diagnostic code like STORE_001'),
+    },
+  },
+  async ({ code }) => {
+    try {
+      const explanation = diagnosticCompiler.explainDiagnostic(code);
+      if (!explanation) {
+        return { content: [{ type: 'text', text: `No diagnostic found for code: ${code}` }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(explanation, null, 2) }] };
+    } catch (err) {
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
+    }
+  }
+);
+
+// ── Tool 15: memory_retrieve_original ─────────────────────
+
+server.registerTool(
+  'memory_retrieve_original',
+  {
+    description: 'Retrieve original content from a CCR [ref:hash] marker in compressed text. Returns the full uncompressed text.',
+    inputSchema: {
+      hash: z.string().describe('24-hex CCR hash from compressed text'),
+    },
+  },
+  async ({ hash }) => {
+    try {
+      const original = contextCompressor.retrieveCCROriginal(db, hash);
+      if (!original) {
+        return { content: [{ type: 'text', text: `No original content found for hash: ${hash}. Ensure the hash is a valid 24-character hex string.` }] };
+      }
+      return { content: [{ type: 'text', text: original }] };
+    } catch (err) {
+      console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
+    }
+  }
+);
+
+// ── Tool 16: ambient_context ──────────────────────────────
+
+server.registerTool(
+  'ambient_context',
+  {
+    description: 'Get ambient context for tools/list injection — ranked, compressed memory summaries within a token budget.',
+    inputSchema: {
+      token_budget: z.number().optional().default(4500).describe('Token budget for the ambient context output'),
+    },
+  },
+  async ({ token_budget = 4500 }) => {
+    try {
+      const injection = ambientInjector.buildAmbientInjection(false);
+      const text = typeof injection === 'string' ? injection : JSON.stringify(injection);
+      // Rough token-aware truncation (~4 chars per token)
+      const maxChars = token_budget * 4;
+      const trimmed = text.length > maxChars ? text.slice(0, maxChars) + '\n[truncated]' : text;
+      return { content: [{ type: 'text', text: trimmed }] };
     } catch (err) {
       console.error('[MCP] Tool error:', err); return { content: [{ type: 'text', text: 'Internal error processing request' }], isError: true };
     }

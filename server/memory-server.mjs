@@ -31,6 +31,7 @@ import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './mem
 import { onMemoryStored, runPipeline, getPipelineStatus } from './memory-pipeline.mjs';
 import { bundleSearch } from './bundle-search.mjs';
 import { storeProcedure, getProcedure, listAllProcedures, searchProcedures, deleteProcedureById, touchProcedureUse } from './memory-store.mjs';
+import { initModules, entityRanker, spatialFilter, ambientInjector, deltaProcessor, graphPruner, capsuleBuilder, contextCompressor, strategyDistiller, ingestPipeline, compactionCoordinator, lessonVault, declarativeGateway, diagnosticCompiler, crossModalExtractor, multiSourceRouter, getModuleStatus } from './module-registry.mjs';
 
 const app = express();
 app.use(cors({
@@ -2104,6 +2105,235 @@ app.get('/memory/research/hints', (req, res) => {
 // ─── Knowledge Graph ──────────────────────────────────────────────
 
 // Add a relationship edge between two memories
+// ── v2.1 Module Endpoints ───────────────────────────────────────
+
+// Capsule Builder (Memvid)
+app.get('/memory/capsule/export', (_req, res) => {
+  try {
+    const result = capsuleBuilder.exportCapsule(db);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/capsule/import', (req, res) => {
+  try {
+    const result = capsuleBuilder.importCapsule(db, req.body);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/versions/:id', (req, res) => {
+  try {
+    const history = capsuleBuilder.getMemoryHistory(db, +req.params.id);
+    res.json({ ok: true, history });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/at-time', (req, res) => {
+  try {
+    const memories = capsuleBuilder.getMemoriesAtTime(db, req.query.timestamp);
+    res.json({ ok: true, memories });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Ambient Injector (Lemma)
+app.get('/memory/audit', async (_req, res) => {
+  try {
+    const report = await ambientInjector.runMemoryAudit(db);
+    const formatted = ambientInjector.formatAuditReport(report);
+    res.json({ ok: true, report, formatted });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/feedback', (req, res) => {
+  try {
+    const result = ambientInjector.processMemoryFeedback(db, req.body);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/session/status', (req, res) => {
+  try {
+    const session = ambientInjector.getSession(db, req.query.session_id);
+    res.json({ ok: true, session });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/ambient/session/end', (req, res) => {
+  try {
+    const result = ambientInjector.endSession(db, req.body);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Compaction Coordinator (MARM)
+app.post('/memory/compaction/candidates', async (_req, res) => {
+  try {
+    const candidates = await compactionCoordinator.findCompactionCandidates(db);
+    res.json({ ok: true, candidates });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/compaction/status', (_req, res) => {
+  try {
+    const status = compactionCoordinator.compactionStatus(db);
+    res.json({ ok: true, ...status });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compaction/review', (req, res) => {
+  try {
+    const result = compactionCoordinator.compactionReview(db, req.body);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compaction/apply', (req, res) => {
+  try {
+    const result = compactionCoordinator.compactionApply(db, req.body);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compaction/discard', (req, res) => {
+  try {
+    const result = compactionCoordinator.compactionDiscard(db, req.body);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Strategy Distiller (ReasoningBank)
+app.post('/memory/reasoning/recall', (req, res) => {
+  try {
+    const result = strategyDistiller.reasoningRecall(db, req.body);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/reasoning/extract', async (req, res) => {
+  try {
+    const result = await strategyDistiller.extractReasoningFromTrace(db, req.body, llmFetch);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/reasoning/stats', (_req, res) => {
+  try {
+    const stats = strategyDistiller.getReasoningStats(db);
+    res.json({ ok: true, ...stats });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Entity Ranker (Memary)
+app.get('/memory/entity/ranking', (req, res) => {
+  try {
+    const ranking = entityRanker.getEntityRanking(db, req.query);
+    res.json({ ok: true, ranking });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/entity/stream', (req, res) => {
+  try {
+    const stream = entityRanker.getMemoryStream(db, req.query);
+    res.json({ ok: true, stream });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Ingest Pipeline (LLM Wiki)
+app.get('/memory/gaps', async (_req, res) => {
+  try {
+    const gaps = await ingestPipeline.detectKnowledgeGaps(db);
+    res.json({ ok: true, gaps });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/cross-link', async (_req, res) => {
+  try {
+    const result = await ingestPipeline.autoGenerateCrossLinks(db);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Diagnostic Compiler (zerolang)
+app.post('/memory/diagnostic/explain', (req, res) => {
+  try {
+    const explanation = diagnosticCompiler.explainDiagnostic(db, req.body.code);
+    res.json({ ok: true, explanation });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/diagnostic/codes', (_req, res) => {
+  try {
+    const codes = diagnosticCompiler.listDiagnosticCodes(db);
+    res.json({ ok: true, codes });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/diagnostic/repair', (req, res) => {
+  try {
+    const plan = diagnosticCompiler.generateRepairPlan(db, req.body);
+    res.json({ ok: true, plan });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/skills', (_req, res) => {
+  try {
+    const skills = diagnosticCompiler.getSkills(db);
+    res.json({ ok: true, skills });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Declarative Gateway (MCP Toolbox)
+app.get('/memory/query/templates', (_req, res) => {
+  try {
+    const templates = declarativeGateway.listQueryTemplates(db);
+    res.json({ ok: true, templates });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/query/template', (req, res) => {
+  try {
+    const result = declarativeGateway.executeQueryTemplate(db, req.body);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/query/nl', (req, res) => {
+  try {
+    const result = declarativeGateway.nlQuery(db, req.body.query);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Context Compressor (Headroom)
+app.post('/memory/compress/typed', (req, res) => {
+  try {
+    const result = contextCompressor.compressByType(req.body.text, req.body.opts);
+    res.json({ ok: true, ...result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Spatial Filter (MemPalace)
+app.get('/memory/tunnels', async (_req, res) => {
+  try {
+    const tunnels = await spatialFilter.detectCrossWingTunnels(db);
+    res.json({ ok: true, tunnels });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Lesson Vault
+app.get('/memory/sliding-window', (req, res) => {
+  try {
+    const window = lessonVault.getSlidingWindow(db, req.query);
+    res.json({ ok: true, ...window });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ─── Initialize Module Registry (v2.1 adapters) ────────────────
+initModules(embed);
+if (LOG_DEBUG) console.log('[Server] Modules initialized:', getModuleStatus().moduleCount);
+
 // ─── Start ────────────────────────────────────────────────────────
 const server = app.listen(PORT, '127.0.0.1', () => {
   if (!LOG_QUIET) console.log(`━━━━ Hermes AI Memory Server v2 ━━━━`);

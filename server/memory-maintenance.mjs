@@ -1,6 +1,7 @@
 import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity } from './embedding-engine.mjs';
 import { deleteVec } from './vector-index.mjs';
+import { deltaProcessor, graphPruner, ambientInjector, ingestPipeline } from './module-registry.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 
@@ -157,7 +158,41 @@ export async function runMaintenance() {
       LOG_DEBUG && console.error('[Maintenance] Consolidation error:', err.message);
     }
 
-    const elapsed = Date.now() - start;
+    // ── v2.1 Module Maintenance ────────────────────
+  try {
+    // Stale embedding detection + re-embed
+    const staleResult = deltaProcessor.runStaleEmbeddingMaintenance(db, embed);
+    if (LOG_DEBUG && staleResult.reembedded > 0) console.log(`[Maintenance] Re-embedded ${staleResult.reembedded} stale memories`);
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[Maintenance] Stale embedding scan failed:', e.message);
+  }
+
+  try {
+    // Hub-node marking + embedding eviction
+    graphPruner.markHubNodes(db);
+    const evicted = graphPruner.evictEmbeddings(db);
+    if (LOG_DEBUG && evicted > 0) console.log(`[Maintenance] Evicted ${evicted} low-importance embeddings`);
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[Maintenance] Graph pruner maintenance failed:', e.message);
+  }
+
+  try {
+    // Co-recall edge creation + idle session expiry
+    ambientInjector.createCorecallEdges(db);
+    ambientInjector.expireInactiveSessions(db);
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[Maintenance] Ambient maintenance failed:', e.message);
+  }
+
+  try {
+    // Cross-link auto-generation for shared entities
+    const linked = ingestPipeline.autoLinkMemoriesBySharedEntity(db);
+    if (LOG_DEBUG && linked > 0) console.log(`[Maintenance] Auto-linked ${linked} shared-entity pairs`);
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[Maintenance] Cross-link generation failed:', e.message);
+  }
+
+  const elapsed = Date.now() - start;
     LOG_DEBUG && console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
     return results;
   } finally {
