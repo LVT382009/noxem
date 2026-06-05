@@ -1,9 +1,0 @@
-fn nextAngle(angle: i32, velocity: i32) -> i32 {
-    return angle + velocity
-}
-
-pub fn main(world: World) -> Void raises {
-    if nextAngle(10, -3) == 7 {
-        check world.out.write("pendulum ok\n")
-    }
-}

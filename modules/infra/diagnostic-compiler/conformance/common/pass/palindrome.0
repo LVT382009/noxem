@@ -1,9 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let yes: String = "level"
-    let no: String = "zero"
-    let yesOk: Bool = yes[0] == yes[4] && yes[1] == yes[3]
-    let noOk: Bool = no[0] != no[3]
-    if yesOk && noOk {
-        check world.out.write("palindrome ok\n")
-    }
-}

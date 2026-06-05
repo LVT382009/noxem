@@ -1,8 +1,0 @@
-fn answer() -> i32 {
-    return true
-}
-
-pub fn main(world: World) -> Void raises {
-    let value: i32 = answer()
-    check world.out.write("bad\n")
-}

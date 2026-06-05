@@ -1,9 +1,0 @@
-fn insideLeft(x: i32, edge: i32) -> Bool {
-    return x >= edge
-}
-
-pub fn main(world: World) -> Void raises {
-    if insideLeft(3, 2) && !insideLeft(1, 2) {
-        check world.out.write("polygon clipping ok\n")
-    }
-}

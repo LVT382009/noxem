@@ -1,9 +1,0 @@
-fn m1(a: i32, d: i32, e: i32, h: i32) -> i32 {
-    return (a + d) * (e + h)
-}
-
-pub fn main(world: World) -> Void raises {
-    if m1(1, 4, 5, 8) == 65 {
-        check world.out.write("strassen ok\n")
-    }
-}

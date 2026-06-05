@@ -1,4 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let text: String = "abcdefghijklmnopqrstuvwxyz"
-    check world.out.write(text[5000..5001])
-}

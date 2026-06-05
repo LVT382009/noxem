@@ -1,9 +1,0 @@
-pub fn main() -> Void {
-    var x: i32 = 1
-    let y: i32 = 2
-    var refs: [1]ref<i32> = [&x]
-    for index in 0..1 {
-        refs = [&y]
-    }
-    x = 3
-}

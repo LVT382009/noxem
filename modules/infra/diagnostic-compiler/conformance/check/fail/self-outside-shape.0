@@ -1,7 +1,0 @@
-fn bad(value: Self) -> Void {
-    return
-}
-
-pub fn main() -> Void {
-    return
-}

@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let values: [4]i32 = [1, 2, 3, 4]
-    if std.mem.len(values) == 4 {
-        check world.out.write("array length ok\n")
-    }
-}

@@ -1,5 +1,0 @@
-use a
-
-fn b() -> i32 {
-    return 2
-}

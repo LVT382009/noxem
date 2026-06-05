@@ -1,9 +1,0 @@
-fn grow<T: Type>(value: T) -> Void {
-    let nested: Maybe<T> = null
-    grow<Maybe<T>>(nested)
-}
-
-pub fn main(world: World) -> Void raises {
-    grow<i32>(1)
-    check world.out.write("polymorphic recursion ok\n")
-}

@@ -1,5 +1,0 @@
-pub fn main() -> Void {
-    var x: i32 = 1
-    let r: mutref<i32> = &mut x
-    let y: i32 = x
-}

@@ -1,3 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    check world.err.write("Hello, stderr!\n")
-}

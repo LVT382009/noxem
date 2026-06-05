@@ -1,4 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let value: u64 = 1_u128
-    check world.out.write("bad literal\n")
-}

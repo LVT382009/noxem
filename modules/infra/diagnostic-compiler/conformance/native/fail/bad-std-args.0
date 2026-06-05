@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let count: i32 = std.args.len(1)
-    if count > 0 {
-        check world.out.write("bad args\n")
-    }
-}

@@ -1,9 +1,0 @@
-choice Result {
-    ok: i32,
-    err: String,
-}
-
-pub fn main(world: World) -> Void raises {
-    let result: Result = Result.ok("nope")
-    check world.out.write("bad payload\n")
-}

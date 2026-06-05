@@ -1,7 +1,0 @@
-type File {
-    fd: i32,
-}
-
-pub fn main() -> Void {
-    let files: [2]Maybe<owned<File>> = [null; 2]
-}

@@ -1,4 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let value: i32 = true as i32
-    check world.out.write("bad cast\n")
-}

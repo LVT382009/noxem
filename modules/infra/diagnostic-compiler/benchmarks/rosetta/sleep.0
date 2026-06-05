@@ -1,9 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    var ticks: u32 = 0
-    while ticks < 3 {
-        ticks = ticks + 1
-    }
-    if ticks == 3 {
-        check world.out.write("sleep ok\n")
-    }
-}

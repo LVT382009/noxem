@@ -1,9 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let count: usize = std.args.len()
-    let first: Maybe<String> = std.args.get(1)
-    let missing: Maybe<String> = std.args.get(99)
-    if count == 3 && first.has && !missing.has {
-        check world.out.write(first.value)
-        check world.out.write("\n")
-    }
-}

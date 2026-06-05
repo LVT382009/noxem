@@ -1,3 +1,0 @@
-pub fn duplicateName() -> String {
-    return "beta"
-}

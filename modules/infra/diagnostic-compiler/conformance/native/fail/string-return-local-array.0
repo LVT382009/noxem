@@ -1,8 +1,0 @@
-fn view() -> String {
-    let bytes: [2]u8 = [65, 66]
-    return bytes[..]
-}
-
-pub fn main() -> Void {
-    let text: String = view()
-}

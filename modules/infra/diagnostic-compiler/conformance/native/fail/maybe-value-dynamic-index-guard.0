@@ -1,9 +1,0 @@
-pub fn main() -> Void {
-    let source: [1]u8 = [1]
-    var values: [2]Maybe<u8> = [std.mem.get(source, 0), null]
-    let i: usize = 0
-    let j: usize = 1
-    if values[i].has {
-        let byte: u8 = values[j].value
-    }
-}

@@ -1,6 +1,0 @@
-use arrays
-
-export c fn main() -> i32 {
-    record(3)
-    return package_sum()
-}

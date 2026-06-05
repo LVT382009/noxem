@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    if std.str.count("banana", "an") == 2 {
-        check world.out.write("substring occurrences ok\n")
-    }
-}

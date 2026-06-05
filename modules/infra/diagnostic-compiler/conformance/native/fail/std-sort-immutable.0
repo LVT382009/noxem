@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let values: [3]i32 = [3, 1, 2]
-    std.sort.insertionI32(values)
-    check world.out.write("unreachable\n")
-}

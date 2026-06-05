@@ -1,5 +1,0 @@
-pub fn main() -> Void raises [NotFound, TooLarge, Io] {
-    let fs: Fs = std.fs.host()
-    var file: owned<File> = check std.fs.createOrRaise(fs, ".zero/conformance/rescue-fallback-created.txt")
-    let bad: usize = rescue std.fs.openOrRaise(fs, ".zero/conformance/rescue-fallback-missing.txt") err(check std.fs.fileLenOrRaise(&mut file))
-}

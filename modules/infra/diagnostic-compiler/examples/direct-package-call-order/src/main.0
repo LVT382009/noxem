@@ -1,7 +1,0 @@
-use right
-
-use left
-
-export c fn main() -> i32 {
-    return left_score() + right_score()
-}

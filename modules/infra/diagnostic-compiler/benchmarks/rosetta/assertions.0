@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let ok: Bool = 20 + 22 == 42
-    if ok {
-        check world.out.write("assertions ok\n")
-    }
-}

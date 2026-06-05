@@ -1,7 +1,0 @@
-fn fail() -> Void {
-    raise BadInput
-}
-
-pub fn main(world: World) -> Void raises {
-    check world.out.write("unreachable\n")
-}

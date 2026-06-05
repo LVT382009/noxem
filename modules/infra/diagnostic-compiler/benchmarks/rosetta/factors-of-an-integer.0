@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    if std.math.divisorCountU32(28) == 6 {
-        check world.out.write("factors ok\n")
-    }
-}

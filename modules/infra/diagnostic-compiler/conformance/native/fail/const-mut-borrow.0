@@ -1,9 +1,0 @@
-type Wrapper {
-    value: const i32,
-}
-
-pub fn main(world: World) -> Void raises {
-    var wrapper: Wrapper = Wrapper { value: 1 }
-    let borrowed: i32 = &mut wrapper.value
-    check world.out.write("borrowed const")
-}

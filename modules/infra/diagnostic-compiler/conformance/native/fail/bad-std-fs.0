@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let count: i32 = std.fs.read("conformance/fixtures/std-fs-read.txt", "not a buffer")
-    if count > 0 {
-        check world.out.write("bad fs\n")
-    }
-}

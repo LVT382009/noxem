@@ -1,8 +1,0 @@
-fn view() -> Maybe<Span<u8>> {
-    var storage: [4]u8 = [0_u8; 4]
-    return std.str.reverse(storage, "zero")
-}
-
-pub fn main() -> Void {
-    let text: Maybe<Span<u8>> = view()
-}

@@ -1,4 +1,0 @@
-extern c "conformance/c/unsupported.h" as c
-
-pub fn main() -> Void {
-}

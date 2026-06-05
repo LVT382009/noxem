@@ -1,3 +1,0 @@
-pub fn main() -> Void {
-    let x: i32 = true.nope
-}

@@ -1,4 +1,0 @@
-export c fn main(a: i32, b: i32) -> i32 {
-    let sum: i32 = a + b
-    return sum
-}

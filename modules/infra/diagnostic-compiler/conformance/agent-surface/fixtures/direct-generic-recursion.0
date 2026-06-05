@@ -1,8 +1,0 @@
-fn loop<T: Type>(value: T) -> Void {
-    loop<T>(value)
-}
-
-pub fn main(world: World) -> Void raises {
-    loop<i32>(1)
-    check world.out.write("direct generic recursion ok\n")
-}

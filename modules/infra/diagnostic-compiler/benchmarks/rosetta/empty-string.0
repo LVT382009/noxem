@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let empty: String = ""
-    if std.mem.len(empty) == 0 {
-        check world.out.write("empty string ok\n")
-    }
-}

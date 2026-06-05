@@ -1,7 +1,0 @@
-pub fn main() -> Void {
-    var x: i32 = 1
-    var y: i32 = 2
-    var r: ref<i32> = &x
-    r = &y
-    y = 3
-}

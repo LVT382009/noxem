@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let value: u8 = 1
-    let byte: u8 = value[0]
-    check world.out.write("bad index\n")
-}

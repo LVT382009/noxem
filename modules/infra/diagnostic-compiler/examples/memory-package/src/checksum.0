@@ -1,3 +1,0 @@
-pub fn checksumOk(expected: u32) -> Bool {
-    return expected == 1120241454
-}

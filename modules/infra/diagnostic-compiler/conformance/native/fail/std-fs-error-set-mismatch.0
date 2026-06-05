@@ -1,7 +1,0 @@
-pub fn main(world: World) -> Void raises [NotFound] {
-    let fs: Fs = std.fs.host()
-    var storage: [8]u8 = [0, 0, 0, 0, 0, 0, 0, 0]
-    var alloc: FixedBufAlloc = std.mem.fixedBufAlloc(storage)
-    let _body: owned<ByteBuf> = check std.fs.readAllOrRaise(alloc, fs, ".zero/missing.txt", 8)
-    check world.out.write("unreachable\n")
-}

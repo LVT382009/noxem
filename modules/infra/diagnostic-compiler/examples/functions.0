@@ -1,8 +1,0 @@
-fn greeting() -> i32 {
-    return 1
-}
-
-pub fn main(world: World) -> Void raises {
-    let ignored: i32 = greeting()
-    check world.out.write("function call works\n")
-}

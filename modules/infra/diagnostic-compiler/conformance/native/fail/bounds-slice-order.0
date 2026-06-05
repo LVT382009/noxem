@@ -1,7 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let values: [3]i32 = [10, 20, 30]
-    let bad: Span<i32> = values[2..1]
-    if bad[0] == 10 {
-        check world.out.write("unreachable\n")
-    }
-}

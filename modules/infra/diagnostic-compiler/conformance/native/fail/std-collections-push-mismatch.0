@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    var values: [2]i32 = [0, 0]
-    let _len: usize = std.collections.push(values, 0_usize, 1_u32)
-    check world.out.write("unreachable\n")
-}

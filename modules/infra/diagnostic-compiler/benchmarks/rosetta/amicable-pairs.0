@@ -1,9 +1,0 @@
-fn amicable(a: u32, b: u32) -> Bool {
-    return std.math.properDivisorSumU32(a) == b && std.math.properDivisorSumU32(b) == a
-}
-
-pub fn main(world: World) -> Void raises {
-    if amicable(220, 284) {
-        check world.out.write("amicable ok\n")
-    }
-}

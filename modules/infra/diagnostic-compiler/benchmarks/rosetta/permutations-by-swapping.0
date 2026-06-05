@@ -1,8 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let value: Maybe<u32> = std.math.factorialU32(4_u32)
-    if value.has {
-        if value.value == 24_u32 {
-            check world.out.write("permutations by swapping ok\n")
-        }
-    }
-}

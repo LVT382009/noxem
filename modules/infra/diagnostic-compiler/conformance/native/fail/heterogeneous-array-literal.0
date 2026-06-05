@@ -1,3 +1,0 @@
-pub fn main() -> Void {
-    let xs: [1]i32 = [1, true]
-}

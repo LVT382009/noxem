@@ -1,3 +1,0 @@
-test "xfail: unexpected pass is a failure" {
-    expect (true)
-}

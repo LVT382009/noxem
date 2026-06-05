@@ -1,3 +1,0 @@
-pub fn main() -> Void {
-    let _value: Maybe<i32> = std.parse.parseI32(42)
-}

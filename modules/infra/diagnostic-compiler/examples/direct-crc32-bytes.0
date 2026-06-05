@@ -1,3 +1,0 @@
-export c fn main() -> u32 {
-    return std.codec.crc32Bytes(std.mem.span("zero hash payload\n"))
-}

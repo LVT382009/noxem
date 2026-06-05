@@ -1,8 +1,0 @@
-fn id(r: ref<i32>) -> ref<i32> {
-    return r
-}
-
-pub fn main() -> ref<i32> {
-    let x: i32 = 1
-    return id(&x)
-}

@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    if std.math.gcdU32(84, 30) == 6 {
-        check world.out.write("gcd ok\n")
-    }
-}

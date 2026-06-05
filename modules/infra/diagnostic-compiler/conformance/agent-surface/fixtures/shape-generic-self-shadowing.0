@@ -1,6 +1,0 @@
-type Box<Self: Type> {
-    value: i32,
-}
-
-pub fn main() -> Void {
-}

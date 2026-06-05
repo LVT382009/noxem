@@ -1,5 +1,0 @@
-use helper
-
-pub fn main(world: World) -> Void raises {
-    check world.out.write("ok\n")
-}

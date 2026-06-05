@@ -1,4 +1,0 @@
-pub fn main() -> Void {
-    let bytes: [1]u8 = [1]
-    let byte: u8 = std.mem.get(bytes, 0).value
-}

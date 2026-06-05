@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    if std.math.powU32(2, 3) == 8 {
-        check world.out.write("de bruijn ok\n")
-    }
-}

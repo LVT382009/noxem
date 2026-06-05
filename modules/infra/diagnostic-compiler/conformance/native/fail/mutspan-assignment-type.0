@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    var values: [2]i32 = [1, 2]
-    let span: MutSpan<i32> = values
-    span[0] = "bad"
-    check world.out.write("bad mutable span\n")
-}

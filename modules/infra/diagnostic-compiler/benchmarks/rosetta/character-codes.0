@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let code: u8 = "A"[0]
-    if code == 65 {
-        check world.out.write("character codes ok\n")
-    }
-}

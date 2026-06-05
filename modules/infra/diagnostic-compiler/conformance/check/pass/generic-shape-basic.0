@@ -1,8 +1,0 @@
-type Box<T: Type> {
-    value: T,
-}
-
-pub fn main() -> Void {
-    let box: Box<i32> = Box { value: 42 }
-    expect (box.value == 42)
-}

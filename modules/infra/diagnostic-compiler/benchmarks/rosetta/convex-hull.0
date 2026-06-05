@@ -1,9 +1,0 @@
-fn orient(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i32 {
-    return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
-}
-
-pub fn main(world: World) -> Void raises {
-    if orient(0, 0, 2, 0, 1, 1) > 0 {
-        check world.out.write("convex hull ok\n")
-    }
-}

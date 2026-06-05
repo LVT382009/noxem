@@ -1,3 +1,0 @@
-pub fn main() -> Void raises {
-    check 1
-}

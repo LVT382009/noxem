@@ -1,8 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    var values: [3]i32 = [2, 1, 0]
-    let live: Span<i32> = values[..2]
-    std.sort.insertionI32(values[..2])
-    if std.mem.len(live) == 2 {
-        check world.out.write("unreachable\n")
-    }
-}

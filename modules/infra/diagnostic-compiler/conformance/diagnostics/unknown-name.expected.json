@@ -1,7 +1,0 @@
-{
-  "schemaVersion": 1,
-  "code": "NAM003",
-  "title": "Unknown identifier",
-  "fixSafety": "local-edit",
-  "defaultOutput": "plain-text-no-ansi"
-}

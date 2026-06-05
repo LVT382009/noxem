@@ -1,7 +1,0 @@
-{
-  "package": { "name": "missing-dep-app", "version": "0.1.0" },
-  "targets": { "cli": { "kind": "exe", "main": "src/main.0" } },
-  "dependencies": {
-    "missing-lib": { "path": "../missing-lib", "version": "0.1.0" }
-  }
-}

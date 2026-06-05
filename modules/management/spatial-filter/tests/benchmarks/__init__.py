@@ -1,1 +1,0 @@
-# MemPalace scale benchmark suite

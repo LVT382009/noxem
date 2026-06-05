@@ -1,9 +1,0 @@
-type File {
-    fd: i32,
-}
-
-pub fn main(world: World) -> Void raises {
-    let file: File = File { fd: 1 }
-    defer file.drop()
-    check world.out.write("drop")
-}

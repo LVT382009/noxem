@@ -1,4 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let value: char = "a"
-    check world.out.write("bad char\n")
-}

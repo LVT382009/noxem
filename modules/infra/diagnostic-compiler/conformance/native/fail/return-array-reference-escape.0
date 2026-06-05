@@ -1,7 +1,0 @@
-pub fn make() -> [1]ref<i32> {
-    let x: i32 = 1
-    return[&x]
-}
-
-pub fn main() -> Void {
-}

@@ -1,4 +1,0 @@
-pub fn main() -> Void {
-    let buf: [4]u8 = [0_u8; 4]
-    let _text: Maybe<Span<u8>> = std.fmt.u32(buf, 42_u32)
-}

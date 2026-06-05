@@ -1,9 +1,0 @@
-export c fn main() -> i32 {
-    let crc_text: u32 = std.codec.crc32("zero")
-    let crc_bytes: u32 = std.codec.crc32Bytes(std.mem.span("zero hash payload\n"))
-    let hash: u32 = std.crypto.hash32(std.mem.span("message"))
-    if crc_text == 2883514770_u32 && crc_bytes == 1120241454_u32 && hash == 3065852031_u32 {
-        return 0
-    }
-    return 1
-}

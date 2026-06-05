@@ -1,9 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let big: u32 = 300
-    let byte: u8 = big as u8
-    let word: u16 = 70000 as u16
-    let wide: u64 = byte as u64
-    if byte == 44_u8 && word == 4464_u16 && wide == 44_u64 {
-        check world.out.write("explicit cast narrow direct ok\n")
-    }
-}

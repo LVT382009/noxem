@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let first: Span<u8> = std.parse.tokenAscii("  zero text syntax")
-    if std.str.wordCountAscii("zero text syntax") == 3 && std.mem.eql(first, "zero") {
-        check world.out.write("tokenize ok\n")
-    }
-}

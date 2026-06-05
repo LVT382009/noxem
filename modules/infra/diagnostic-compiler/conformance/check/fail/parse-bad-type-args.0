@@ -1,3 +1,0 @@
-type Box<T: Type {
-    value: T,
-}

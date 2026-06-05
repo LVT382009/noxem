@@ -1,8 +1,0 @@
-type File {
-    fd: i32,
-}
-
-pub fn main() -> Void {
-    let file: owned<File> = File { fd: 1 }
-    let files: [2]owned<File> = [file; 2]
-}

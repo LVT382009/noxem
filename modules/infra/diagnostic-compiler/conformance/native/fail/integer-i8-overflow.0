@@ -1,4 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let signed: i8 = 128
-    check world.out.write("bad integer\n")
-}

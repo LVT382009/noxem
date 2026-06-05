@@ -2442,5 +2442,6 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
-  console.error('Unhandled rejection:', msg);
+  const stack = reason instanceof Error ? reason.stack : '';
+  console.error('Unhandled rejection:', msg, stack);
 });

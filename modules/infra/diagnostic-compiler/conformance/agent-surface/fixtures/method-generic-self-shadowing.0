@@ -1,9 +1,0 @@
-type Box<T: Type> {
-    value: T,
-    fn keep<Self: Type>(value: Self) -> Self {
-        return value
-    }
-}
-
-pub fn main() -> Void {
-}

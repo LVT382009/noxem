@@ -1,7 +1,0 @@
-pub fn main() -> Void {
-    let input: [1]u8 = [1]
-    let values: [1]Maybe<u8> = [std.mem.get(input, 0)]
-    if values[0_usize].has {
-        let byte: u8 = values[0_usize].value
-    }
-}

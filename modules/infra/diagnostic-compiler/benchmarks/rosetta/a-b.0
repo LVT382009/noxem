@@ -1,6 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let sum: i32 = 2 + 3
-    if sum == 5 {
-        check world.out.write("a plus b ok\n")
-    }
-}

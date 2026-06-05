@@ -1,8 +1,0 @@
-fn keep(r: ref<i32>) -> ref<i32> {
-    return r
-}
-
-pub fn main() -> Void {
-    let x: i32 = 1
-    let r: ref<i32> = keep(&x)
-}

@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    if std.math.properDivisorSumU32(28) == 28 {
-        check world.out.write("perfect numbers ok\n")
-    }
-}

@@ -1,9 +1,0 @@
-fn cube(n: u32) -> u32 {
-    return n * n * n
-}
-
-pub fn main(world: World) -> Void raises {
-    if cube(3) + cube(4) + cube(5) == cube(6) {
-        check world.out.write("euler powers ok\n")
-    }
-}

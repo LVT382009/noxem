@@ -1,3 +1,0 @@
-fn right_score() -> i32 {
-    return 7
-}

@@ -1,3 +1,0 @@
-export c fn main() -> u8 {
-    return "token"[0]
-}

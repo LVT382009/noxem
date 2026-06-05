@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    if std.math.isPrimeU32(31) && !std.math.isPrimeU32(33) {
-        check world.out.write("aks prime ok\n")
-    }
-}

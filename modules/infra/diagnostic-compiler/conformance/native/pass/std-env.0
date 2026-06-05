@@ -1,7 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    let value: Maybe<String> = std.env.get("ZERO_CONFORMANCE_ENV")
-    let missing: Maybe<String> = std.env.get("ZERO_CONFORMANCE_ENV_MISSING")
-    if value.has && std.mem.eql(value.value, "agent-env") && !missing.has {
-        check world.out.write("env ok\n")
-    }
-}

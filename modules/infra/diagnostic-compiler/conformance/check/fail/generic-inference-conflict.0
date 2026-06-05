@@ -1,8 +1,0 @@
-fn first<T: Type>(left: T, right: T) -> T {
-    return left
-}
-
-pub fn main() -> Void {
-    let value: i32 = first(1, 2_u8)
-    expect (value == 1)
-}

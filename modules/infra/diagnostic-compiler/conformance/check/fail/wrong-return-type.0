@@ -1,7 +1,0 @@
-fn answer() -> Bool {
-    return 42
-}
-
-pub fn main(world: World) -> Void raises {
-    check world.out.write("wrong return\n")
-}

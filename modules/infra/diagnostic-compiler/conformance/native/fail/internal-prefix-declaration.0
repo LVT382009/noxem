@@ -1,7 +1,0 @@
-fn __zero_user_helper(value: String) -> String {
-    return value
-}
-
-pub fn main() -> Void {
-    return
-}

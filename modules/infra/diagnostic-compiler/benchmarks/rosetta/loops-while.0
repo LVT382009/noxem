@@ -1,9 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    var i: u32 = 0
-    while i < 4 {
-        i = i + 1
-    }
-    if i == 4 {
-        check world.out.write("while loop ok\n")
-    }
-}

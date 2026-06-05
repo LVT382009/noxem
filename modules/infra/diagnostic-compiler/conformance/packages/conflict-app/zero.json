@@ -1,8 +1,0 @@
-{
-  "package": { "name": "conflict-app", "version": "0.1.0" },
-  "targets": { "cli": { "kind": "exe", "main": "src/main.0" } },
-  "dependencies": {
-    "shared-a": { "path": "../shared-v1", "version": "0.1.0" },
-    "shared-b": { "path": "../shared-v2", "version": "0.2.0" }
-  }
-}

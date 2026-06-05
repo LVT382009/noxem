@@ -1,9 +1,0 @@
-fn filled(row: u32, col: u32) -> Bool {
-    return row / col % 2 == 1
-}
-
-pub fn main(world: World) -> Void raises {
-    if filled(7, 1) {
-        check world.out.write("sierpinski ok\n")
-    }
-}

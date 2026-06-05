@@ -1,9 +1,0 @@
-pub fn main(flag: Bool) -> Void {
-    var x: i32 = 1
-    let y: i32 = 2
-    var r: ref<i32> = &x
-    if flag {
-        r = &y
-    }
-    x = 3
-}

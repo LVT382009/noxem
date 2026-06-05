@@ -1,8 +1,0 @@
-fn makeDefault<T: Type>() -> T raises [Missing] {
-    raise Missing
-}
-
-pub fn main() -> Void raises [Missing] {
-    let value: i32 = check makeDefault()
-    expect (value == 0)
-}

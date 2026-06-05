@@ -1,8 +1,0 @@
-pub fn writePayload(dst: MutSpan<u8>) -> usize {
-    let _cleared: usize = std.mem.fill(dst, 0_u8)
-    return std.mem.copy(dst, std.mem.span("resource cli ok\n"))
-}
-
-pub fn payloadOk(bytes: Span<u8>) -> Bool {
-    return std.mem.eqlBytes(bytes, std.mem.span("resource cli ok\n"))
-}

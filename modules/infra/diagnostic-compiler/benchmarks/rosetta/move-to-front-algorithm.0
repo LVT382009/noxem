@@ -1,8 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    var values: [4]u8 = [1, 2, 3, 4]
-    let index: usize = std.search.indexOf(values, 3_u8)
-    let len: usize = std.collections.moveToFront(values, 4_usize, index)
-    if len == 4 && values[0] == 3_u8 && values[1] == 1_u8 {
-        check world.out.write("move to front ok\n")
-    }
-}

@@ -1,4 +1,0 @@
-pub fn inputName() -> String {
-    let name: String = rescue std.args.get(1) err "batch3.txt"
-    return name
-}

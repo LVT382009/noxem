@@ -1,9 +1,0 @@
-fn curveY2(x: u32) -> u32 {
-    return x * x * x + 2 * x + 3
-}
-
-pub fn main(world: World) -> Void raises {
-    if curveY2(1) == 6 {
-        check world.out.write("elliptic curve ok\n")
-    }
-}

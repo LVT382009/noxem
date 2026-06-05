@@ -1,5 +1,0 @@
-pub fn main(world: World) -> Void raises {
-    var text: String = "hi"
-    text[0] = 72
-    check world.out.write("bad indexed mutation\n")
-}

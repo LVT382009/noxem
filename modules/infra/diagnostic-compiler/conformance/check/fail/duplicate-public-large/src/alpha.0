@@ -1,3 +1,0 @@
-pub fn alphaName() -> String {
-    return "alpha"
-}

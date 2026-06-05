@@ -1,4 +1,0 @@
-const bad: usize = meta std.fs.host()
-
-pub fn main() -> Void {
-}

@@ -1,7 +1,0 @@
-pub fn main() -> Void {
-    var values: [4]u8 = [1, 2, 0, 0]
-    let dst: MutSpan<u8> = values
-    let live: Span<u8> = values[..2]
-    let _len: usize = std.collections.push(dst, 2_usize, 3_u8)
-    expect std.mem.len(live) == 2
-}
