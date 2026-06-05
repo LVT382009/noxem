@@ -13,6 +13,7 @@
 import { storeMemory, getAllActiveMemoriesNoEmbed, getMemoriesByEntityAttr, traverseMemoryGraph, getActiveMemories, getMemoriesByIds, db } from './memory-store.mjs';
 import { isEmbeddingReady, embed, searchByEmbedding } from './embedding-engine.mjs';
 import { knnSearch, knnSearchHybrid, getVectorBackend } from './vector-index.mjs';
+import { entityRanker, ingestPipeline, crossModalExtractor, lessonVault, spatialFilter, multiSourceRouter } from './module-registry.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const BUNDLE_TOP_K = parseInt(process.env.BUNDLE_TOP_K || '5');
@@ -29,6 +30,14 @@ const QUERY_NODE_ID = '__query_tip__';
  */
 export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
   if (!isEmbeddingReady()) {
+	// v2.2: Apply entity-based hit graph expansion
+	try { allHits = entityRanker.expandHitGraphByEntities(query, allHits.map(h => h.id)); } catch {}
+	// v2.2: Apply lesson vault reranking
+	try { allHits = lessonVault.rerankResults(allHits, { recency: 0.3, importance: 0.3, relevance: 0.4 }); } catch {}
+	// v2.2: Expand with graph signals from ingest pipeline
+	try { const expanded = await ingestPipeline.expandWithGraphSignals(allHits.map(h => h.id)); if (expanded?.length > 0) allHits = [...allHits, ...expanded.filter(e => !allHits.some(h => h.id === e.id))]; } catch {}
+	// v2.2: Cross-modal scene grouping bonus
+	try { allHits = crossModalExtractor.applySceneGroupingBonus(allHits); } catch {}
     return { episodes: [], error: 'embedding not ready' };
   }
 

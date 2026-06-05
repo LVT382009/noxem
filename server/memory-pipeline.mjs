@@ -15,6 +15,7 @@
 import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, updateMemoryStatus, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr } from './memory-store.mjs';
 import { llmFetch } from './llm-fetch.mjs';
 import { isEmbeddingReady, embed, categorizeText, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
+import { ingestPipeline, deltaProcessor, multiSourceRouter, crossModalExtractor, lessonVault } from './module-registry.mjs';
 
 const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
 
@@ -140,6 +141,8 @@ export async function extractL1FromL0(sessionId) {
     }
 
     state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures = 0;
+				// v2.2: Mark extraction complete in ingest pipeline
+				try { ingestPipeline.markExtractionComplete(sessionId); } catch {}
     LOG_DEBUG && console.log(`[Pipeline] L1 extraction: ${atoms.length} atoms from ${episodeMems.length} episodes`);
   } catch (err) {
     state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++;

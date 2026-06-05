@@ -842,6 +842,20 @@ app.post('/memory/store', async (req, res) => {
 	invalidateQueryCacheForEntity(entity, attribute);
 	// v2.1: Touch entity recency (Memary pattern)
 	try { if (entity) entityRanker.touchEntityWithRecency(entity); } catch {}
+	// v2.2: Upsert entity with recency tracking
+	try { if (entity) entityRanker.upsertEntityWithRecency({ name: entity, type: catType }); } catch {}
+	// v2.2: Record version history (capsule builder)
+	try { capsuleBuilder.recordVersion(db, id, 'create'); } catch {}
+	// v2.2: Post-store capsule hooks
+	try { capsuleBuilder.onMemoryStored(db, id, trimmed, entity, attribute); } catch {}
+	// v2.2: Track L0 hash for pipeline
+	try { if (session_id) ingestPipeline.computeL0Hash(session_id); } catch {}
+	// v2.2: Invalidate ambient injection cache on new memory
+	try { ambientInjector.invalidateInjectionCache(); } catch {}
+	// v2.2: Classify content type for compression patterns
+	try { contextCompressor.classifyContentType(trimmed); } catch {}
+	// v2.2: Validate write quality (lesson vault)
+	try { lessonVault.validateWrite(trimmed, catType, entity); } catch {}
   res.json({ ok: true, id, embedding: enqueued ? 'queued' : 'dropped' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -876,6 +890,10 @@ app.post('/memory/store-batch', (req, res) => {
     }));
 
     const ids = storeMemories(items);
+	// v2.2: Batch store hooks
+	try { for (const item of items) { if (item.entity) { entityRanker.upsertEntityWithRecency({ name: item.entity, type: item.type }); entityRanker.touchEntityWithRecency(item.entity); } } } catch {}
+	try { for (let i = 0; i < ids.length; i++) { capsuleBuilder.recordVersion(db, ids[i], 'create'); capsuleBuilder.onMemoryStored(db, ids[i], items[i].text, items[i].entity, items[i].attribute); } } catch {}
+	try { ambientInjector.invalidateInjectionCache(); } catch {}
 
   // Queue background embedding for all stored memories
   let embedDropped = 0;
@@ -1067,6 +1085,14 @@ app.get("/memory/search", async (req, res) => {
 	searchResults = applyEntitySaturationDecay(searchResults);
   // v2.1: Entity-centric search boost (Memary pattern)
   try { searchResults = entityRanker.applyEntityBoost(searchResults); } catch {}
+	// v2.2: Merge structural with semantic results
+	try { if (_prefilter?.prefiltered && searchResults.length > 0) searchResults = spatialFilter.mergeStructuralWithSemantic(_prefilter.results, searchResults); } catch {}
+	// v2.2: Expand hit graph by entities
+	try { if (searchResults.length > 0) searchResults = entityRanker.expandHitGraphByEntities(q.trim(), searchResults.map(r => r.id)); } catch {}
+	// v2.2: Modality boost for cross-modal results
+	try { if (searchResults.length > 0) searchResults = crossModalExtractor.modalityBoost(searchResults, q.trim()); } catch {}
+	// v2.2: Hall-type corridor diversity
+	try { if (searchResults.length > 0) searchResults = spatialFilter.addHallTypeCorridor(searchResults); } catch {}
 	// Apply session filter BEFORE final limit to avoid returning fewer results than requested
 	if (session_id) searchResults = searchResults.filter(r => r.session_id === session_id);
 	searchResults = searchResults.slice(0, limitNum);
@@ -1082,6 +1108,12 @@ app.get("/memory/search", async (req, res) => {
 try {
   const ids = searchResults.map(r => r.id).filter(Boolean);
   if (ids.length) incrementRecallCounts(ids);
+		// v2.2: Track co-recall signals
+		try { if (ids.length > 1) ambientInjector.trackCoRecall(ids); } catch {}
+		// v2.2: Track corecalls for hot cache
+		try { if (ids.length) capsuleBuilder.trackCorecall(db, ids); } catch {}
+		// v2.2: On-recall hooks for capsule builder
+		try { if (ids.length) capsuleBuilder.onMemoriesRecalled(db, ids); } catch {}
 } catch {}
 
 // ── Associative retrieval: surface related memories via entity index ──
@@ -1209,6 +1241,8 @@ app.get('/memory/release', async (req, res) => {
       chars += line.length;
     }
 
+		// v2.2: Preload hot cache for top recall candidates
+		try { if (deduped.length > 0) capsuleBuilder.preloadHotCache(db, deduped[0].id); } catch {}
 // v2.1: Inject wake-up context layer (MemPalace L0+L1 facts)
   let _wakeup = '';
   try { const wc = spatialFilter.generateWakeUpContext(); if (wc) _wakeup = String.fromCharCode(10) + wc; } catch {}
@@ -1651,6 +1685,11 @@ app.delete('/memory/:id', (req, res, next) => {
     const mem = getMemory(id);
     if (!mem) return res.status(404).json({ error: 'not found' });
     deleteMemory(id);
+	// v2.2: On-delete hooks
+	try { capsuleBuilder.onMemoryDeleted(db, id); } catch {}
+	try { capsuleBuilder.deleteTripletsForMemory(db, id); } catch {}
+	try { capsuleBuilder.deleteSlotsForMemory(db, id); } catch {}
+	try { ambientInjector.invalidateInjectionCache(); } catch {}
     res.json({ ok: true, deleted: id });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1676,6 +1715,9 @@ app.post('/memory/supersede', (req, res) => {
 
   // Mark old as superseded by new
 updateMemoryStatus(old_id, 'superseded', new_id);
+	// v2.2: Record supersession in version history
+	try { capsuleBuilder.recordVersion(db, old_id, 'supersede'); capsuleBuilder.recordVersion(db, new_id, 'promoted'); } catch {}
+	try { ambientInjector.invalidateInjectionCache(); } catch {}
 
 // Bi-temporal: set valid_until on old, valid_from on new
 const now = new Date().toISOString();
@@ -2353,6 +2395,763 @@ app.get('/memory/sliding-window', (req, res) => {
 
 
 // ─── Initialize Module Registry (v2.1 adapters) ────────────────
+
+// ── v2.2: Additional Adapter Endpoints ─────────────────────────────
+
+// Capsule Builder: extended operations
+app.get('/memory/capsule/export/file', (req, res) => {
+	try {
+		const result = capsuleBuilder.exportCapsuleToFile(db, req.query.path || 'noxem-export.json');
+		res.json({ ok: true, path: result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/capsule/corecalls/:id', (req, res) => {
+	try {
+		const corecalls = capsuleBuilder.getCorecalls(db, +req.params.id);
+		res.json({ ok: true, corecalls });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/capsule/hot-cache', (_req, res) => {
+	try {
+		const stats = capsuleBuilder.getHotCacheStats();
+		res.json({ ok: true, stats });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/capsule/hot-cache/clear', (_req, res) => {
+	try {
+		capsuleBuilder.clearHotCache();
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/capsule/triplets/search', (req, res) => {
+	try {
+		const results = capsuleBuilder.searchTriplets(db, req.query);
+		res.json({ ok: true, results });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/capsule/triplets/:id', (req, res) => {
+	try {
+		const triplets = capsuleBuilder.getTripletsForMemory(db, +req.params.id);
+		res.json({ ok: true, triplets });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/capsule/slot', (req, res) => {
+	try {
+		const slot = capsuleBuilder.getSlot(db, req.query.entity, req.query.attribute);
+		res.json({ ok: true, slot });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/capsule/slots/rebuild', (_req, res) => {
+	try {
+		const count = capsuleBuilder.rebuildSlotIndex(db);
+		res.json({ ok: true, count });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Context Compressor: patterns + strategies + KV align
+app.get('/memory/compressor/patterns', (req, res) => {
+	try {
+		const contentType = contextCompressor.classifyContentType(req.query.text || '');
+		res.json({ ok: true, contentType });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/compressor/fingerprint', (req, res) => {
+	try {
+		const fp = contextCompressor.structuralFingerprint(req.query.text || '', req.query.contentType || 'text');
+		res.json({ ok: true, fingerprint: fp });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/compressor/strategy', (req, res) => {
+	try {
+		const strategy = contextCompressor.getBestStrategy(db, req.query.hash || '');
+		res.json({ ok: true, strategy });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compressor/feedback', (req, res) => {
+	try {
+		contextCompressor.recordCompressionFeedback(db, req.body.structureHash, req.body.contentType, req.body.strategy, req.body.recallScore, req.body.ratio);
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compressor/kv-align', (req, res) => {
+	try {
+		const { alignedText, tokenMap } = contextCompressor.alignKVCachePrefixes(req.body.text || '');
+		res.json({ ok: true, alignedText, tokenCount: Object.keys(tokenMap).length });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compressor/batch', (req, res) => {
+	try {
+		const results = contextCompressor.batchCompressMemories(req.body.memories || [], db);
+		res.json({ ok: true, results });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compressor/conversation', (req, res) => {
+	try {
+		const compressed = contextCompressor.compressConversationTurns(req.body.turns || []);
+		res.json({ ok: true, compressed });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compressor/ccr/retrieve', (req, res) => {
+	try {
+		const original = contextCompressor.retrieveCCROriginal(db, req.body.hash);
+		res.json({ ok: true, original });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compressor/pre-compress', (req, res) => {
+	try {
+		const compressed = contextCompressor.preCompressForAdvisor(req.body.history || [], req.body.sessionMemories || []);
+		res.json({ ok: true, compressed });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Compaction Coordinator: notebooks + staging + dashboard
+app.post('/memory/compaction/stage', (req, res) => {
+	try {
+		const result = compactionCoordinator.compactionStage(db, req.body.candidateId, req.body.summary);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/compaction/candidates/list', (_req, res) => {
+	try {
+		const candidates = compactionCoordinator.compactionCandidates(db);
+		res.json({ ok: true, candidates });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compaction/dispatch', (req, res) => {
+	try {
+		const result = compactionCoordinator.compactionDispatch(db, req.body.action, req.body.params || {});
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/compaction/preview', (req, res) => {
+	try {
+		const preview = compactionCoordinator.previewCompactionCandidates(req.body.memories || [], req.body.deps || {});
+		res.json({ ok: true, preview });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/memory/notebook', (req, res) => {
+	try {
+		compactionCoordinator.upsertNotebook(db, req.body);
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/notebook/:name', (req, res) => {
+	try {
+		const notebook = compactionCoordinator.getNotebook(db, req.params.name);
+		res.json({ ok: true, notebook });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/notebooks', (req, res) => {
+	try {
+		const notebooks = compactionCoordinator.listNotebooks(db, req.query.category || '');
+		res.json({ ok: true, notebooks });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/memory/notebook/:name', (req, res) => {
+	try {
+		compactionCoordinator.deleteNotebook(db, req.params.name);
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/notebooks/activate', (req, res) => {
+	try {
+		compactionCoordinator.useNotebooks(db, req.body.names || [], req.body.sessionId || 'default');
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/notebooks/active', (req, res) => {
+	try {
+		const active = compactionCoordinator.getActiveNotebooks(req.query.sessionId || 'default');
+		res.json({ ok: true, active });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/notebooks/clear', (req, res) => {
+	try {
+		compactionCoordinator.clearActiveNotebooks(req.body.sessionId || 'default');
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/notebook/dispatch', (req, res) => {
+	try {
+		const result = compactionCoordinator.notebookDispatch(db, req.body.action, req.body.params || {});
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/dashboard', (_req, res) => {
+	try {
+		const html = compactionCoordinator.generateDashboardHTML(db);
+		res.type('html').send(html);
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Multi-Source Router
+app.get('/memory/sources/catalog', (_req, res) => {
+	try {
+		const catalog = multiSourceRouter.getSourceCatalog();
+		res.json({ ok: true, catalog });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/sources/route', async (req, res) => {
+	try {
+		const result = await multiSourceRouter.routeToSources(req.body.query, { llmFetch, llmUrl: process.env.LLM_URL || process.env.GEMMA_URL, llmModel: process.env.LLM_MODEL || process.env.GEMMA_MODEL, topK: req.body.topK || 3 });
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/sources/dispatch', (req, res) => {
+	try {
+		const result = multiSourceRouter.dispatchToSource(req.body.sourceId, req.body.query, req.body.deps || {}, req.body.limit || 15);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/sources/hyde', async (req, res) => {
+	try {
+		const hyde = await multiSourceRouter.generateHyDE(req.body.query, { llmFetch, llmUrl: process.env.LLM_URL || process.env.GEMMA_URL, llmModel: process.env.LLM_MODEL || process.env.GEMMA_MODEL });
+		res.json({ ok: true, hyde });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/sources/rerank', async (req, res) => {
+	try {
+		const reranked = await multiSourceRouter.evidenceRerank(req.body.query, req.body.candidates || [], { llmFetch, llmUrl: process.env.LLM_URL || process.env.GEMMA_URL, llmModel: process.env.LLM_MODEL || process.env.GEMMA_MODEL });
+		res.json({ ok: true, reranked });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/sources/search', async (req, res) => {
+	try {
+		const results = await multiSourceRouter.multiSourceSearch(req.body.query, req.body.deps || {}, { llmFetch, llmUrl: process.env.LLM_URL || process.env.GEMMA_URL, llmModel: process.env.LLM_MODEL || process.env.GEMMA_MODEL });
+		res.json({ ok: true, results });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Cross-Modal Extractor
+app.post('/memory/multimodal/store', (req, res) => {
+	try {
+		const validation = crossModalExtractor.validateMultimodalFields(req.body);
+		if (!validation.valid) return res.status(400).json({ error: validation.errors });
+		const result = crossModalExtractor.storeMultimodalMemory(db, req.body, (m) => storeMemory(m));
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/multimodal/link', (req, res) => {
+	try {
+		const result = crossModalExtractor.linkMultimodalMemory(db, req.body.textMemId, req.body.visualMemId, req.body.relation || 'illustrates', req.body.sessionId || '');
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/multimodal/auto-link', (req, res) => {
+	try {
+		const result = crossModalExtractor.autoLinkCrossModal(db, req.body.newMemory);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/multimodal/scene', (req, res) => {
+	try {
+		const source = crossModalExtractor.getSceneSource(req.query.sceneName || '');
+		res.json({ ok: true, source });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/multimodal/migrate', (_req, res) => {
+	try {
+		const result = crossModalExtractor.runCrossModalMigration(db);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/multimodal/embedding-text', (req, res) => {
+	try {
+		const embeddingText = crossModalExtractor.prepareEmbeddingText(req.body.memory || {});
+		res.json({ ok: true, embeddingText });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Entity Ranker: topic shifts + eviction context
+app.get('/memory/entity/topic-shifts', (req, res) => {
+	try {
+		const shifts = entityRanker.detectTopicShifts(req.query.binDays ? +req.query.binDays : undefined);
+		res.json({ ok: true, shifts });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/entity/eviction-context', (req, res) => {
+	try {
+		const context = entityRanker.assembleEvictionContext(req.body.history || [], req.body.tokenBudget || 2000);
+		res.json({ ok: true, context });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Spatial Filter: tunnels + corridors
+app.get('/memory/tunnels/query', (req, res) => {
+	try {
+		const tunnels = spatialFilter.getTunnels(req.query.entity || '', req.query.attribute || '');
+		res.json({ ok: true, tunnels });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/tunnels/expand', (req, res) => {
+	try {
+		const expanded = spatialFilter.expandResultsViaTunnels(req.body.results || [], req.body.limitPerTunnel || 3);
+		res.json({ ok: true, expanded });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Ambient Injector: session management + agents-md + distill
+app.post('/memory/ambient/session/manage', (req, res) => {
+	try {
+		const result = ambientInjector.manageSession(req.body.sessionId, req.body.action, req.body.options || {});
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/ambient/agents-md', (req, res) => {
+	try {
+		const injection = ambientInjector.buildAgentsMdInjection(req.query.projectDir || process.cwd());
+		res.json({ ok: true, injection });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/ambient/combined', (req, res) => {
+	try {
+		const context = ambientInjector.buildCombinedAmbientContext(req.query.projectDir || process.cwd());
+		res.json({ ok: true, context });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/ambient/agents-md/invalidate', (_req, res) => {
+	try {
+		ambientInjector.invalidateAgentsMdCache();
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/ambient/context-tool-def', (req, res) => {
+	try {
+		const def = ambientInjector.buildAmbientContextToolDef(req.query.forceRefresh === 'true');
+		res.json({ ok: true, def });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/ambient/feedback/stats', (req, res) => {
+	try {
+		const stats = ambientInjector.getMemoryFeedbackStats(req.query.memoryId ? +req.query.memoryId : undefined);
+		res.json({ ok: true, stats });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/ambient/store', (req, res) => {
+	try {
+		const result = ambientInjector.storeMemoryWithAmbient(req.body);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/ambient/recall', (req, res) => {
+	try {
+		const result = ambientInjector.recallWithAmbient(req.body.ids || []);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/ambient/tools', (_req, res) => {
+	try {
+		const tools = ambientInjector.buildAmbientInjectorTools();
+		res.json({ ok: true, tools });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/ambient/distill/guide', async (req, res) => {
+	try {
+		const result = await ambientInjector.distillGuide(req.body.procedureId, llmFetch);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Strategy Distiller: store + quality + contrast + failure-aware
+app.post('/memory/reasoning/store', async (req, res) => {
+	try {
+		const result = await strategyDistiller.storeReasoningMemory(req.body);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/reasoning/quality', async (req, res) => {
+	try {
+		const result = await strategyDistiller.judgeReasoningQuality(req.body.items || []);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/reasoning/contrast', async (req, res) => {
+	try {
+		const result = await strategyDistiller.contrastTrajectories(req.body.entity || '', req.body.opts || {});
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/reasoning/failure-extract', async (req, res) => {
+	try {
+		const result = await strategyDistiller.onFailureAwareExtract(req.body.text || '', req.body.sessionId || '');
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Ingest Pipeline: extract + relevance + status
+app.get('/memory/ingest/status', (_req, res) => {
+	try {
+		const status = ingestPipeline.getIngestStatus();
+		res.json({ ok: true, status });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/ingest/extract-l1', async (req, res) => {
+	try {
+		const result = await ingestPipeline.twoStepExtractL1(req.body.sessionId || '', req.body.opts || {});
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/ingest/relevance', (req, res) => {
+	try {
+		const score = ingestPipeline.calculateRelevance(req.body.memA || {}, req.body.memB || {});
+		res.json({ ok: true, score });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/ingest/graph-expand', async (req, res) => {
+	try {
+		const result = await ingestPipeline.expandWithGraphSignals(req.body.hitIds || [], req.body.opts || {});
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Declarative Gateway: toolsets + templates + skill export + stats
+app.post('/memory/toolset/register', (req, res) => {
+	try {
+		declarativeGateway.registerToolset(req.body.name, req.body.tools, req.body.access_level || 'read', req.body.description || '');
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/toolsets', (_req, res) => {
+	try {
+		const toolsets = declarativeGateway.listToolsets();
+		res.json({ ok: true, toolsets });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/toolset/resolve', (req, res) => {
+	try {
+		const tools = declarativeGateway.resolveToolset(req.body.name);
+		res.json({ ok: true, tools });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/toolset/filter', (req, res) => {
+	try {
+		const filtered = declarativeGateway.filterToolsByAccess(req.body.toolNames || [], req.body.toolsetName || '');
+		res.json({ ok: true, filtered });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/query/template/upsert', (req, res) => {
+	try {
+		declarativeGateway.upsertQueryTemplate(req.body);
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/memory/query/template/:name', (req, res) => {
+	try {
+		declarativeGateway.deleteQueryTemplate(req.params.name);
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/query/parameterized', (req, res) => {
+	try {
+		const result = declarativeGateway.runParameterizedQuery(req.body.sqlTemplate, req.body.paramsSchemaJson, req.body.params || {});
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/skill/export', (req, res) => {
+	try {
+		const pkg = declarativeGateway.exportSkillPackage(req.body);
+		res.json({ ok: true, ...pkg });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/toolset/reload', async (req, res) => {
+	try {
+		await declarativeGateway.reloadToolConfig(req.body.configPath);
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/declarative/stats', (_req, res) => {
+	try {
+		const stats = declarativeGateway.getDeclarativeGatewayStats();
+		res.json({ ok: true, stats });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Diagnostic Compiler: repair execution + procedure deps
+app.post('/memory/diagnostic/repair/execute', (req, res) => {
+	try {
+		const result = diagnosticCompiler.executeRepairPlan(db, req.body.items || [], req.body.options || {});
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/skills/version', (_req, res) => {
+	try {
+		const version = diagnosticCompiler.getSkillsVersion();
+		res.json({ ok: true, version });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/skills/names', (_req, res) => {
+	try {
+		const names = diagnosticCompiler.listSkillNames();
+		res.json({ ok: true, names });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/procedure-deps/init', (_req, res) => {
+	try {
+		diagnosticCompiler.initProcedureDeps(db);
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/procedure-deps/add', (req, res) => {
+	try {
+		diagnosticCompiler.addProcedureDep(req.body.procedureId, req.body.dependsOnId, req.body.depType || 'references');
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/memory/procedure-deps/remove', (req, res) => {
+	try {
+		diagnosticCompiler.removeProcedureDep(req.body.procedureId, req.body.dependsOnId);
+		res.json({ ok: true });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/procedure-deps/:id', (req, res) => {
+	try {
+		const deps = diagnosticCompiler.getProcedureDependencies(+req.params.id);
+		const dependents = diagnosticCompiler.getProcedureDependents(+req.params.id);
+		res.json({ ok: true, deps, dependents });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/procedure-deps-graph', (_req, res) => {
+	try {
+		const graph = diagnosticCompiler.getProcedureDependencyGraph();
+		res.json({ ok: true, graph });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/procedure-deps/extract', (req, res) => {
+	try {
+		const deps = diagnosticCompiler.extractProcedureDepsFromSteps(db, +req.body.procedureId);
+		res.json({ ok: true, deps });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/diagnostic/stats', (_req, res) => {
+	try {
+		const stats = diagnosticCompiler.getDiagnosticAdapterStats();
+		res.json({ ok: true, stats });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/entity-hash', (req, res) => {
+	try {
+		const hash = diagnosticCompiler.computeEntityHash(db, req.query.entity || '', req.query.attribute || '');
+		res.json({ ok: true, hash });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/entity-hash/validate', (req, res) => {
+	try {
+		const result = diagnosticCompiler.validateContentHash(db, req.body.entity, req.body.expectedHash, req.body.attribute || '');
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Lesson Vault: PCA + dimension reduction + reranking + table extract
+app.post('/memory/pca', (req, res) => {
+	try {
+		const result = lessonVault.computePCA(req.body.samples || [], req.body.varianceThreshold);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/d-eff', (_req, res) => {
+	try {
+		const info = lessonVault.measureEffectiveDim(getActiveWithEmbedding(), db);
+		res.json({ ok: true, ...info });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/d-eff/project', (req, res) => {
+	try {
+		const projected = lessonVault.applyDEffProjection(req.body.embedding || [], db);
+		res.json({ ok: true, projected });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/write-stats', (_req, res) => {
+	try {
+		const stats = lessonVault.getWriteStats();
+		res.json({ ok: true, stats });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/poisoning-audit', (_req, res) => {
+	try {
+		const report = lessonVault.auditMemoryPoisoning(db);
+		res.json({ ok: true, ...report });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/table-detect', (req, res) => {
+	try {
+		const chunks = lessonVault.extractTableChunks(req.body.text || '', req.body.options || {});
+		res.json({ ok: true, chunks });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/rerank', (req, res) => {
+	try {
+		const reranked = lessonVault.rerankResults(req.body.results || [], req.body.weights || {});
+		res.json({ ok: true, reranked });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/rerank/prepare', (req, res) => {
+	try {
+		const prepared = lessonVault.prepareForReranking(req.body.results || [], req.body.method || 'hybrid', req.body.query || '');
+		res.json({ ok: true, prepared });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Graph Pruner: hub nodes + PQ search + code detection + maintenance
+app.get('/memory/hub-nodes', (_req, res) => {
+	try {
+		const ids = graphPruner.getHubNodeIds(db);
+		res.json({ ok: true, ids });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/pq/search', (req, res) => {
+	try {
+		const results = graphPruner.knnSearchPQ(db, req.body.queryVec, req.body.topK || 5, req.body.options || {});
+		res.json({ ok: true, results });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/code/chunk', (req, res) => {
+	try {
+		const chunks = graphPruner.chunkCodeAST(req.body.codeText || '', req.body.options || {});
+		res.json({ ok: true, chunks });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/code/detect', (req, res) => {
+	try {
+		const result = graphPruner.detectCodeContent(req.body.text || '');
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/dedup/knn', async (req, res) => {
+	try {
+		const results = await graphPruner.findDuplicatesKNN(db, vectorKnnSearch, req.body.options || {});
+		res.json({ ok: true, results });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/graph/maintenance', async (_req, res) => {
+	try {
+		const result = await graphPruner.runMaintenancePipeline(db, embed);
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Delta Processor: sync, logic version, startup checks
+app.post('/memory/delta/sync-hash', (req, res) => {
+	try {
+		const hash = deltaProcessor.computeSyncContentHash(req.body.items || []);
+		res.json({ ok: true, hash });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/delta/sync-diff', (req, res) => {
+	try {
+		const diff = deltaProcessor.computeSyncDiff(req.body.previous || [], req.body.current || []);
+		res.json({ ok: true, ...diff });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/delta/logic-version', (_req, res) => {
+	try {
+		const version = deltaProcessor.computeLogicVersion(String(categorizeText), String(estimateImportance));
+		res.json({ ok: true, version });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/memory/delta/startup-checks', (_req, res) => {
+	try {
+		const result = deltaProcessor.runStartupChecks({ db, categorizeSrc: String(categorizeText).slice(0, 200), importanceSrc: String(estimateImportance).slice(0, 200), modelId: 'local', embedDim: 256, dtype: 'float32', hasExistingEmbeddings: getActiveMemories().length > 0 });
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/memory/delta/logic-reevaluate', (req, res) => {
+	try {
+		const result = deltaProcessor.runLogicReevaluation({ db, categorizeFn: categorizeText, estimateFn: estimateImportance, limit: req.body.limit || 1000 });
+		res.json({ ok: true, ...result });
+	} catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
 initModules(embed).then(() => {
   const status = getModuleStatus();
   if (LOG_DEBUG) console.log('[Server] Modules initialized:', status.loaded, '/', status.moduleCount, status.skipped ? `(${status.skipped} skipped)` : '');

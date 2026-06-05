@@ -1,7 +1,8 @@
 import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity } from './embedding-engine.mjs';
 import { deleteVec } from './vector-index.mjs';
-import { deltaProcessor, graphPruner, ambientInjector, ingestPipeline } from './module-registry.mjs';
+import { deltaProcessor, graphPruner, ambientInjector, ingestPipeline, strategyDistiller, capsuleBuilder, lessonVault, compactionCoordinator, multiSourceRouter } from './module-registry.mjs';
+import { llmFetch } from './llm-fetch.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 
@@ -192,7 +193,68 @@ export async function runMaintenance() {
     if (LOG_DEBUG) console.error('[Maintenance] Cross-link generation failed:', e.message);
   }
 
-  const elapsed = Date.now() - start;
+  // v2.2: Delta processor startup checks + logic re-evaluation
+	try {
+		const categorizeSrc = String(categorizeText.toString().slice(0, 200));
+		const importanceSrc = String(estimateImportance.toString().slice(0, 200));
+		const startupResult = deltaProcessor.runStartupChecks({ db, categorizeSrc, importanceSrc, modelId: 'local', embedDim: 256, dtype: 'float32', hasExistingEmbeddings: memories.length > 0 });
+		if (LOG_DEBUG && startupResult) console.log('[Maintenance] Delta startup checks:', JSON.stringify(startupResult));
+		const reevalResult = deltaProcessor.runLogicReevaluation({ db, categorizeFn: categorizeText, estimateFn: estimateImportance, limit: 1000 });
+		if (LOG_DEBUG && reevalResult?.rereaded > 0) console.log(`[Maintenance] Logic re-evaluated ${reevalResult.rereaded} memories`);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Delta processor maintenance failed:', e.message); }
+
+	try {
+		// Graph pruner: full maintenance pipeline + PQ training
+		const pipelineResult = await graphPruner.runMaintenancePipeline(db, embed);
+		if (LOG_DEBUG && pipelineResult) console.log('[Maintenance] Graph pruner pipeline:', JSON.stringify(pipelineResult));
+		const pqResult = graphPruner.trainPQCodebooks(db);
+		if (LOG_DEBUG && pqResult?.trained) console.log(`[Maintenance] PQ codebooks trained (${pqResult.subspaces} subspaces)`);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Graph pruner full pipeline failed:', e.message); }
+
+	try {
+		// Capsule builder: hot cache preload + triplet extraction
+		capsuleBuilder.preloadHotCache(db);
+		await capsuleBuilder.extractTripletsAsync('');
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Capsule builder maintenance failed:', e.message); }
+
+	try {
+		// Ambient injector: distill guides + ambient maintenance
+		await ambientInjector.distillAllEligible(llmFetch);
+		ambientInjector.runAmbientMaintenance(db);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Ambient distiller maintenance failed:', e.message); }
+
+	try {
+		// Strategy distiller: contrast trajectories + quality judgment
+		await strategyDistiller.contrastTrajectories('');
+		await strategyDistiller.judgeReasoningQuality([]);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Strategy distiller maintenance failed:', e.message); }
+
+	try {
+		// Lesson vault: audit memory poisoning + write stats
+		const poisoning = lessonVault.auditMemoryPoisoning(db);
+		if (LOG_DEBUG && poisoning?.issues?.length > 0) console.log(`[Maintenance] Memory poisoning audit: ${poisoning.issues.length} issues`);
+		const writeStats = lessonVault.getWriteStats();
+		if (LOG_DEBUG) results.writeStats = writeStats;
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Lesson vault maintenance failed:', e.message); }
+
+	try {
+		// Compaction coordinator: preview candidates
+		const preview = compactionCoordinator.previewCompactionCandidates(memories);
+		if (LOG_DEBUG && preview?.length > 0) console.log(`[Maintenance] Compaction preview: ${preview.length} candidates`);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Compaction preview failed:', e.message); }
+
+	try {
+		// Multi-source router: refresh source catalog
+		multiSourceRouter.getSourceCatalog();
+	} catch (e) { /* source catalog refresh is optional */ }
+
+	try {
+		// Ingest pipeline status check
+		const ingestStatus = ingestPipeline.getIngestStatus();
+		if (LOG_DEBUG) results.ingestStatus = ingestStatus;
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Ingest status check failed:', e.message); }
+
+const elapsed = Date.now() - start;
     LOG_DEBUG && console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
     return results;
   } finally {
