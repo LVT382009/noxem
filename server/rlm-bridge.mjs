@@ -1,4 +1,4 @@
-﻿/**
+/**
  * RLM Bridge — Node.js bridge to the Python RLM sidecar.
  *
  * Spawns rlm_sidecar.py as a long-lived child process.
@@ -11,6 +11,7 @@ import { spawn } from 'child_process';
 import { createInterface } from 'readline';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
+import { LLM_URL as _CONFIG_URL, LLM_MODEL as _CONFIG_MODEL, LLM_API_KEY as _CONFIG_KEY } from './llm-config.mjs';
 
 const RLM_ENABLED = process.env.RLM_ENABLED !== 'false';
 const RLM_SCRIPT = process.env.RLM_SCRIPT || fileURLToPath(new URL('./rlm_sidecar.py', import.meta.url));
@@ -72,9 +73,9 @@ function ensureProcess() {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       USERPROFILE: process.env.USERPROFILE,
-      LLM_URL: process.env.LLM_URL || process.env.GEMMA_URL || '',
-      LLM_MODEL: process.env.LLM_MODEL || process.env.GEMMA_MODEL || '',
-      LLM_API_KEY: process.env.LLM_API_KEY || '',
+      LLM_URL: _CONFIG_URL,
+      LLM_MODEL: _CONFIG_MODEL,
+      LLM_API_KEY: _CONFIG_KEY,
       NOXEM_CONTEXT_WINDOW: process.env.NOXEM_CONTEXT_WINDOW || '',
       VIRTUAL_ENV: process.env.VIRTUAL_ENV || '',
     RLM_LLM_TIMEOUT: process.env.RLM_LLM_TIMEOUT || '',
@@ -185,8 +186,8 @@ export async function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
   }
 
   const id = nextId++;
-  const llmUrl = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-  const llmModel = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
+  const llmUrl = _CONFIG_URL;
+  const llmModel = _CONFIG_MODEL;
 
   const request = {
     _reqId: id,
@@ -194,7 +195,7 @@ export async function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
     context,
     llmUrl,
     llmModel,
-    llmApiKey: process.env.LLM_API_KEY || '',
+    llmApiKey: _CONFIG_KEY,
     config: {
       maxSubCalls: RLM_MAX_SUB_CALLS,
       maxTokensBudget: RLM_MAX_TOKENS,

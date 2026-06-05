@@ -8,6 +8,7 @@ const LOG_QUIET = process.env.LOG_LEVEL === 'quiet';
 
 import { isVecReady, checkTurboVecHealth, isTurboVecHealthy, getVectorBackend } from './vector-index.mjs';
 import { llmFetch } from './llm-fetch.mjs';
+import { LLM_URL, LLM_MODEL, baseLlmUrl } from './llm-config.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
@@ -569,12 +570,12 @@ async function extractAndStoreEdges(fromMemoryId, text, sessionId) {
  if (ENABLE_ADVISOR && fromMem.importance > 0.6) {
  try {
 const recentMems = (getSessionMemories(fromMem.session_id) || []).slice(-8).map(m => `[${m.type}] ${m.text}`).join('\n');
- const llmUrl = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
- const llmModel = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
- const llmRes = await llmFetch(llmUrl, {
+ 
+ 
+ const llmRes = await llmFetch(LLM_URL, {
  method: 'POST',
  body: JSON.stringify({
- model: llmModel,
+ model: LLM_MODEL,
  messages: [
  { role: 'system', content: 'Extract relationships between the entity and other entities. Return JSON array: [{"relation":"implements|references|derives_from|clarifies","target":"entity name"}]. Max 3 relations. Empty array if none.' },
 { role: 'user', content: `Entity: ${fromMem.entity}\nContext: ${text.substring(0, 500)}\nRecent memories:\n${recentMems.substring(0, 1000)}` },
@@ -652,7 +653,7 @@ app.get('/health', async (_req, res) => {
   let llmOk = _llmHealthCache.ok;
   if (now - _llmHealthCache.timestamp > _LLM_HEALTH_TTL_MS) {
     try {
-      const r = await llmFetch(`${process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000'}/v1/models`, { signal: AbortSignal.timeout(2000) });
+      const r = await llmFetch(`${baseLlmUrl()}/v1/models`, { signal: AbortSignal.timeout(2000) });
       llmOk = r.ok;
     } catch { llmOk = false; }
     _llmHealthCache = { ok: llmOk, timestamp: now };
@@ -964,10 +965,10 @@ app.get("/memory/search", async (req, res) => {
       try {
         const expQ = q.trim().replace(/"/g, "");
         const prompt = "Generate 2 alternative ways to phrase this search query for a personal memory store. Return ONLY a JSON array of 2 strings. Query: " + expQ;
-        const expandRes = await llmFetch(process.env.LLM_URL || process.env.GEMMA_URL || "http://127.0.0.1:8000/v1/chat/completions", {
+        const expandRes = await llmFetch(LLM_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: process.env.LLM_MODEL || process.env.GEMMA_MODEL || "qwen3.6-plus-no-thinking", messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
+          body: JSON.stringify({ model: LLM_MODEL, messages: [{ role: "user", content: prompt }], max_tokens: 100, temperature: 0.3 }),
           signal: AbortSignal.timeout(1500),
         });
         if (expandRes.ok) {
@@ -1503,8 +1504,8 @@ app.post('/memory/learn', async (req, res) => {
 
     const memText = sourceMems.map(m => `[${m.type}] ${m.text}`).join('\n');
 
-    const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-    const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
+    
+    
 
     const llmRes = await llmFetch(LLM_URL, {
       method: 'POST',
@@ -1920,7 +1921,7 @@ app.post('/memory/advisor/compress', async (req, res) => {
     }
     const structured = req.query.structured === 'true';
   const analysis = await analyzeBeforeCompress(conversation_history || [], session_memories || [], { structured });
-    res.json({ ok: true, mode: 'qwen3', analysis });
+    res.json({ ok: true, mode: 'brain2', analysis });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1940,7 +1941,7 @@ app.post('/memory/advisor/advice', async (req, res) => {
       currentTaskContext: task_context || '',
     structured,
  });
-    res.json({ ok: true, mode: 'qwen3', advice });
+    res.json({ ok: true, mode: 'brain2', advice });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2621,7 +2622,7 @@ app.get('/memory/sources/catalog', (_req, res) => {
 
 app.post('/memory/sources/route', async (req, res) => {
 	try {
-		const result = await multiSourceRouter.routeToSources(req.body.query, { llmFetch, llmUrl: process.env.LLM_URL || process.env.GEMMA_URL, llmModel: process.env.LLM_MODEL || process.env.GEMMA_MODEL, topK: req.body.topK || 3 });
+		const result = await multiSourceRouter.routeToSources(req.body.query, { llmFetch, llmUrl: LLM_URL, llmModel: LLM_MODEL, topK: req.body.topK || 3 });
 		res.json({ ok: true, ...result });
 	} catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2635,21 +2636,21 @@ app.post('/memory/sources/dispatch', (req, res) => {
 
 app.post('/memory/sources/hyde', async (req, res) => {
 	try {
-		const hyde = await multiSourceRouter.generateHyDE(req.body.query, { llmFetch, llmUrl: process.env.LLM_URL || process.env.GEMMA_URL, llmModel: process.env.LLM_MODEL || process.env.GEMMA_MODEL });
+		const hyde = await multiSourceRouter.generateHyDE(req.body.query, { llmFetch, llmUrl: LLM_URL, llmModel: LLM_MODEL });
 		res.json({ ok: true, hyde });
 	} catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/memory/sources/rerank', async (req, res) => {
 	try {
-		const reranked = await multiSourceRouter.evidenceRerank(req.body.query, req.body.candidates || [], { llmFetch, llmUrl: process.env.LLM_URL || process.env.GEMMA_URL, llmModel: process.env.LLM_MODEL || process.env.GEMMA_MODEL });
+		const reranked = await multiSourceRouter.evidenceRerank(req.body.query, req.body.candidates || [], { llmFetch, llmUrl: LLM_URL, llmModel: LLM_MODEL });
 		res.json({ ok: true, reranked });
 	} catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/memory/sources/search', async (req, res) => {
 	try {
-		const results = await multiSourceRouter.multiSourceSearch(req.body.query, req.body.deps || {}, { llmFetch, llmUrl: process.env.LLM_URL || process.env.GEMMA_URL, llmModel: process.env.LLM_MODEL || process.env.GEMMA_MODEL });
+		const results = await multiSourceRouter.multiSourceSearch(req.body.query, req.body.deps || {}, { llmFetch, llmUrl: LLM_URL, llmModel: LLM_MODEL });
 		res.json({ ok: true, results });
 	} catch (err) { res.status(500).json({ error: err.message }); }
 });

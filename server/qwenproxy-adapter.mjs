@@ -14,13 +14,14 @@
  */
 
 import { createServer } from 'http';
+import { LLM_API_KEY as _CONFIG_API_KEY, LLM_MODEL as _CONFIG_MODEL } from './llm-config.mjs';
 
 const BRAIN2_PROVIDER = (process.env.BRAIN2_PROVIDER || 'qwenproxy').toLowerCase();
 const QWENPROXY_URL = process.env.QWENPROXY_URL || 'http://127.0.0.1:3000';
 const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || process.env.LLM_URL || process.env.GEMMA_URL || '';
 const ADAPTER_PORT = parseInt(process.env.LLM_PORT || process.env.GEMMA4_PORT || '8000');
-const DEFAULT_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
-const LLM_API_KEY = process.env.LLM_API_KEY || '';
+const DEFAULT_MODEL = _CONFIG_MODEL;
+const LLM_API_KEY = _CONFIG_API_KEY;
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 // â”€â”€ Model normalization (QwenProxy only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

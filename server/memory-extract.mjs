@@ -1,7 +1,6 @@
 const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
-const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
 import { llmFetch } from './llm-fetch.mjs';
-const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
+import { LLM_URL, LLM_MODEL } from './llm-config.mjs';
 const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use LLM
 const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary'];
 

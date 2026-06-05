@@ -14,13 +14,12 @@
 
 import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, updateMemoryStatus, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr } from './memory-store.mjs';
 import { llmFetch } from './llm-fetch.mjs';
+import { LLM_URL, LLM_MODEL } from './llm-config.mjs';
 import { isEmbeddingReady, embed, categorizeText, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
 import { ingestPipeline, deltaProcessor, multiSourceRouter, crossModalExtractor, lessonVault } from './module-registry.mjs';
 
 const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
 
-const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const PIPELINE_ENABLED = process.env.PIPELINE_ENABLED !== 'false';
 
