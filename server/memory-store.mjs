@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, deleteVec } from './vector-index.mjs';
+import { initVectorIndex, insertVec, insertVecStrict, insertVecBatch, isVecReady, knnSearch, deleteVec } from './vector-index.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
@@ -169,10 +169,8 @@ const insertWithVecTx = db.transaction((items) => {
     const id = r.lastInsertRowid;
     ids.push(id);
     if (m.embedding) {
-      try {
-        const vec = bufferToFloat32(m.embedding);
-        insertVec(db, id, vec);
-      } catch (e) { LOG_DEBUG && console.error('[StoreMemories] Vec insert failed for', id, e.message); }
+      const vec = bufferToFloat32(m.embedding);
+      insertVecStrict(db, id, vec); // Throws on error → triggers transaction rollback
     }
   }
   return ids;

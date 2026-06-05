@@ -110,12 +110,24 @@ let loadPromise = null;
 
 // Concurrency semaphore: serialize inference calls (transformers.js is NOT thread-safe)
 let inferenceLock = Promise.resolve();
+// Quarantine flag: set when inference times out. New calls are rejected until cleared.
+let quarantined = false;
+
 function withLock(fn) {
+  // Reject immediately if engine is quarantined after a timeout
+  if (quarantined) {
+    return Promise.reject(new Error("Engine quarantined after timeout — waiting for reinitialization"));
+  }
   let release;
   const next = new Promise(r => { release = r; });
   const prev = inferenceLock;
   inferenceLock = next;
   return prev.then(() => {
+    // Double-check quarantine inside the lock (race window closed)
+    if (quarantined) {
+      release();
+      return Promise.reject(new Error("Engine quarantined after timeout — waiting for reinitialization"));
+    }
     let result;
     try {
       result = fn();
@@ -123,12 +135,16 @@ function withLock(fn) {
       release(); // Release lock on synchronous throw to prevent deadlock
       throw syncErr;
     }
-    // Timeout: release lock immediately on timeout, don't wait for inference to finish.
+    // Timeout: release lock immediately on timeout and quarantine the engine.
     // The inference may still be running in transformers.js but that is unavoidable —
-    // we cannot wait indefinitely for a hung inference to complete.
+    // we cannot wait indefinitely for a hung inference to complete.  New calls
+    // are rejected until the engine is reinitialized.
     let _inferenceTimer;
     const timeout = new Promise((_, reject) => {
-      _inferenceTimer = setTimeout(() => reject(new Error("Inference timeout")), 60000);
+      _inferenceTimer = setTimeout(() => {
+        quarantined = true;
+        reject(new Error("Inference timeout"));
+      }, 60000);
     });
     return Promise.race([result, timeout])
       .then(val => { clearTimeout(_inferenceTimer); release(); return val; })
@@ -281,6 +297,7 @@ export async function initEmbeddingEngine() {
       clearTimeout(loadTimeoutId); // Clear timeout timer after successful load
       modelReady = true;
         loadError = null;
+        quarantined = false; // Clear quarantine on successful load
         LOG_DEBUG && console.log(`Brain-1 ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
         return;
       } catch (err) {
@@ -301,11 +318,15 @@ export async function initEmbeddingEngine() {
 }
 
 export function isEmbeddingReady() {
-  return modelReady;
+  return modelReady && !quarantined;
 }
 
 export function getEmbeddingError() {
-  return loadError;
+  return quarantined ? new Error("Engine quarantined after timeout") : loadError;
+}
+
+export function clearQuarantine() {
+  quarantined = false;
 }
 
 function normalize(v) {

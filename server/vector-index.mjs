@@ -40,7 +40,8 @@ export function isVecReady() {
   return vecTableReady;
 }
 
-// Insert embedding into vec0 table — must call after storing in memories table
+// Insert embedding into vec0 table — must call after storing in memories table.
+// SILENT mode: swallows all errors. Use insertVecStrict for transactional contexts.
 export function insertVec(db, memoryId, embeddingArray) {
   if (!vecTableReady || !embeddingArray) return;
   try {
@@ -49,6 +50,14 @@ export function insertVec(db, memoryId, embeddingArray) {
   } catch (err) {
     LOG_DEBUG && console.error('[VectorIndex] insertVec failed:', err.message);
   }
+}
+
+// STRICT mode: errors propagate. Use inside a db.transaction() so failures
+// cause automatic rollback of the enclosing memory-store transaction.
+export function insertVecStrict(db, memoryId, embeddingArray) {
+  if (!vecTableReady || !embeddingArray) return;
+  const vec = new Float32Array(embeddingArray.slice(0, EMBED_DIM));
+  db.prepare('INSERT OR REPLACE INTO memory_vecs(rowid, embedding) VALUES (?, ?)').run(memoryId, vec);
 }
 
 // Batch insert embeddings — call after storeMemories

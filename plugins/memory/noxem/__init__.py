@@ -300,10 +300,12 @@ class NoxemMemoryProvider:
                 if result.get("stored", 0) is not None:
                     flushed += 1
             except Exception:
-                # Re-queue only the items that were NOT yet successfully flushed
+                # Re-queue only the items that were NOT yet successfully flushed.
+                # Use appendleft + reversed to preserve FIFO: oldest failed items
+                # land at the front, ahead of any newer concurrent arrivals.
                 with self._queue_lock:
-                    for item in items[i:]:
-                        self._pending_queue.append(item)
+                    for item in reversed(items[i:]):
+                        self._pending_queue.appendleft(item)
                     break
 
         if flushed > 0:
