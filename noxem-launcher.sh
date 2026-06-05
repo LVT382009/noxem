@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Noxem Launcher — starts both servers, runs Hermes, cleans up on exit.
 set -euo pipefail
 
@@ -638,9 +638,10 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
         done
       fi
       dim " Starting QwenProxy server..."
-      (cd "$QWENPROXY_DIR" && npm start >/dev/null 2>&1) &
+      (cd "$QWENPROXY_DIR" && npm start 2>&1 | while IFS= read -r _line; do dim "  [QwenProxy] $_line"; done) &
       QWENPROXY_PID=$!
-      wait_for_port $QWENPROXY_PORT "QwenProxy" 120
+      dim "  (QwenProxy must complete browser login before serving — this takes 30-90s)"
+wait_for_port $QWENPROXY_PORT "QwenProxy" 180
 
       # Start the LLM adapter in QwenProxy mode
       dim " Starting LLM adapter (QwenProxy mode)..."
