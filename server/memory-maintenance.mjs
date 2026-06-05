@@ -161,7 +161,7 @@ export async function runMaintenance() {
     // ── v2.1 Module Maintenance ────────────────────
   try {
     // Stale embedding detection + re-embed
-    const staleResult = deltaProcessor.runStaleEmbeddingMaintenance(db, embed);
+    const staleResult = await deltaProcessor.runStaleEmbeddingMaintenance({ db, embedFn: embed });
     if (LOG_DEBUG && staleResult.reembedded > 0) console.log(`[Maintenance] Re-embedded ${staleResult.reembedded} stale memories`);
   } catch (e) {
     if (LOG_DEBUG) console.error('[Maintenance] Stale embedding scan failed:', e.message);
