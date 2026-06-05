@@ -300,12 +300,10 @@ class NoxemMemoryProvider:
                 if result.get("stored", 0) is not None:
                     flushed += 1
             except Exception:
-                # Re-queue remaining items on failure
+                # Re-queue only the items that were NOT yet successfully flushed
                 with self._queue_lock:
-                    self._pending_queue.appendleft(data)
-                    remaining_start = i + 1
-                    for remaining in items[remaining_start:]:
-                        self._pending_queue.append(remaining)
+                    for item in items[i:]:
+                        self._pending_queue.append(item)
                     break
 
         if flushed > 0:

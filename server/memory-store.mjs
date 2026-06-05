@@ -161,6 +161,23 @@ const insertTx = db.transaction((items) => {
   return ids;
 });
 
+// Combined transaction: SQLite insert + vector insert, atomic on both or neither
+const insertWithVecTx = db.transaction((items) => {
+  const ids = [];
+  for (const m of items) {
+    const r = insert.run(m);
+    const id = r.lastInsertRowid;
+    ids.push(id);
+    if (m.embedding) {
+      try {
+        const vec = bufferToFloat32(m.embedding);
+        insertVec(db, id, vec);
+      } catch (e) { LOG_DEBUG && console.error('[StoreMemories] Vec insert failed for', id, e.message); }
+    }
+  }
+  return ids;
+});
+
 const updateStatus = db.prepare(
   `UPDATE memories SET status = @status, superseded_by = @superseded_by, updated_at = datetime('now') WHERE id = @id`
 );
@@ -307,27 +324,26 @@ function ensureEmbeddingBuffer(embedding) {
 
 export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null }) {
   embedding = ensureEmbeddingBuffer(embedding);
-  const result = insert.run({
-    session_id: session_id || '',
-    type: type || 'general',
-    text: text,
-    embedding: embedding,
-    metadata: JSON.stringify(metadata),
-    importance,
-    context_prefix,
-    entity,
-    attribute,
-    valid_from: valid_from || new Date().toISOString(),
-  });
-  const id = result.lastInsertRowid;
-  // Update vector index if embedding provided
-  if (embedding) {
-    try {
-      const vec = bufferToFloat32(embedding);
-      insertVec(db, id, vec);
-    } catch (e) { LOG_DEBUG && console.error('[StoreMemory] Vec insert failed:', e.message); }
-  }
-  return id;
+  const result = db.transaction(() => {
+    const r = insert.run({
+      session_id: session_id || '',
+      type: type || 'general',
+      text: text,
+      embedding: embedding,
+      metadata: JSON.stringify(metadata),
+      importance,
+      context_prefix,
+      entity,
+      attribute,
+      valid_from: valid_from || new Date().toISOString(),
+    });
+    const id = r.lastInsertRowid;
+    if (embedding) {
+      try { insertVec(db, id, bufferToFloat32(embedding)); } catch (e) { LOG_DEBUG && console.error('[StoreMemory] Vec insert failed:', e.message); }
+    }
+    return id;
+  })();
+  return result;
 }
 
 export function storeMemories(items) {
@@ -344,15 +360,7 @@ export function storeMemories(items) {
     attribute: m.attribute || '',
     valid_from: m.valid_from || now,
   }));
-  const ids = insertTx(prepared);
-  // Update vector index for batch
-  if (isVecReady()) {
-    for (let i = 0; i < ids.length; i++) {
-      if (prepared[i].embedding) {
-        try { insertVec(db, ids[i], bufferToFloat32(prepared[i].embedding)); } catch (e) { LOG_DEBUG && console.error('[StoreMemories] Vec insert failed for', ids[i], e.message); }
-      }
-    }
-  }
+  const ids = insertWithVecTx(prepared);
   return ids;
 }
 
