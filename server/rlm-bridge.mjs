@@ -36,6 +36,28 @@ const MAX_FAILURES = 5;
 let circuitOpenUntil = 0;
 let halfOpenProbe = false; // Prevents thundering herd in half-open state
 
+// LLM reachability cache — avoid spawning sidecar when LLM is down
+let _llmReachable = null;
+let _llmCheckAt = 0;
+const LLM_CHECK_INTERVAL = 30_000; // Re-check every 30s
+
+async function isLlmReachable() {
+  const now = Date.now();
+  if (_llmReachable !== null && now - _llmCheckAt < LLM_CHECK_INTERVAL) return _llmReachable;
+  _llmCheckAt = now;
+  try {
+    const base = _CONFIG_URL.replace(/\/v1\/chat\/completions\/?$/i, '').replace(/\/v1\/?$/i, '');
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 3000);
+    const res = await fetch(`${base}/v1/models`, { signal: ctrl.signal });
+    clearTimeout(tid);
+    _llmReachable = res.ok;
+  } catch {
+    _llmReachable = false;
+  }
+  return _llmReachable;
+}
+
 // Child process state
 let childProc = null;
 let readline = null;
@@ -91,11 +113,13 @@ function ensureProcess() {
         if (resp.status === 'ok' || resp.status === 'degraded') {
           consecutiveFailures = 0;
           halfOpenProbe = false;
+        _llmReachable = true;
         } else if (resp.status === 'error') {
           consecutiveFailures++;
           if (consecutiveFailures >= MAX_FAILURES) {
             circuitOpenUntil = Date.now() + 60_000;
             halfOpenProbe = false;
+          _llmReachable = false;
           }
         }
         const id = resp._reqId;
@@ -178,6 +202,11 @@ export async function callRLM({ task, context, timeout = RLM_TIMEOUT_MS }) {
 
   if (!isCircuitClosed()) {
     return Promise.reject(new Error('RLM circuit breaker open'));
+  }
+
+  // Skip sidecar entirely when LLM endpoint is unreachable
+  if (!(await isLlmReachable())) {
+    return Promise.reject(new Error('LLM endpoint unreachable'));
   }
 
   ensureProcess();

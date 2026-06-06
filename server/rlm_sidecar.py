@@ -101,15 +101,26 @@ async def call_llm(url, model, messages, max_tokens=512, temperature=0.1, timeou
     return content, tokens
 
 
+_last_llm_error = [None]  # Track last error to suppress repeats
+
 async def call_llm_safe(url, model, messages, max_tokens=512, temperature=0.1, timeout=None, api_key=""):
     """Call LLM, return empty string on error instead of raising."""
     if timeout is None:
         timeout = _llm_timeout[0]
     try:
         content, tokens = await call_llm(url, model, messages, max_tokens, temperature, timeout, api_key)
+        _last_llm_error[0] = None
         return content, tokens
     except Exception as e:
-        print(f"[RLM] LLM call failed: {e}", file=sys.stderr)
+        err_msg = str(e)
+        # Suppress repeated identical errors (e.g. Connection refused on every sub-call)
+        if _last_llm_error[0] != err_msg:
+            _last_llm_error[0] = err_msg
+            # Short format for connection errors — no full traceback noise
+            if 'Connection refused' in err_msg or 'ConnectError' in err_msg:
+                print(f"[RLM] LLM unreachable: {url.split('//')[-1].split('/')[0]}", file=sys.stderr)
+            else:
+                print(f"[RLM] LLM call failed: {e}", file=sys.stderr)
         return "", 0
 
 
