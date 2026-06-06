@@ -19,7 +19,7 @@ let _db, _llmFetch;
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
-const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
+const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || '';
 const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || '';
 
 

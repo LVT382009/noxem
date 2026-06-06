@@ -68,7 +68,7 @@ class NoxemMemoryProvider:
         self._hermes_home = kwargs.get("hermes_home", os.environ.get("HERMES_HOME", "~/.hermes"))
         self._hermes_home = str(Path(self._hermes_home).expanduser())  # P-#27
         self._server_url = os.environ.get("NOXEM_SERVER", MEMORY_SERVER_DEFAULT)
-        self._llm_url = os.environ.get("LLM_URL", os.environ.get("GEMMA_URL", "http://127.0.0.1:8000/v1/chat/completions"))
+        self._llm_url = os.environ.get("LLM_URL", os.environ.get("GEMMA_URL", ""))
         self._sync_thread = None
         self._server_start_thread = None
         self._server_reachable = threading.Event()  # P-#19

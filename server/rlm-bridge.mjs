@@ -42,6 +42,7 @@ let _llmCheckAt = 0;
 const LLM_CHECK_INTERVAL = 30_000; // Re-check every 30s
 
 async function isLlmReachable() {
+  if (!_CONFIG_URL) { _llmReachable = false; return false; }
   const now = Date.now();
   if (_llmReachable !== null && now - _llmCheckAt < LLM_CHECK_INTERVAL) return _llmReachable;
   _llmCheckAt = now;
