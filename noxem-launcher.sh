@@ -414,6 +414,30 @@ wait_for_port() {
 
 # ── Start servers ──
 cd "$NOXEM_DIR"
+# ── Kill stale processes from previous session ──
+kill_stale_port() {
+  local port=$1
+  if check_port "$port"; then
+    dim "  Port $port in use — killing stale process..."
+    fuser -k "$port"/tcp 2>/dev/null || true
+    local _kw=0
+    while check_port "$port" && [ $_kw -lt 10 ]; do
+      fuser -k "$port"/tcp 2>/dev/null || true
+      sleep 1
+      _kw=$((_kw + 1))
+    done
+    if check_port "$port"; then
+      red "  Port $port still occupied after 10s — another app may be using it"
+    fi
+  fi
+}
+
+kill_stale_port $MEMORY_PORT
+kill_stale_port ${TURBOVEC_PORT:-3003}
+kill_stale_port $LLM_PORT
+kill_stale_port $QWENPROXY_PORT
+
+
 
 # Read saved config first (env vars/cli flags take precedence)
 read_noxem_config
@@ -624,19 +648,7 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
       BRAIN2_ENABLED=0
       export BRAIN2_ENABLED
     else
-      # Start QwenProxy server (it auto-logs in with credentials from .env)
-      # Kill any leftover process on QwenProxy port from a previous session
-      if check_port $QWENPROXY_PORT; then
-        dim " Port $QWENPROXY_PORT in use -- killing existing process..."
-        fuser -k $QWENPROXY_PORT/tcp 2>/dev/null || true
-        # Wait for port to actually free up
-        _kill_wait=0
-        while check_port $QWENPROXY_PORT && [ $_kill_wait -lt 15 ]; do
-          fuser -k $QWENPROXY_PORT/tcp 2>/dev/null || true
-          sleep 1
-          _kill_wait=$((_kill_wait + 1))
-        done
-      fi
+# Start QwenProxy server (port already cleaned up above)
       dim " Starting QwenProxy server..."
       (cd "$QWENPROXY_DIR" && npm start 2>&1 | while IFS= read -r _line; do dim "  [QwenProxy] $_line"; done) &
       QWENPROXY_PID=$!
