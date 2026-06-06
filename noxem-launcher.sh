@@ -39,7 +39,7 @@ QWENPROXY_PORT=${QWENPROXY_PORT:-3000}
 # QwenProxy dir — override with QWENPROXY_DIR env var
 MEMORY_SERVER="$NOXEM_DIR/server/memory-server.mjs"
 ADAPTER_SERVER="$NOXEM_DIR/server/qwenproxy-adapter.mjs"
-QWENPROXY_DIR="${QWENPROXY_DIR:-${HOME}/qwen-proxy}"
+QWENPROXY_DIR="${QWENPROXY_DIR:-$NOXEM_DIR/qwen-proxy}"
 QWENPROXY_ENV="$QWENPROXY_DIR/.env"
 NOXEM_CONFIG="${HOME}/.hermes/noxem.json"
 MEMORY_PID=""

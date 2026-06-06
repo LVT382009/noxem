@@ -1,0 +1,64 @@
+================================================================================
+QWEN-PROXY 30-MINUTE ENDURANCE TEST — FINAL REPORT
+================================================================================
+Duration: 30.2 minutes
+Total turns: 119
+
+--- SUCCESS RATE ---
+Total requests: 119
+Success: 119 (100.0%)
+Failed: 0 (0.0%)
+
+--- TOOL CALLING ---
+Requests with tools: 85
+Tool calls correct: 148
+Tool calls wrong: 1
+Tool accuracy: 99.3%
+
+--- CONTEXT RETENTION ---
+Context probes: 34
+Context retained: 0
+Context lost: 34
+Retention rate: 0.0%
+
+--- LATENCY ---
+Average: 4903ms
+P50: 4387ms | P90: 7792ms | P99: 12966ms | Max: 13787ms
+
+--- PER-MINUTE BREAKDOWN ---
+  15:09: 3 reqs, 3 ok, 0 fail, 3 tools, 4 tools-ok
+  15:10: 4 reqs, 4 ok, 0 fail, 3 tools, 6 tools-ok
+  15:11: 5 reqs, 5 ok, 0 fail, 5 tools, 7 tools-ok
+  15:12: 3 reqs, 3 ok, 0 fail, 2 tools, 4 tools-ok
+  15:13: 4 reqs, 4 ok, 0 fail, 3 tools, 8 tools-ok
+  15:14: 4 reqs, 4 ok, 0 fail, 2 tools, 3 tools-ok
+  15:15: 4 reqs, 4 ok, 0 fail, 3 tools, 5 tools-ok
+  15:16: 4 reqs, 4 ok, 0 fail, 2 tools, 3 tools-ok
+  15:17: 4 reqs, 4 ok, 0 fail, 4 tools, 8 tools-ok
+  15:18: 4 reqs, 4 ok, 0 fail, 3 tools, 3 tools-ok
+  15:19: 4 reqs, 4 ok, 0 fail, 2 tools, 5 tools-ok
+  15:20: 4 reqs, 4 ok, 0 fail, 3 tools, 4 tools-ok
+  15:21: 4 reqs, 4 ok, 0 fail, 2 tools, 5 tools-ok
+  15:22: 4 reqs, 4 ok, 0 fail, 4 tools, 6 tools-ok
+  15:23: 3 reqs, 3 ok, 0 fail, 1 tools, 2 tools-ok
+  15:24: 3 reqs, 3 ok, 0 fail, 2 tools, 3 tools-ok
+  15:25: 4 reqs, 4 ok, 0 fail, 3 tools, 6 tools-ok
+  15:26: 4 reqs, 4 ok, 0 fail, 3 tools, 3 tools-ok
+  15:27: 5 reqs, 5 ok, 0 fail, 4 tools, 10 tools-ok
+  15:28: 4 reqs, 4 ok, 0 fail, 2 tools, 4 tools-ok
+  15:29: 4 reqs, 4 ok, 0 fail, 3 tools, 4 tools-ok
+  15:30: 4 reqs, 4 ok, 0 fail, 2 tools, 4 tools-ok
+  15:31: 4 reqs, 4 ok, 0 fail, 4 tools, 5 tools-ok
+  15:32: 4 reqs, 4 ok, 0 fail, 2 tools, 5 tools-ok
+  15:33: 4 reqs, 4 ok, 0 fail, 3 tools, 3 tools-ok
+  15:34: 5 reqs, 5 ok, 0 fail, 3 tools, 7 tools-ok
+  15:35: 3 reqs, 3 ok, 0 fail, 2 tools, 2 tools-ok
+  15:36: 4 reqs, 4 ok, 0 fail, 4 tools, 7 tools-ok
+  15:37: 3 reqs, 3 ok, 0 fail, 1 tools, 1 tools-ok
+  15:38: 4 reqs, 4 ok, 0 fail, 3 tools, 9 tools-ok
+  15:39: 2 reqs, 2 ok, 0 fail, 2 tools, 2 tools-ok
+
+--- ERRORS ---
+No errors!
+
+================================================================================
