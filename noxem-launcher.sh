@@ -650,9 +650,10 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
     else
 # Start QwenProxy server (port already cleaned up above)
       dim " Starting QwenProxy server..."
-      (cd "$QWENPROXY_DIR" && npm start 2>&1 | while IFS= read -r _line; do dim "  [QwenProxy] $_line"; done) &
+      mkdir -p "$HOME/.hermes" && (cd "$QWENPROXY_DIR" && npm start >"$HOME/.hermes/qwenproxy.log" 2>&1) &
       QWENPROXY_PID=$!
       dim "  (QwenProxy must complete browser login before serving — this takes 30-90s)"
+dim "  Logs: tail -f ~/.hermes/qwenproxy.log"
 wait_for_port $QWENPROXY_PORT "QwenProxy" 180
 
       # Start the LLM adapter in QwenProxy mode
