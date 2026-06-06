@@ -23,5 +23,5 @@ export function baseLlmUrl() {
   return _url.replace(/\/v1\/chat\/completions\/?$/i, '').replace(/\/v1\/?$/i, '');
 }
 
-/** Maximum prompt body size in bytes (QwenProxy limit ≈ 200 KB). */
-export const MAX_PROMPT_BYTES = parseInt(process.env.MAX_PROMPT_BYTES || '200000');
+/** Maximum prompt body size in bytes (Qwen3.6 has 1M token context — 2MB is safe). */
+export const MAX_PROMPT_BYTES = parseInt(process.env.MAX_PROMPT_BYTES || '2000000');

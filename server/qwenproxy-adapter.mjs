@@ -319,14 +319,23 @@ const server = createServer(async (req, res) => {
         const bodySize = Buffer.byteLength(JSON.stringify(reqObj.messages || []), 'utf8');
         let proxyBody;
         if (bodySize > FILE_ATTACH_THRESHOLD && reqObj.messages?.length > 2) {
-          const systemMsgs = reqObj.messages.filter(m => m.role === 'system');
-          const convoMsgs = reqObj.messages.filter(m => m.role !== 'system');
-          const convoText = convoMsgs.map(m => m.role.toUpperCase() + ': ' + (m.content || '')).join('\n\n');
-          const uploadResult = await uploadConversationAsFile(convoText);
+          // Build the full file content: system prompts + conversation
+          const systemPart = reqObj.messages
+            .filter(m => m.role === 'system')
+            .map(m => 'SYSTEM: ' + (m.content || ''))
+            .join('\n\n');
+          const convoPart = reqObj.messages
+            .filter(m => m.role !== 'system')
+            .map(m => m.role.toUpperCase() + ': ' + (m.content || ''))
+            .join('\n\n');
+          const fileText = systemPart
+            ? systemPart + '\n\n=== CONVERSATION ===\n\n' + convoPart
+            : convoPart;
+          const uploadResult = await uploadConversationAsFile(fileText);
           if (uploadResult?.id) {
-            const refMsg = { role: 'user', content: 'I have attached a file containing the full conversation. Please read it and refer to it for context.' };
-            proxyBody = { ...reqObj, model, stream: true, messages: [...systemMsgs, refMsg], file_ids: [uploadResult.id] };
-            LOG_DEBUG && console.error(`[llm-adapter] Conversation attached as file (id=${uploadResult.id}, ${Math.round(convoText.length / 1024)}KB)`);
+            const refMsg = { role: 'user', content: 'I have attached a file containing the system instructions and full conversation. Please read the attached file for context, then respond to my request.' };
+            proxyBody = { ...reqObj, model, stream: true, messages: [refMsg], file_ids: [uploadResult.id] };
+            LOG_DEBUG && console.error(`[llm-adapter] Conversation attached as file (id=${uploadResult.id}, ${Math.round(fileText.length / 1024)}KB)`);
           } else {
             proxyBody = { ...reqObj, model, stream: true };
           }
