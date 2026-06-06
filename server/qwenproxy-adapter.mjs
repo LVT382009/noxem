@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * LLM Adapter â€” universal OpenAI-compatible API proxy.
+ * LLM Adapter — universal OpenAI-compatible API proxy.
  *
  * Supports two Brain 2 provider modes:
- * 1. **qwenproxy** â€” Proxies through QwenProxy (chat.qwen.ai scraper).
+ * 1. **qwenproxy** — Proxies through QwenProxy (chat.qwen.ai scraper).
  *    QwenProxy only supports SSE streaming, so the adapter collects SSE
  *    for non-streaming requests and normalizes model names.
- * 2. **local** â€” Passes through directly to any OpenAI-compatible endpoint
- *    (Ollama, LM Studio, llama.cpp, etc.). No SSE buffering needed â€”
+ *    When conversation payload exceeds FILE_ATTACH_THRESHOLD, it auto-uploads
+ *    the conversation as a .txt file attachment to bypass prompt size limits.
+ * 2. **local** — Passes through directly to any OpenAI-compatible endpoint
+ *    (Ollama, LM Studio, llama.cpp, etc.). No SSE buffering needed —
  *    local endpoints natively support both streaming and non-streaming.
  *
  * OpenAI-compatible base URL: http://127.0.0.1:{ADAPTER_PORT}/v1
@@ -24,8 +26,7 @@ const DEFAULT_MODEL = _CONFIG_MODEL;
 const LLM_API_KEY = _CONFIG_API_KEY;
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
-// â”€â”€ Model normalization (QwenProxy only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// QwenProxy only accepts "qwen3.6-plus" or "qwen3.6-plus-no-thinking"
+// ── Model normalization (QwenProxy only) ──────────────────
 function normalizeModel(requestedModel) {
   if (!requestedModel) return DEFAULT_MODEL;
   const m = requestedModel.toLowerCase();
@@ -33,8 +34,7 @@ function normalizeModel(requestedModel) {
   return 'qwen3.6-plus-no-thinking';
 }
 
-// â”€â”€ Build upstream headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// BUG-22: Sanitize error text to prevent API key leaks
+// ── Build upstream headers ────────────────────────────────
 function sanitizeErrorText(text) {
   return text.replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]');
 }
@@ -45,67 +45,66 @@ function upstreamHeaders() {
   return h;
 }
 
-// â”€â”€ SSE collection (for QwenProxy non-streaming mode) â”€â”€â”€â”€â”€â”€â”€â”€
+// ── SSE collection (for QwenProxy non-streaming mode) ─────
 
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 2000;
 
 async function collectSSE(url, bodyObj, timeoutMs = 60000) {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: upstreamHeaders(),
-    body: JSON.stringify(bodyObj),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: upstreamHeaders(),
+      body: JSON.stringify(bodyObj),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    if ((res.status === 429 || res.status === 502) && attempt < MAX_RETRIES) {
-      const delay = RETRY_BASE_MS * Math.pow(2, attempt);
-      console.error(`[Adapter] ${res.status} â€” retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
-      await new Promise(r => setTimeout(r, delay));
-      continue;
-    }
-    throw new Error(`QwenProxy returned ${res.status}: ${sanitizeErrorText(text.substring(0, 500))}`);
-  }
-
-  let content = '';
-  let reasoning = '';
-  let model = DEFAULT_MODEL;
-  let finishReason = 'stop';
-  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-
-  const text = await res.text();
-  for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed === 'data: [DONE]') continue;
-    if (!trimmed.startsWith('data: ')) continue;
-
-    try {
-      let value = trimmed.slice(5); // strip "data:"
-  if (value.startsWith(' ')) value = value.slice(1); // strip optional space per WHATWG
-  const chunk = JSON.parse(value);
-      const delta = chunk.choices?.[0]?.delta;
-      if (delta) {
-        if (delta.content) content += delta.content;
-        // Handle both QwenProxy (reasoning_content) and Ollama (thinking) fields
-        if (delta.reasoning_content) reasoning += delta.reasoning_content;
-        if (delta.thinking) reasoning += delta.thinking;
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      if ((res.status === 429 || res.status === 502) && attempt < MAX_RETRIES) {
+        const delay = RETRY_BASE_MS * Math.pow(2, attempt);
+        console.error(`[Adapter] ${res.status} — retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
       }
-      if (chunk.model) model = chunk.model;
-      if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
-      if (chunk.usage) usage = chunk.usage;
-    } catch { /* skip malformed lines */ }
+      throw new Error(`QwenProxy returned ${res.status}: ${sanitizeErrorText(text.substring(0, 500))}`);
+    }
+
+    let content = '';
+    let reasoning = '';
+    let model = DEFAULT_MODEL;
+    let finishReason = 'stop';
+    let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+    const text = await res.text();
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === 'data: [DONE]') continue;
+      if (!trimmed.startsWith('data: ')) continue;
+
+      try {
+        let value = trimmed.slice(5);
+        if (value.startsWith(' ')) value = value.slice(1);
+        const chunk = JSON.parse(value);
+        const delta = chunk.choices?.[0]?.delta;
+        if (delta) {
+          if (delta.content) content += delta.content;
+          if (delta.reasoning_content) reasoning += delta.reasoning_content;
+          if (delta.thinking) reasoning += delta.thinking;
+        }
+        if (chunk.model) model = chunk.model;
+        if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+        if (chunk.usage) usage = chunk.usage;
+      } catch { /* skip malformed lines */ }
+    }
+
+    if (!content && reasoning) { content = reasoning; reasoning = ''; }
+
+    return { content, reasoning, model, finishReason, usage };
   }
-
-  if (!content && reasoning) { content = reasoning; reasoning = ''; }
-
-  return { content, reasoning, model, finishReason, usage };
-  } // end retry loop
 }
 
-// â”€â”€ SSE streaming passthrough â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── SSE streaming passthrough ──────────────────────────────
 
 async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 120000) {
   const upstream = await fetch(upstreamUrl, {
@@ -116,7 +115,6 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
   });
 
   if (!upstream.ok) {
-    // BUG-21: Cancel the body after reading a small prefix for error message
     let errText = '';
     try {
       const reader = upstream.body?.getReader();
@@ -153,9 +151,38 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
   }
 }
 
-// â”€â”€ Read request body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── File upload for large conversations ──────────────────
 
-const MAX_REQUEST_BODY_SIZE = 1_048_576; // 1 MiB — BUG-18: prevent OOM from oversized request bodies
+const MAX_REQUEST_BODY_SIZE = 1_048_576; // 1 MiB
+const FILE_ATTACH_THRESHOLD = 100_000; // Upload as file when messages > 100KB
+
+async function uploadConversationAsFile(messagesText) {
+  const filename = `conversation-${Date.now()}.txt`;
+  const boundary = `----FormBoundary${Math.random().toString(36).slice(2)}`;
+  const CRLF = '\r\n';
+  const header = `--${boundary}${CRLF}Content-Disposition: form-data; name="file"; filename="${filename}"${CRLF}Content-Type: text/plain${CRLF}${CRLF}`;
+  const footer = `${CRLF}--${boundary}--${CRLF}`;
+  const payload = Buffer.concat([
+    Buffer.from(header, 'utf8'),
+    Buffer.from(messagesText, 'utf8'),
+    Buffer.from(footer, 'utf8'),
+  ]);
+  const uploadUrl = `${QWENPROXY_URL}/v1/files/upload`;
+  const hdrs = { 'Content-Type': `multipart/form-data; boundary=${boundary}` };
+  if (LLM_API_KEY) hdrs['Authorization'] = `Bearer ${LLM_API_KEY}`;
+  try {
+    const res = await fetch(uploadUrl, { method: 'POST', headers: hdrs, body: payload, signal: AbortSignal.timeout(30000) });
+    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+    const json = await res.json();
+    LOG_DEBUG && console.error(`[llm-adapter] File uploaded: id=${json.id} name=${json.name} size=${json.size}`);
+    return json;
+  } catch (err) {
+    LOG_DEBUG && console.error(`[llm-adapter] File upload failed: ${err.message}`);
+    return null;
+  }
+}
+
+// ── Read request body ──────────────────────────────────────
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -173,21 +200,19 @@ function readBody(req) {
   });
 }
 
-// â”€â”€ Determine upstream URL based on provider mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Determine upstream URL based on provider mode ──────────
 
 function getUpstreamUrl(path) {
   if (BRAIN2_PROVIDER === 'local' && LOCAL_LLM_URL) {
-    // For local mode, strip /v1 prefix from LOCAL_LLM_URL if present, since path already includes it
     const base = LOCAL_LLM_URL.replace(/\/v1\/?$|\/v1\/chat\/completions\/?$/i, '');
     return `${base}${path}`;
   }
   return `${QWENPROXY_URL}${path}`;
 }
 
-// â”€â”€ HTTP server â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── HTTP server ────────────────────────────────────────────
 
 const server = createServer(async (req, res) => {
-  // BUG-17: CORS — restrict to localhost origins only (local proxy, not public API)
   const origin = req.headers.origin;
   const allowedOrigins = ['http://127.0.0.1', 'http://localhost', 'http://127.0.0.1:' + ADAPTER_PORT, 'http://localhost:' + ADAPTER_PORT];
   if (origin && allowedOrigins.some(o => origin.startsWith(o))) {
@@ -233,15 +258,14 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(data));
     } catch {
-      // Fallback model list
       const models = BRAIN2_PROVIDER === 'qwenproxy'
         ? [
-            { id: 'qwen3.6-plus', object: 'model', created: Date.now(), owned_by: 'qwen' },
-            { id: 'qwen3.6-plus-no-thinking', object: 'model', created: Date.now(), owned_by: 'qwen' },
-          ]
+          { id: 'qwen3.6-plus', object: 'model', created: Date.now(), owned_by: 'qwen' },
+          { id: 'qwen3.6-plus-no-thinking', object: 'model', created: Date.now(), owned_by: 'qwen' },
+        ]
         : [
-            { id: DEFAULT_MODEL, object: 'model', created: Date.now(), owned_by: 'local' },
-          ];
+          { id: DEFAULT_MODEL, object: 'model', created: Date.now(), owned_by: 'local' },
+        ];
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ object: 'list', data: models }));
     }
@@ -264,9 +288,7 @@ const server = createServer(async (req, res) => {
 
     try {
       if (BRAIN2_PROVIDER === 'local' && LOCAL_LLM_URL) {
-        // â”€â”€ Local mode: pass through directly â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        // Local endpoints (Ollama, LM Studio, llama.cpp) natively
-        // support both streaming and non-streaming. No SSE buffering needed.
+        // ── Local mode: pass through directly ──────────
         const upstreamUrl = LOCAL_LLM_URL.includes('/v1/chat/completions')
           ? LOCAL_LLM_URL
           : `${LOCAL_LLM_URL.replace(/\/+$/, '')}/v1/chat/completions`;
@@ -274,7 +296,6 @@ const server = createServer(async (req, res) => {
         if (wantStream) {
           return await streamSSE(upstreamUrl, reqObj, res, upstreamHeaders(), timeoutMs);
         } else {
-          // Non-streaming: forward directly, get JSON back
           const upstreamRes = await fetch(upstreamUrl, {
             method: 'POST',
             headers: upstreamHeaders(),
@@ -291,11 +312,27 @@ const server = createServer(async (req, res) => {
           return res.end(JSON.stringify(await upstreamRes.json()));
         }
       } else {
-        // â”€â”€ QwenProxy mode: SSE bridge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        // QwenProxy only supports streaming. For non-streaming requests,
-        // we buffer SSE and return a single JSON response.
+        // ── QwenProxy mode: SSE bridge ─────────────────
         const model = normalizeModel(reqObj.model);
-        const proxyBody = { ...reqObj, model, stream: true };
+
+        // Auto-attach large conversations as files to bypass prompt size limits
+        const bodySize = Buffer.byteLength(JSON.stringify(reqObj.messages || []), 'utf8');
+        let proxyBody;
+        if (bodySize > FILE_ATTACH_THRESHOLD && reqObj.messages?.length > 2) {
+          const systemMsgs = reqObj.messages.filter(m => m.role === 'system');
+          const convoMsgs = reqObj.messages.filter(m => m.role !== 'system');
+          const convoText = convoMsgs.map(m => m.role.toUpperCase() + ': ' + (m.content || '')).join('\n\n');
+          const uploadResult = await uploadConversationAsFile(convoText);
+          if (uploadResult?.id) {
+            const refMsg = { role: 'user', content: 'I have attached a file containing the full conversation. Please read it and refer to it for context.' };
+            proxyBody = { ...reqObj, model, stream: true, messages: [...systemMsgs, refMsg], file_ids: [uploadResult.id] };
+            LOG_DEBUG && console.error(`[llm-adapter] Conversation attached as file (id=${uploadResult.id}, ${Math.round(convoText.length / 1024)}KB)`);
+          } else {
+            proxyBody = { ...reqObj, model, stream: true };
+          }
+        } else {
+          proxyBody = { ...reqObj, model, stream: true };
+        }
         const upstreamUrl = `${QWENPROXY_URL}/v1/chat/completions`;
 
         if (wantStream) {
@@ -323,11 +360,11 @@ const server = createServer(async (req, res) => {
         }
       }
     } catch (err) {
- LOG_DEBUG && console.error(`[llm-adapter] Error: ${err.message}`);
- res.writeHead(502, { 'Content-Type': 'application/json' });
- return res.end(JSON.stringify({ error: { message: `LLM unavailable: ${err.message}`, type: 'upstream_error' } }));
- }
- }
+      LOG_DEBUG && console.error(`[llm-adapter] Error: ${err.message}`);
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: `LLM unavailable: ${err.message}`, type: 'upstream_error' } }));
+    }
+  }
 
   // 404
   res.writeHead(404, { 'Content-Type': 'application/json' });
