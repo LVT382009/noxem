@@ -37,7 +37,7 @@ const geminiKeyVerify = (req, res, next) => {
  * Extract model name from URL parameter (remove :generateContent or :streamGenerateContent suffix)
  */
 function extractModelFromParam(modelParam) {
-  if (!modelParam) return 'qwen3.6-plus'
+  if (!modelParam) return ''
   // The model param comes as "model-name" since Express handles the :method part via route
   return modelParam
 }

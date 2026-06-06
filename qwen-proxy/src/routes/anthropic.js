@@ -60,16 +60,16 @@ function getModelSuffix(model) {
 // Model mapping: only maps Anthropic/Claude model names to Qwen models.
 // Qwen model names pass through directly (with suffix stripped).
 const MODEL_MAPPING = {
-  'claude-opus-4-7': 'qwen3.7-max',
-  'claude-opus-4-5': 'qwen3.7-max',
-  'claude-sonnet-4-6': 'qwen3.7-max',
-  'claude-sonnet-4-5': 'qwen3.7-max',
-  'claude-haiku-4-5': 'qwen3.6-plus',
-  'claude-3-5-sonnet': 'qwen3.6-plus',
-  'claude-3-5-haiku': 'qwen3.6-plus',
-  'claude-3-opus': 'qwen3.7-max',
-  'claude-3-sonnet': 'qwen3.6-plus',
-  'claude-3-haiku': 'qwen3.6-plus',
+  'claude-opus-4-7': '',
+  'claude-opus-4-5': '',
+  'claude-sonnet-4-6': '',
+  'claude-sonnet-4-5': '',
+  'claude-haiku-4-5': '',
+  'claude-3-5-sonnet': '',
+  'claude-3-5-haiku': '',
+  'claude-3-opus': '',
+  'claude-3-sonnet': '',
+  'claude-3-haiku': '',
 }
 
 /**
@@ -315,7 +315,7 @@ return { prompt: result, sysPart, toolsPart, historyParts, historyChars: used }
 const handleAnthropicMessages = async (req, res) => {
   try {
     const anthropicBody = req.body
-    const requestedModel = anthropicBody.model || 'qwen3.6-plus'
+    const requestedModel = anthropicBody.model || ''
     const isStream = anthropicBody.stream || false
 
     // Extract system text BEFORE conversion (will be folded into flat prompt)

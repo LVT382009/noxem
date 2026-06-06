@@ -195,8 +195,8 @@ prompt_local_llm() {
       fi
     fi
   fi
-  read -rp "Model name [${_default_model:-gemma4:e4b}]: " _local_model
-  _local_model="${_local_model:-${_default_model:-gemma4:e4b}}"
+  read -rp "Model name [${_default_model:-}]: " _local_model
+  _local_model="${_local_model:-${_default_model:-}}"
 
   # API key (optional)
   echo ""
@@ -245,10 +245,9 @@ prompt_freellm() {
     echo ""
     echo " Browse available models: https://freetheai.xyz/models/"
     echo " Check model status: https://freetheai.xyz/status/"
-    read -rp "Model ID (e.g. fee/kimi-k2.6): " _freellm_model
+    read -rp "Model ID: " _freellm_model
     if [ -z "$_freellm_model" ]; then
-        _freellm_model="fee/kimi-k2.6"
-        dim " Using default: $_freellm_model"
+        dim "  WARNING: No model specified. Set LLM_MODEL or provide a model ID."
     fi
 
     # Context window
@@ -661,12 +660,12 @@ if [ -z "${LLM_MODEL:-}" ] && [ -t 0 ]; then
   fi
   # Default fallback if model fetch failed or non-interactive
   if [ -z "${LLM_MODEL:-}" ]; then
-    export LLM_MODEL="qwen3-235b-a22b"
-    dim " Using default model: $LLM_MODEL"
+    export LLM_MODEL=""
+    dim " WARNING: No LLM model configured. Choose one during setup or set LLM_MODEL."
   fi
 elif [ -z "${LLM_MODEL:-}" ]; then
-  # Non-interactive: use default
-  export LLM_MODEL="qwen3-235b-a22b"
+  # Non-interactive: require explicit model
+  export LLM_MODEL=""
 fi
 
       # Start the LLM adapter in QwenProxy mode

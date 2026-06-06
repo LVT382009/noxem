@@ -6,14 +6,18 @@
  */
 
 const _url = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-const _model = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3-235b-a22b';
+const _model = process.env.LLM_MODEL || process.env.GEMMA_MODEL || '';
 const _apiKey = process.env.LLM_API_KEY || '';
 
 /** Base LLM endpoint URL (includes /v1/chat/completions path). */
 export const LLM_URL = _url;
 
-/** LLM model identifier. */
+/** LLM model identifier. Must be set via LLM_MODEL or GEMMA_MODEL env var — no silent default. */
 export const LLM_MODEL = _model;
+
+if (!LLM_MODEL) {
+  console.warn('[llm-config] No LLM model configured. Set LLM_MODEL (or GEMMA_MODEL) before starting Brain 2.');
+}
 
 /** LLM API key (may be empty for local endpoints). */
 export const LLM_API_KEY = _apiKey;

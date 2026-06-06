@@ -425,7 +425,7 @@ REM Model name
 echo.
 echo Browse available models: https://freetheai.xyz/models/
 echo Check model status: https://freetheai.xyz/status/
-set _DEFAULT_FREELLM_MODEL=fee/kimi-k2.6
+set _DEFAULT_FREELLM_MODEL=
 set /p _FREELLM_MODEL="Model ID [!_DEFAULT_FREELLM_MODEL!]: "
 if "!_FREELLM_MODEL!"=="" set _FREELLM_MODEL=!_DEFAULT_FREELLM_MODEL!
 
@@ -465,7 +465,7 @@ set /p _LOCAL_URL="Base URL [!_DEFAULT_URL!]: "
 if "!_LOCAL_URL!"=="" set _LOCAL_URL=!_DEFAULT_URL!
 
 REM Model name
-set _DEFAULT_MODEL=gemma4:e4b
+set _DEFAULT_MODEL=
 if defined LLM_MODEL set _DEFAULT_MODEL=!LLM_MODEL!
 set /p _LOCAL_MODEL="Model name [!_DEFAULT_MODEL!]: "
 if "!_LOCAL_MODEL!"=="" set _LOCAL_MODEL=!_DEFAULT_MODEL!

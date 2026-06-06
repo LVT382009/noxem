@@ -557,7 +557,8 @@ class NoxemMemoryProvider:
             {
                 "key": "llm_model_freellm",
                 "description": "Model ID (browse: freetheai.xyz/models)",
-                "default": "fee/kimi-k2.6",
+            # No hardcoded model — user must configure via `hermes memory setup` or LLM_MODEL env var
+            "default": "",
                 "when": {"brain2_provider": "freellm"},
             },
             {
@@ -610,7 +611,10 @@ class NoxemMemoryProvider:
         if values.get("brain2_provider") == "freellm":
             values["llm_url"] = "https://api.freetheai.xyz/v1/chat/completions"
             if not values.get("llm_model"):
-                values["llm_model"] = "fee/kimi-k2.6"
+                # No silent fallback — user must choose a model during `hermes memory setup` or set LLM_MODEL env var
+                values["llm_model"] = "" 
+            if not values["llm_model"]:
+                logger.warning("No LLM model configured for FreeLLM. Run `hermes memory setup` or set LLM_MODEL env var.")
 
         # QwenProxy: clear local-only fields
         if values.get("brain2_provider") == "qwenproxy":
