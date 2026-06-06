@@ -57,8 +57,40 @@ for _arg in "$@"; do
     --qwenproxy) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=qwenproxy; shift ;;
     --local) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=local; shift ;;
       --freellm) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=freellm; shift ;;
+ --update) _UPDATE=1; shift ;;
+ --update=*) _UPDATE=1; _UPDATE_BRANCH="${_arg#--update=}"; shift ;;
   esac
 done
+
+# -- Self-update -------------------------------------------------------
+if [ "${_UPDATE:-0}" = "1" ]; then
+ _BRANCH="${_UPDATE_BRANCH:-main}"
+ echo ""
+ green "Updating Noxem to latest from '${_BRANCH}'..."
+ if ! command -v git &>/dev/null; then
+  echo "Error: git is required for --update." >&2; exit 1
+ fi
+ if [ ! -d "$NOXEM_DIR/.git" ]; then
+  echo "Error: Noxem directory is not a git repo." >&2; exit 1
+ fi
+ cd "$NOXEM_DIR"
+ _OLD_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
+ git fetch origin "$_BRANCH" --quiet 2>/dev/null || { echo "Error: git fetch failed." >&2; exit 1; }
+ git checkout "$_BRANCH" --quiet 2>/dev/null
+ git reset --hard "origin/${_BRANCH}" --quiet 2>/dev/null
+ _NEW_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
+ if [ "$_OLD_HEAD" = "$_NEW_HEAD" ]; then
+  dim " Already up to date ($_NEW_HEAD)"
+ else
+  green " Updated: $_OLD_HEAD -> $_NEW_HEAD"
+ fi
+ if command -v codegraph &>/dev/null; then
+  dim " Re-indexing CodeGraph..."
+  codegraph index 2>/dev/null || true
+ fi
+ echo ""
+ exit 0
+fi
 
 # OS detection
 OS="$(uname -s)"

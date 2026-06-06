@@ -26,6 +26,34 @@ if %ERRORLEVEL% neq 0 (
   exit /b 1
 )
 
+REM -- Self-update: hermes-noxem --update [branch] --
+if "%~1"=="--update" (
+ set _UPDATE_BRANCH=%~2
+ if "!_UPDATE_BRANCH!"=="" set _UPDATE_BRANCH=main
+ echo.
+ echo Updating Noxem to latest from '!_UPDATE_BRANCH!'...
+ where git >nul 2>&1 || ( echo Error: git is required for --update. & exit /b 1 )
+ if not exist "%~dp0.git" ( echo Error: Noxem directory is not a git repo. & exit /b 1 )
+ pushd "%~dp0.."
+ for /f %%h in ('git rev-parse HEAD') do set _OLD_HEAD=%%h
+ git fetch origin !_UPDATE_BRANCH! --quiet 2>nul || ( echo Error: git fetch failed. & popd & exit /b 1 )
+ git checkout !_UPDATE_BRANCH! --quiet 2>nul
+ git reset --hard "origin/!_UPDATE_BRANCH!" --quiet 2>nul
+ for /f %%h in ('git rev-parse HEAD') do set _NEW_HEAD=%%h
+ if "!_OLD_HEAD!"=="!_NEW_HEAD!" (
+  echo   Already up to date [!_NEW_HEAD:~0,7!]
+ ) else (
+  echo   Updated: !_OLD_HEAD:~0,7! -^> !_NEW_HEAD:~0,7!
+ )
+ where codegraph >nul 2>&1 && (
+  echo   Re-indexing CodeGraph...
+  codegraph index 2>nul
+ )
+ echo.
+ popd
+ exit /b 0
+)
+
 REM Config
 if not defined MEMORY_PORT set MEMORY_PORT=3001
 if not defined LLM_PORT set LLM_PORT=8000
