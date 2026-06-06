@@ -36,10 +36,10 @@ fi
 MEMORY_PORT=${MEMORY_PORT:-3001}
 LLM_PORT=${LLM_PORT:-${GEMMA4_PORT:-8000}}
 QWENPROXY_PORT=${QWENPROXY_PORT:-3000}
-QWENPROXY_BROWSER=${QWENPROXY_BROWSER:-chromium} # chromium|firefox|chrome|edge|webkit (fork feature)
+# QwenProxy dir — override with QWENPROXY_DIR env var
 MEMORY_SERVER="$NOXEM_DIR/server/memory-server.mjs"
 ADAPTER_SERVER="$NOXEM_DIR/server/qwenproxy-adapter.mjs"
-QWENPROXY_DIR="${HOME}/qwenproxy"
+QWENPROXY_DIR="${QWENPROXY_DIR:-${HOME}/qwen-proxy}"
 QWENPROXY_ENV="$QWENPROXY_DIR/.env"
 NOXEM_CONFIG="${HOME}/.hermes/noxem.json"
 MEMORY_PID=""
@@ -65,15 +65,6 @@ OS="$(uname -s)"
 
 # Ubuntu version check — Brain 2 QwenProxy not supported on 26.04+
 check_ubuntu_brain2() {
-  _ubuntu_ver=$(lsb_release -rs 2>/dev/null || echo "")
-  if [ -n "$_ubuntu_ver" ]; then
-    _ubuntu_major=$(echo "$_ubuntu_ver" | cut -d. -f1)
-    if [ "$_ubuntu_major" -ge 26 ] 2>/dev/null; then
-      red " Brain 2 (QwenProxy) currently not supported on Ubuntu 26.04+"
-      red " please downgrade to ver 24.04 or lower, or use a local model instead"
-      return 1
-    fi
-  fi
   return 0
 }
 
@@ -130,29 +121,23 @@ fi
 
 # ── Prompt for Qwen credentials (email + password) ──
 prompt_qwen_credentials() {
-  # Validate browser name before use in sed/echo
-  case "${QWENPROXY_BROWSER:-chromium}" in
-    chromium|chrome|firefox|webkit|edge) ;;
-    *) QWENPROXY_BROWSER="chromium" ;;
-  esac
-  # Check if .env already has credentials
-  if [ -f "$QWENPROXY_ENV" ] && grep -q '^QWEN_EMAIL=' "$QWENPROXY_ENV" && grep -q '^QWEN_PASSWORD=' "$QWENPROXY_ENV"; then
+  # Check if .env already has ACCOUNTS
+  if [ -f "$QWENPROXY_ENV" ] && grep -q '^ACCOUNTS=' "$QWENPROXY_ENV"; then
     dim " QwenProxy credentials found in $QWENPROXY_ENV"
-  # Upsert BROWSER key for existing installs
-  if ! grep -q "^BROWSER=" "$QWENPROXY_ENV"; then
-    echo "BROWSER=${QWENPROXY_BROWSER:-chromium}" >> "$QWENPROXY_ENV"
-  else
-    sed -i "s/^BROWSER=.*/BROWSER=${QWENPROXY_BROWSER:-chromium}/" "$QWENPROXY_ENV"
-  fi
+    if ! grep -q "^SERVICE_PORT=" "$QWENPROXY_ENV"; then
+      echo "SERVICE_PORT=${QWENPROXY_PORT}" >> "$QWENPROXY_ENV"
+    else
+      sed -i "s/^SERVICE_PORT=.*/SERVICE_PORT=${QWENPROXY_PORT}/" "$QWENPROXY_ENV"
+    fi
     return 0
   fi
 
   echo ""
   green '╔══════════════════════════════════════════════╗'
-  green '║ Qwen Account Login Required                 ║'
+  green '║     Qwen Account Login Required             ║'
   green '╚══════════════════════════════════════════════╝'
   echo ""
-  echo "QwenProxy needs your Qwen account credentials for automated login."
+  echo "QwenProxy needs your Qwen account credentials."
   echo "These will be saved to $QWENPROXY_ENV"
   echo ""
 
@@ -165,18 +150,17 @@ prompt_qwen_credentials() {
     return 1
   fi
 
-  # Write .env file
+  # Write .env file (ACCOUNTS format: email:password)
   mkdir -p "$QWENPROXY_DIR"
   cat > "$QWENPROXY_ENV" <<ENVEOF
-PORT=${QWENPROXY_PORT}
-QWEN_EMAIL=${_qwen_email}
-QWEN_PASSWORD=${_qwen_password}
-BROWSER=${QWENPROXY_BROWSER}
+SERVICE_PORT=${QWENPROXY_PORT}
+ACCOUNTS=${_qwen_email}:${_qwen_password}
+OUTPUT_THINK=true
+LOG_LEVEL=INFO
 ENVEOF
   chmod 600 "$QWENPROXY_ENV"
   green " Credentials saved to $QWENPROXY_ENV"
 }
-
 # ── Prompt for local LLM settings ──
 prompt_local_llm() {
   echo ""
@@ -283,54 +267,28 @@ prompt_freellm() {
 }
 
 
-# ── Setup QwenProxy (clone + install + Playwright) ──
+# ── Setup QwenProxy (npm install, no Playwright) ──
 setup_qwenproxy() {
+  if [ ! -d "$QWENPROXY_DIR" ]; then
+    red " QwenProxy directory not found: $QWENPROXY_DIR"
+    dim " Set QWENPROXY_DIR to the Qwen-Proxy directory, or clone it to ~/qwen-proxy"
+    return 1
+  fi
+
   if [ ! -d "$QWENPROXY_DIR/node_modules" ]; then
     echo ""
     dim " Setting up QwenProxy (first run)..."
-
-    # Clone if not present
-    if [ ! -d "$QWENPROXY_DIR/.git" ]; then
-      dim " Cloning qwenproxy..."
-      git clone https://github.com/LVT382009/noxem-qwenproxy.git "$QWENPROXY_DIR" 2>/dev/null || {
-        red " Failed to clone QwenProxy. Check your internet connection."
-        return 1
-      }
-    fi
-
-    # Install dependencies
     dim " Installing npm dependencies..."
     (cd "$QWENPROXY_DIR" && npm install --silent 2>/dev/null) || {
       red " npm install failed."
       return 1
     }
-
-  # Install Playwright browsers — skip if already cached
-  _PW_BROWSER_DIR="${QWENPROXY_BROWSER:-chromium}"
-  if [ "$_PW_BROWSER_DIR" = "chrome" ]; then _PW_BROWSER_DIR="chromium"; fi
-  if ls "$HOME/.cache/ms-playwright/$_PW_BROWSER_DIR-"*/chrome-linux64/chrome 2>/dev/null | head -1 | grep -q .; then
-    dim " Playwright $_PW_BROWSER_DIR already cached — skipping download"
-    else
-      dim " Installing Playwright browsers..."
-      (cd "$QWENPROXY_DIR" && # Validate browser selection
-case "${QWENPROXY_BROWSER:-chromium}" in
-  chromium|chrome|firefox|webkit|edge) ;;
-  *) echo "Error: Unsupported QWENPROXY_BROWSER='$QWENPROXY_BROWSER'. Use: chromium, firefox, webkit" >&2; exit 1 ;;
-esac
-npx playwright install "${QWENPROXY_BROWSER:-chromium}" 2>/dev/null) || {
-        red " Playwright browser install failed."
-        dim " Try manually: cd $QWENPROXY_DIR && npx playwright install ${QWENPROXY_BROWSER:-chromium}"
-        return 1
-      }
-    fi
-
     green " QwenProxy setup complete!"
   fi
 
   # Prompt for credentials if needed
   prompt_qwen_credentials || return 1
 }
-
 cleanup() {
   local code=$?
   echo ""
@@ -642,7 +600,7 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
     # ── QwenProxy mode (cloud) ──────────────────────────────
     echo "[2/2] Starting Brain 2 (QwenProxy)..."
 
-    # Setup QwenProxy (clone, install, Playwright, credentials)
+    # Setup QwenProxy (install, credentials)
     if ! setup_qwenproxy; then
       red " QwenProxy setup failed — continuing without Brain 2"
       BRAIN2_ENABLED=0
@@ -650,7 +608,7 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
     else
 # Start QwenProxy server (port already cleaned up above)
       dim " Starting QwenProxy server..."
-      mkdir -p "$HOME/.hermes" && (cd "$QWENPROXY_DIR" && npm start >"$HOME/.hermes/qwenproxy.log" 2>&1) &
+      mkdir -p "$HOME/.hermes" && (cd "$QWENPROXY_DIR" && node src/start.js >"$HOME/.hermes/qwenproxy.log" 2>&1) &
       QWENPROXY_PID=$!
       dim "  (QwenProxy must complete browser login before serving — this takes 30-90s)"
 dim "  Logs: tail -f ~/.hermes/qwenproxy.log"
