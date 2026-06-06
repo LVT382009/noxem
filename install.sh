@@ -301,10 +301,25 @@ if [ -f "$SERVER_DIR/.noxem-python" ]; then
 cp "$SERVER_DIR/.noxem-python" "$HERMES_SERVER_DIR/server/" 2>/dev/null || true
 chmod +x "$HERMES_SERVER_DIR/server/.noxem-python" 2>/dev/null || true
 fi
+# Install Qwen-Proxy deps in the deployed copy (rsync excludes node_modules)
+if [ -f "$HERMES_SERVER_DIR/qwen-proxy/package.json" ]; then
+  cd "$HERMES_SERVER_DIR/qwen-proxy" && npm install --no-audit --no-fund 2>&1 | tail -1
+fi
 echo " Deployed to $HERMES_SERVER_DIR"
 
-# ── 8. Launcher setup ──
-echo "[8/8] Setting up launcher..."
+# ── 8. Qwen-Proxy npm dependencies ──
+echo "[8/9] Installing Qwen-Proxy npm dependencies..."
+QP_DIR="$APP_DIR/qwen-proxy"
+if [ -f "$QP_DIR/package.json" ]; then
+  cd "$QP_DIR"
+  npm install --no-audit --no-fund 2>&1 | tail -1
+  echo " Done"
+else
+  echo " No qwen-proxy/ directory found — skipping (Brain 2 cloud mode won't work)"
+fi
+
+# ── 9. Launcher setup ──
+echo "[9/9] Setting up launcher..."
 chmod +x "$APP_DIR/noxem-launcher.sh" 2>/dev/null || true
 INSTALLED=false
 
@@ -352,6 +367,7 @@ echo "========================================"
 echo ""
 echo "DEPENDENCIES INSTALLED:"
 echo " Node.js: npm packages (express, better-sqlite3, sqlite-vec, etc.)"
+echo " Qwen-Proxy: npm packages (ali-oss, axios, express, multer, etc.)"
 echo " Python core: httpx, numpy"
 echo " Python optional: turbovec, fastapi, uvicorn (sidecar features)"
 if [ -d "$NOXEM_VENV" ]; then
