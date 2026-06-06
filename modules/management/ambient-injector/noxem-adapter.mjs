@@ -560,7 +560,7 @@ JSON only, no explanation.`;
 
   try {
     const llmUrl = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-    const llmModel = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
+    const llmModel = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3-235b-a22b';
 
     const response = await llmFetchFn(llmUrl, {
       method: 'POST',

@@ -614,6 +614,61 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
 dim "  Logs: tail -f ~/.hermes/qwenproxy.log"
 wait_for_port $QWENPROXY_PORT "QwenProxy" 30
 
+# Model selection — fetch available models from QwenProxy
+if [ -z "${LLM_MODEL:-}" ] && [ -t 0 ]; then
+  echo ""
+  dim " Fetching available models from QwenProxy..."
+  _models_json=$(curl -s --connect-timeout 3 "http://127.0.0.1:${QWENPROXY_PORT}/v1/models" 2>/dev/null || echo "")
+  if [ -n "$_models_json" ]; then
+    # Extract model IDs (simple grep-sed parser, no jq dependency)
+    _model_ids=$(echo "$_models_json" | grep -oP '"id"\s*:\s*"\K[^"]+' 2>/dev/null || \
+                 echo "$_models_json" | grep -o '"id"[[:space:]]*:[[:space:]]*"[^"]*"' | grep -o '"[^"]*"$' | tr -d '"' 2>/dev/null || echo "")
+    if [ -n "$_model_ids" ]; then
+      _model_count=0
+      _model_array=()
+      while IFS= read -r _mid; do
+        [ -z "$_mid" ] && continue
+        _model_count=$((_model_count + 1))
+        _model_array+=("$_mid")
+      done <<< "$_model_ids"
+
+      if [ "$_model_count" -gt 0 ]; then
+        echo ""
+        green '╔═══════════════════════════════════════╗'
+        green '║ QwenProxy — Model Selection ║'
+        green '╚═══════════════════════════════════════╝'
+        echo ""
+        _i=1
+        for _mid in "${_model_array[@]}"; do
+          echo "  [$_i] $_mid"
+          _i=$((_i + 1))
+        done
+        echo ""
+        read -rp "Choose model [1-${#_model_array[@]}] (default: 1): " _model_choice
+        _model_choice="${_model_choice:-1}"
+        if [ "$_model_choice" -ge 1 ] && [ "$_model_choice" -le "${#_model_array[@]}" ] 2>/dev/null; then
+          export LLM_MODEL="${_model_array[$((_model_choice - 1))]}"
+        else
+          export LLM_MODEL="${_model_array[0]}"
+        fi
+        green " Selected: $LLM_MODEL"
+        # Save to noxem.json for next session
+        if [ -f "$NOXEM_CONFIG" ]; then
+          sed -i "s/\"llm_model\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"llm_model\": \"${LLM_MODEL}\"/" "$NOXEM_CONFIG" 2>/dev/null || true
+        fi
+      fi
+    fi
+  fi
+  # Default fallback if model fetch failed or non-interactive
+  if [ -z "${LLM_MODEL:-}" ]; then
+    export LLM_MODEL="qwen3-235b-a22b"
+    dim " Using default model: $LLM_MODEL"
+  fi
+elif [ -z "${LLM_MODEL:-}" ]; then
+  # Non-interactive: use default
+  export LLM_MODEL="qwen3-235b-a22b"
+fi
+
       # Start the LLM adapter in QwenProxy mode
       dim " Starting LLM adapter (QwenProxy mode)..."
       export QWENPROXY_URL="http://127.0.0.1:${QWENPROXY_PORT}"

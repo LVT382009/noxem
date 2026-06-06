@@ -127,13 +127,13 @@ fi
 echo ""
 
 # ── 1. Node.js dependencies ──
-echo "[1/8] Installing server npm dependencies..."
+echo "[1/9] Installing server npm dependencies..."
 cd "$SERVER_DIR"
 npm install --no-audit --no-fund 2>&1 | tail -1
 echo " Done"
 
 # ── 2. Python dependencies ──
-echo "[2/8] Installing Python dependencies..."
+echo "[2/9] Installing Python dependencies..."
 PIP_FLAGS="--break-system-packages"
 # Use venv if available, otherwise system pip
 NOXEM_VENV="${HOME}/.hermes/noxem-venv"
@@ -185,7 +185,7 @@ fi
 echo " Done"
 
 # ── 3. Hermes plugin (clean install) ──
-echo "[3/8] Installing Noxem plugin for Hermes..."
+echo "[3/9] Installing Noxem plugin for Hermes..."
 
 # Skip copy if already running from the correct plugin discovery path
 if [ "$PLUGIN_DIR" = "$HERMES_USER_PLUGIN_DIR" ]; then
@@ -219,7 +219,7 @@ fi
 done
 
 # ── 4. Verify Python imports ──
-echo "[4/8] Verifying Python imports..."
+echo "[4/9] Verifying Python imports..."
 cd "$HERMES_USER_PLUGIN_DIR"
 if python3 -c "from __init__ import NoxemMemoryProvider; print(' NoxemMemoryProvider imports OK')" 2>/dev/null; then
 :
@@ -239,14 +239,14 @@ echo -n " TurboVec sidecar deps: "
 $SIDE_PY -c "import turbovec, fastapi, uvicorn, numpy; print('all OK')" 2>/dev/null || echo "some missing (sidecar features disabled gracefully)"
 
 # ── 5. Shell hooks ──
-echo "[5/8] Installing shell hooks..."
+echo "[5/9] Installing shell hooks..."
 mkdir -p "$HERMES_HOOKS_DIR"
 cp "$APP_DIR/hooks/"*.mjs "$HERMES_HOOKS_DIR/" 2>/dev/null || true
 chmod +x "$HERMES_HOOKS_DIR/"*.mjs 2>/dev/null || true
 echo " Done"
 
 # ── 6. Configure noxem server settings ──
-echo "[6/8] Writing Noxem server config..."
+echo "[6/9] Writing Noxem server config..."
 NOXEM_CONFIG="${HOME}/.hermes/noxem.json"
 
 # Write noxem server config (port URLs only — NOT the hermes memory provider setting)
@@ -255,7 +255,7 @@ cat > "$NOXEM_CONFIG" << NOXEMEOF
 "memory_server": "http://127.0.0.1:${MEMORY_PORT:-3001}",
 "brain2_provider": "qwenproxy",
 "llm_url": "http://127.0.0.1:${LLM_PORT:-${GEMMA4_PORT:-8000}}/v1/chat/completions",
-"llm_model": "qwen3.6-plus-no-thinking",
+"llm_model": "qwen3-235b-a22b",
 "llm_api_key": "",
 "embedding_enabled": "true"
 }
@@ -267,7 +267,7 @@ echo " Wrote $NOXEM_CONFIG"
 # hermes-noxem launcher will check and refuse to run if not configured.
 
 # ── 7. Server deployment ──
-echo "[7/8] Deploying server to persistent location..."
+echo "[7/9] Deploying server to persistent location..."
 # Backup data before removing (preserves user DB on reinstall)
         _data_backup=""
         if [ -d "$HERMES_SERVER_DIR/data" ]; then

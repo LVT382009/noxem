@@ -29,9 +29,7 @@ const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 // ── Model normalization (QwenProxy only) ──────────────────
 function normalizeModel(requestedModel) {
   if (!requestedModel) return DEFAULT_MODEL;
-  const m = requestedModel.toLowerCase();
-  if (m.includes('thinking') && !m.includes('no-thinking')) return 'qwen3.6-plus';
-  return 'qwen3.6-plus-no-thinking';
+  return requestedModel;
 }
 
 // ── Build upstream headers ────────────────────────────────
@@ -260,8 +258,7 @@ const server = createServer(async (req, res) => {
     } catch {
       const models = BRAIN2_PROVIDER === 'qwenproxy'
         ? [
-          { id: 'qwen3.6-plus', object: 'model', created: Date.now(), owned_by: 'qwen' },
-          { id: 'qwen3.6-plus-no-thinking', object: 'model', created: Date.now(), owned_by: 'qwen' },
+          { id: DEFAULT_MODEL, object: 'model', created: Date.now(), owned_by: 'qwen' },
         ]
         : [
           { id: DEFAULT_MODEL, object: 'model', created: Date.now(), owned_by: 'local' },

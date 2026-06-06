@@ -6,7 +6,7 @@
  */
 
 const _url = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-const _model = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
+const _model = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3-235b-a22b';
 const _apiKey = process.env.LLM_API_KEY || '';
 
 /** Base LLM endpoint URL (includes /v1/chat/completions path). */
