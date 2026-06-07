@@ -56,9 +56,9 @@ for _arg in "$@"; do
     --no-brain2) BRAIN2_ENABLED=0; shift ;;
     --qwenproxy) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=qwenproxy; shift ;;
     --local) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=local; shift ;;
-    --freellm) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=freellm; shift ;;
-    --update) _UPDATE=1; shift ;;
-    --update=*) _UPDATE=1; _UPDATE_BRANCH="${_arg#--update=}"; shift ;;
+      --freellm) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=freellm; shift ;;
+ --update) _UPDATE=1; shift ;;
+ --update=*) _UPDATE=1; _UPDATE_BRANCH="${_arg#--update=}"; shift ;;
   esac
 done
 
@@ -119,8 +119,7 @@ else
 cp -r "$_UPDATE_DIR/"* "$_HERMES_SERVER/" 2>/dev/null || true
 rm -rf "$_HERMES_SERVER/node_modules" "$_HERMES_SERVER/.git" "$_HERMES_SERVER/data" 2>/dev/null || true
 fi
-find "$_HERMES_SERVER" -type f \( -name '*.sh' -o -name '*.mjs' -o -name '*.js' -o -name '*.py' \) -exec sed -i 's/
-$//' {} + 2>/dev/null || true
+find "$_HERMES_SERVER" -type f \( -name '*.sh' -o -name '*.mjs' -o -name '*.js' -o -name '*.py' \) -exec sed -i 's/\r$//' {} + 2>/dev/null || true
 chmod +x "$_HERMES_SERVER/noxem-launcher.sh" 2>/dev/null || true
 chmod +x "$_HERMES_SERVER/server/"*.sh 2>/dev/null || true
 cd "$_HERMES_SERVER/server" 2>/dev/null && npm install --no-audit --no-fund 2>&1 | tail -1
@@ -141,14 +140,10 @@ fi
 # OS detection
 OS="$(uname -s)"
 
-# Ubuntu version check — Brain 2 QwenProxy not supported on 26.04+
+# Ubuntu version check - Brain 2 QwenProxy not supported on 26.04+
 check_ubuntu_brain2() {
-  return 0
+return 0
 }
-
-' \"$*\"; }
-red() { printf '\033[31m%s\033[0m\n' "$*"; }
-dim() { printf '\033[2m%s\033[0m\n' "$*"; }
 
 # HuggingFace mirror — WSL/China users may need this to download models
 if [ -z "${HF_ENDPOINT:-}" ] && grep -qi microsoft /proc/version 2>/dev/null; then
