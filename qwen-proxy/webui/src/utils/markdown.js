@@ -1,5 +1,6 @@
 import { marked } from 'marked'
 import hljs from 'highlight.js'
+import DOMPurify from 'dompurify'
 
 // Configure marked with highlight.js
 marked.setOptions({
@@ -87,12 +88,13 @@ export function parseMessageContent(raw) {
 
   // Remove think blocks from content
   const content = raw.replace(thinkRegex, '').trim()
-  const html = content ? marked.parse(content) : ''
+  const html = content ? DOMPurify.sanitize(marked.parse(content)) : ''
 
   return { thinking, html }
 }
 
 export function renderMarkdown(text) {
   if (!text) return ''
-  return marked.parse(text)
+  const raw = marked.parse(text)
+  return DOMPurify.sanitize(raw)
 }

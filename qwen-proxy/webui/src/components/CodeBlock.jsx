@@ -1,13 +1,16 @@
 import { useState } from 'react'
 import hljs from 'highlight.js'
 
+const SAFE_LANG_RE = /^[a-zA-Z0-9+_.-]+$/
+
 export default function CodeBlock({ code, language = 'plaintext' }) {
   const [copied, setCopied] = useState(false)
+  const safeLang = SAFE_LANG_RE.test(language) ? language : 'plaintext'
 
   let highlighted
   try {
-    highlighted = language && hljs.getLanguage(language)
-      ? hljs.highlight(code, { language }).value
+    highlighted = safeLang && hljs.getLanguage(safeLang)
+      ? hljs.highlight(code, { language: safeLang }).value
       : hljs.highlightAuto(code).value
   } catch {
     highlighted = code
@@ -22,7 +25,7 @@ export default function CodeBlock({ code, language = 'plaintext' }) {
   return (
     <div className="my-3 rounded-xl overflow-hidden border border-white/[0.06] bg-black/30">
       <div className="flex items-center justify-between px-4 py-2 bg-white/[0.03] border-b border-white/[0.06]">
-        <span className="text-xs font-mono text-slate-500">{language}</span>
+        <span className="text-xs font-mono text-slate-500">{safeLang}</span>
         <button
           onClick={handleCopy}
           className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors"
@@ -46,7 +49,7 @@ export default function CodeBlock({ code, language = 'plaintext' }) {
       </div>
       <pre className="p-4 overflow-x-auto text-sm">
         <code
-          className={`font-mono hljs language-${language}`}
+          className={`font-mono hljs language-${safeLang}`}
           dangerouslySetInnerHTML={{ __html: highlighted }}
         />
       </pre>
