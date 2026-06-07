@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Noxem Launcher — starts both servers, runs Hermes, cleans up on exit.
 set -euo pipefail
 
@@ -56,40 +56,86 @@ for _arg in "$@"; do
     --no-brain2) BRAIN2_ENABLED=0; shift ;;
     --qwenproxy) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=qwenproxy; shift ;;
     --local) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=local; shift ;;
-      --freellm) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=freellm; shift ;;
- --update) _UPDATE=1; shift ;;
- --update=*) _UPDATE=1; _UPDATE_BRANCH="${_arg#--update=}"; shift ;;
+    --freellm) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=freellm; shift ;;
+    --update) _UPDATE=1; shift ;;
+    --update=*) _UPDATE=1; _UPDATE_BRANCH="${_arg#--update=}"; shift ;;
   esac
 done
 
+# Color helpers (defined early so --update can use them)
+green() { printf '\033[32m%s\033[0m\n' "$*"; }
+red() { printf '\033[31m%s\033[0m\n' "$*"; }
+dim() { printf '\033[2m%s\033[0m\n' "$*"; }
+
 # -- Self-update -------------------------------------------------------
 if [ "${_UPDATE:-0}" = "1" ]; then
- _BRANCH="${_UPDATE_BRANCH:-main}"
- echo ""
- green "Updating Noxem to latest from '${_BRANCH}'..."
- if ! command -v git &>/dev/null; then
-  echo "Error: git is required for --update." >&2; exit 1
- fi
- if [ ! -d "$NOXEM_DIR/.git" ]; then
-  echo "Error: Noxem directory is not a git repo." >&2; exit 1
- fi
- cd "$NOXEM_DIR"
- _OLD_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
- git fetch origin "$_BRANCH" --quiet 2>/dev/null || { echo "Error: git fetch failed." >&2; exit 1; }
- git checkout "$_BRANCH" --quiet 2>/dev/null
- git reset --hard "origin/${_BRANCH}" --quiet 2>/dev/null
- _NEW_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
- if [ "$_OLD_HEAD" = "$_NEW_HEAD" ]; then
-  dim " Already up to date ($_NEW_HEAD)"
- else
-  green " Updated: $_OLD_HEAD -> $_NEW_HEAD"
- fi
- if command -v codegraph &>/dev/null; then
-  dim " Re-indexing CodeGraph..."
-  codegraph index 2>/dev/null || true
- fi
- echo ""
- exit 0
+_BRANCH="${_UPDATE_BRANCH:-master}"
+echo ""
+green "Updating Noxem to latest from '${_BRANCH}'..."
+if ! command -v git &>/dev/null; then
+echo "Error: git is required for --update." >&2; exit 1
+fi
+# Find the git repo - could be the deployed dir or the original source
+_UPDATE_DIR=""
+for _candidate in "$NOXEM_DIR" "${HOME}/hermes-memory"; do
+if [ -d "$_candidate/.git" ]; then
+_UPDATE_DIR="$(cd "$_candidate" && pwd)"
+break
+fi
+done
+# Also try Windows mount path
+if [ -z "$_UPDATE_DIR" ]; then
+for _candidate in /mnt/c/Users/*/hermes-memory; do
+if [ -d "$_candidate/.git" ]; then
+_UPDATE_DIR="$(cd "$_candidate" && pwd)"
+break
+fi
+done
+fi
+if [ -z "$_UPDATE_DIR" ]; then
+red "Error: Cannot find Noxem git repo."
+dim "Checked: $NOXEM_DIR, ~/hermes-memory, /mnt/c/Users/*/hermes-memory"
+echo "Clone first: git clone https://github.com/LVT382009/noxem.git" >&2
+echo "Then: cd hermes-memory && bash install.sh" >&2
+exit 1
+fi
+cd "$_UPDATE_DIR"
+_OLD_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
+git fetch origin "$_BRANCH" --quiet 2>/dev/null || { red "Error: git fetch failed." >&2; exit 1; }
+git checkout "$_BRANCH" --quiet 2>/dev/null
+git reset --hard "origin/${_BRANCH}" --quiet 2>/dev/null
+_NEW_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
+if [ "$_OLD_HEAD" = "$_NEW_HEAD" ]; then
+dim " Already up to date ($_NEW_HEAD)"
+else
+green " Updated: $_OLD_HEAD -> $_NEW_HEAD"
+# Re-deploy if updating from source repo
+_HERMES_SERVER="${HOME}/.hermes/noxem-server"
+if [ "$_UPDATE_DIR" != "$_HERMES_SERVER" ] && [ -d "$_HERMES_SERVER" ]; then
+dim " Re-deploying to $_HERMES_SERVER..."
+if command -v rsync &>/dev/null; then
+rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' "$_UPDATE_DIR/" "$_HERMES_SERVER/" 2>/dev/null
+else
+cp -r "$_UPDATE_DIR/"* "$_HERMES_SERVER/" 2>/dev/null || true
+rm -rf "$_HERMES_SERVER/node_modules" "$_HERMES_SERVER/.git" "$_HERMES_SERVER/data" 2>/dev/null || true
+fi
+find "$_HERMES_SERVER" -type f \( -name '*.sh' -o -name '*.mjs' -o -name '*.js' -o -name '*.py' \) -exec sed -i 's/
+$//' {} + 2>/dev/null || true
+chmod +x "$_HERMES_SERVER/noxem-launcher.sh" 2>/dev/null || true
+chmod +x "$_HERMES_SERVER/server/"*.sh 2>/dev/null || true
+cd "$_HERMES_SERVER/server" 2>/dev/null && npm install --no-audit --no-fund 2>&1 | tail -1
+if [ -f "$_HERMES_SERVER/qwen-proxy/package.json" ]; then
+cd "$_HERMES_SERVER/qwen-proxy" && npm install --no-audit --no-fund 2>&1 | tail -1
+fi
+green " Deployment updated."
+fi
+fi
+if command -v codegraph &>/dev/null; then
+dim " Re-indexing CodeGraph..."
+codegraph index 2>/dev/null || true
+fi
+echo ""
+exit 0
 fi
 
 # OS detection
@@ -100,8 +146,7 @@ check_ubuntu_brain2() {
   return 0
 }
 
-# Color helpers (must be defined before use)
-green() { printf '\033[32m%s\033[0m\n' "$*"; }
+' \"$*\"; }
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 dim() { printf '\033[2m%s\033[0m\n' "$*"; }
 
