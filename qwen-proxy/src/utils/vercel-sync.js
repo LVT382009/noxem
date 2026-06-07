@@ -1,0 +1,176 @@
+'use strict'
+
+/**
+ * Vercel env-var sync helpers.
+ *
+ * Used by the smart-proxy admin endpoints so when an operator adds /
+ * removes a proxy at runtime, the change is also pushed back to the
+ * Vercel project's PROXIES env var — so the next Vercel cold start
+ * picks up the same set instead of resetting to whatever was last
+ * persisted via the dashboard.
+ *
+ * Strict guards before doing any work:
+ *   - VERCEL_TOKEN + VERCEL_PROJECT_ID must both be set
+ *   - DATA_SAVE_MODE must NOT be 'redis' — when redis is on, the proxy
+ *     pool already lives there and we don't need to roundtrip through
+ *     the Vercel API at all (and roundtripping just causes a deploy
+ *     amplification with no benefit)
+ *
+ * On guard failure the helpers return { synced: false, reason: '...' }
+ * so the caller can surface this in the API response without raising.
+ */
+
+const axios = require('axios')
+const config = require('../config/index.js')
+const redisClient = require('./redis-client.js')
+const { logger } = require('./logger')
+
+const VERCEL_API = 'https://api.vercel.com'
+const ENV_KEY = 'PROXIES'
+const TARGET = ['production', 'preview', 'development']
+
+function getCfg() {
+  return {
+    token: process.env.VERCEL_TOKEN,
+    projectId: process.env.VERCEL_PROJECT_ID,
+    teamId: process.env.VERCEL_TEAM_ID || '',
+  }
+}
+
+function shouldSync() {
+  // Redis already covers persistence — don't trigger Vercel deploys
+  // unnecessarily.
+  if (config.dataSaveMode === 'redis' && redisClient.isConfigured()) {
+    return { ok: false, reason: 'redis_active' }
+  }
+  const { token, projectId } = getCfg()
+  if (!token || !projectId) return { ok: false, reason: 'vercel_not_configured' }
+  return { ok: true }
+}
+
+function _baseUrl(path) {
+  const { teamId } = getCfg()
+  const sep = path.includes('?') ? '&' : '?'
+  return `${VERCEL_API}${path}${teamId ? `${sep}teamId=${teamId}` : ''}`
+}
+
+function _headers() {
+  return { Authorization: `Bearer ${getCfg().token}` }
+}
+
+/**
+ * Find an existing env var by key (returns the env object or null).
+ */
+async function _findEnv(key) {
+  const { projectId } = getCfg()
+  const res = await axios.get(_baseUrl(`/v9/projects/${projectId}/env`), { headers: _headers() })
+  return (res.data.envs || []).find(e => e.key === key) || null
+}
+
+async function _writeEnv(key, value) {
+  const { projectId } = getCfg()
+  const existing = await _findEnv(key)
+  if (existing) {
+    await axios.patch(
+      _baseUrl(`/v9/projects/${projectId}/env/${existing.id}`),
+      { value, target: TARGET, type: existing.type || 'encrypted' },
+      { headers: _headers() }
+    )
+  } else {
+    await axios.post(
+      _baseUrl(`/v9/projects/${projectId}/env`),
+      { key, value, target: TARGET, type: 'encrypted' },
+      { headers: _headers() }
+    )
+  }
+}
+
+/**
+ * Push the current proxy list (any iterable of URL strings) to the
+ * Vercel project's PROXIES env var. Comma-separated, deduped, in
+ * insertion order. Idempotent.
+ *
+ * Returns { synced: true } on success, { synced: false, reason } when
+ * skipped or failed.
+ */
+async function syncProxiesToVercel(proxyUrls) {
+  const gate = shouldSync()
+  if (!gate.ok) return { synced: false, reason: gate.reason }
+  try {
+    const list = [...new Set((proxyUrls || []).filter(Boolean))]
+    const value = list.join(',')
+    await _writeEnv(ENV_KEY, value)
+    logger.success(`Synced PROXIES to Vercel (${list.length} entries)`, 'VERCEL')
+    return { synced: true, count: list.length }
+  } catch (err) {
+    logger.error(`Vercel PROXIES sync failed: ${err.message}`, 'VERCEL')
+    return { synced: false, reason: 'api_error', error: err.message }
+  }
+}
+
+/**
+ * Push the operator-managed disabled-account list to the Vercel project's
+ * DISABLED_ACCOUNTS env var. Same gating as syncProxiesToVercel — skipped
+ * on redis (which already covers persistence) and when Vercel sync isn't
+ * configured.
+ */
+async function syncDisabledAccountsToVercel(emails) {
+  const gate = shouldSync()
+  if (!gate.ok) return { synced: false, reason: gate.reason }
+  try {
+    const list = [...new Set((emails || []).filter(Boolean))]
+    const value = list.join(',')
+    await _writeEnv('DISABLED_ACCOUNTS', value)
+    logger.success(`Synced DISABLED_ACCOUNTS to Vercel (${list.length} entries)`, 'VERCEL')
+    return { synced: true, count: list.length }
+  } catch (err) {
+    logger.error(`Vercel DISABLED_ACCOUNTS sync failed: ${err.message}`, 'VERCEL')
+    return { synced: false, reason: 'api_error', error: err.message }
+  }
+}
+
+/**
+ * Push the full account roster to the Vercel project's ACCOUNTS env var.
+ * Encoded as `email1:password1,email2:password2,...`. Same gating as the
+ * other sync helpers.
+ *
+ * Use this from the admin add/delete-account endpoints so the roster
+ * survives Vercel cold starts without requiring redis. Tokens themselves
+ * are NOT included — the env var carries credentials only, and tokens
+ * are re-derived by signing in on cold start.
+ */
+async function syncAccountsToVercel(accounts) {
+  const gate = shouldSync()
+  if (!gate.ok) return { synced: false, reason: gate.reason }
+  try {
+    const seen = new Set()
+    const parts = []
+    for (const acc of accounts || []) {
+      const email = acc && acc.email ? String(acc.email).trim() : ''
+      const password = acc && acc.password ? String(acc.password) : ''
+      if (!email || !password) continue
+      if (seen.has(email)) continue
+      seen.add(email)
+      // Comma is the entry separator and colon is the field separator,
+      // so reject pathological emails / passwords containing them rather
+      // than silently mangling the env var. The signin form rejects them
+      // upstream too, so this is just defense-in-depth.
+      if (email.includes(',') || password.includes(',')) continue
+      parts.push(`${email}:${password}`)
+    }
+    const value = parts.join(',')
+    await _writeEnv('ACCOUNTS', value)
+    logger.success(`Synced ACCOUNTS to Vercel (${parts.length} entries)`, 'VERCEL')
+    return { synced: true, count: parts.length }
+  } catch (err) {
+    logger.error(`Vercel ACCOUNTS sync failed: ${err.message}`, 'VERCEL')
+    return { synced: false, reason: 'api_error', error: err.message }
+  }
+}
+
+module.exports = {
+  syncProxiesToVercel,
+  syncDisabledAccountsToVercel,
+  syncAccountsToVercel,
+  shouldSync,
+}

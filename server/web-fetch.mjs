@@ -2,26 +2,92 @@
  * Web Fetch Module — fetch URLs and extract readable text content.
  * Zero external dependencies: uses Node.js built-in fetch (Node 18+).
  * Used by research-engine.mjs to read pages found by DDG search.
+ *
+ * v2: servo-fetch adapter — tries servo-fetch sidecar first, falls back to regex.
  */
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MiB — abort if response exceeds this
 const MAX_TEXT_LENGTH = 2000; // Truncate extracted text to this many chars
+const SERVO_FETCH_URL = process.env.SERVO_FETCH_URL || 'http://127.0.0.1:3002';
+const SERVO_FETCH_TIMEOUT_MS = 8_000;
+import * as dns from 'node:dns/promises';
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+
+// v2: SSRF protection — private IP ranges
+const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?f[c-d]00:/i];
+
+function isPrivateIp(ip) {
+  return PRIVATE_IP_RANGES.some(r => r.test(ip));
+}
+
+export function isPrivateUrl(urlStr) {
+  try {
+    const parsed = new URL(urlStr);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return true;
+    const hostname = parsed.hostname || '';
+    const ipv4mapped = hostname.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+    const checkHost = ipv4mapped ? ipv4mapped[1] : hostname.replace(/[\[\]]/g, '');
+    return isPrivateIp(checkHost);
+  } catch { return true; }
+}
+
+export async function isPrivateUrlAfterDns(urlStr) {
+  if (isPrivateUrl(urlStr)) return true;
+  try {
+    const parsed = new URL(urlStr);
+    const hostname = parsed.hostname || '';
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return isPrivateIp(hostname);
+    const [v4, v6] = await Promise.all([dns.resolve4(hostname).catch(() => []), dns.resolve6(hostname).catch(() => [])]);
+    const addresses = [...v4, ...v6];
+    return addresses.some(ip => isPrivateIp(ip));
+  } catch { return true; }
+}
+
+// v2: servo-fetch liveness check
+let servoFetchAlive = false;
+let servoFetchCheckedAt = 0;
+const SERVO_FETCH_CHECK_INTERVAL_MS = 30_000;
+
+export async function checkServoFetchLiveness() {
+  const now = Date.now();
+  if (now - servoFetchCheckedAt < SERVO_FETCH_CHECK_INTERVAL_MS) return servoFetchAlive;
+  servoFetchCheckedAt = now;
+  try {
+    const res = await fetch(`${SERVO_FETCH_URL}/health`, { signal: AbortSignal.timeout(2000) });
+    servoFetchAlive = res.ok;
+  } catch {
+    servoFetchAlive = false;
+  }
+  return servoFetchAlive;
+}
 
 // Skip these URL extensions (non-HTML content)
 const SKIP_EXTENSIONS = /\.(pdf|png|jpg|jpeg|gif|svg|webp|ico|zip|tar|gz|bz2|7z|exe|dmg|mp3|mp4|avi|mov|wav|ogg|flac|doc|docx|xls|xlsx|ppt|pptx|apk|iso|bin|dat)$/i;
 
-// Rate limiter: max N fetches per minute
-const fetchTimestamps = [];
-const FETCH_RATE_LIMIT = 10; // max 10 page fetches per minute
+// BUG-13: Per-domain rate limiter — max N fetches per minute per domain, global cap as overflow guard
+const domainTimestamps = new Map();
+const FETCH_RATE_LIMIT = 10; // max 10 page fetches per minute per domain
+const FETCH_GLOBAL_RATE_LIMIT = 30; // global cap across all domains
 
-function canFetch() {
+function canFetch(url) {
   const now = Date.now();
-  while (fetchTimestamps.length && now - fetchTimestamps[0] > 60_000) {
-    fetchTimestamps.shift();
+  let domain = '';
+  try { domain = new URL(url).hostname; } catch { domain = '_unknown'; }
+  // Per-domain limit
+  let timestamps = domainTimestamps.get(domain);
+  if (!timestamps) { timestamps = []; domainTimestamps.set(domain, timestamps); }
+  while (timestamps.length && now - timestamps[0] > 60_000) timestamps.shift();
+  if (timestamps.length >= FETCH_RATE_LIMIT) return false;
+  timestamps.push(now);
+  // Global overflow guard — prevent unbounded domain map growth and total request flood
+  let globalCount = 0;
+  for (const ts of domainTimestamps.values()) globalCount += ts.length;
+  if (globalCount > FETCH_GLOBAL_RATE_LIMIT) return false;
+  // Eager cleanup: remove empty domain entries
+  if (domainTimestamps.size > 200) {
+    for (const [d, ts] of domainTimestamps) { if (ts.length === 0) domainTimestamps.delete(d); }
   }
-  if (fetchTimestamps.length >= FETCH_RATE_LIMIT) return false;
-  fetchTimestamps.push(now);
   return true;
 }
 
@@ -41,6 +107,33 @@ export function isFetchableUrl(url) {
 }
 
 /**
+ * Try servo-fetch sidecar first, fall back to regex extraction.
+ * servo-fetch returns { markdown, title, byline, lang }.
+ * We map: markdown → text, title → title.
+ */
+async function fetchViaServoFetch(url, { timeout = SERVO_FETCH_TIMEOUT_MS } = {}) {
+  try {
+    const res = await fetch(`${SERVO_FETCH_URL}/v1/fetch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(timeout),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.markdown) return null;
+    return {
+      url,
+      title: data.title || '',
+      text: data.markdown.replace(/\s+/g, ' ').trim().substring(0, MAX_TEXT_LENGTH),
+      error: null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch a URL and extract readable text content.
  * Returns { url, title, text, error } — never throws.
  */
@@ -49,16 +142,25 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
     return { url, title: '', text: '', error: 'non-html-url' };
   }
 
-  if (!canFetch()) {
+  // v2: SSRF protection with DNS rebinding check
+  if (await isPrivateUrlAfterDns(url)) {
+    return { url, title: '', text: '', error: 'blocked-private-url' };
+  }
+
+  if (!canFetch(url)) {
     return { url, title: '', text: '', error: 'rate-limited' };
   }
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+  // v2: Try servo-fetch sidecar first
+  if (await checkServoFetchLiveness()) {
+    const servoResult = await fetchViaServoFetch(url);
+    if (servoResult) return servoResult;
+  }
 
+  // Fallback: regex-based extraction
+  try {
     const response = await fetch(url, {
-      signal: controller.signal,
+      signal: AbortSignal.timeout(timeout),
       redirect: 'follow',
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; NoxemResearch/1.0)',
@@ -66,8 +168,6 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
         'Accept-Language': 'en-US,en;q=0.5',
       },
     });
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) {
       return { url, title: '', text: '', error: `http-${response.status}` };
@@ -97,8 +197,9 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
 
     const title = extractTitle(html);
     const text = extractText(html, maxText);
+    const links = extractLinks(html);
 
-    return { url, title, text, error: null };
+    return { url, title, text, error: null, links };
   } catch (err) {
     if (err.name === 'AbortError') {
       return { url, title: '', text: '', error: 'timeout' };
@@ -118,11 +219,6 @@ function extractTitle(html) {
 
 /**
  * Extract readable text from HTML — zero-dependency approach.
- * 1. Remove script, style, nav, header, footer, aside blocks
- * 2. Decode HTML entities
- * 3. Strip remaining tags
- * 4. Collapse whitespace
- * 5. Truncate
  */
 function extractText(html, maxLength = MAX_TEXT_LENGTH) {
   let text = html;
@@ -155,18 +251,107 @@ function extractText(html, maxLength = MAX_TEXT_LENGTH) {
 }
 
 /**
+ * Extract links from raw HTML (before tag stripping).
+ */
+function extractLinks(html) {
+  const links = [];
+  const regex = /href=["'](https?:\/\/[^"'\s]+)["']/gi;
+  let match;
+  while ((match = regex.exec(html)) !== null) {
+    links.push(match[1]);
+  }
+  return links;
+}
+
+/**
  * Decode common HTML entities without external deps.
  */
+// BUG-15: Single-pass decode prevents double-decode; BUG-16: separate hex/decimal regexes
+const WEBFETCH_ENTITY_MAP = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ' };
 function decodeHtmlEntities(str) {
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&#x?([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)));
+  return str.replace(/&(amp|lt|gt|quot|#39|nbsp);|&#x([0-9a-fA-F]+);|&#(\d+);/g, (m, name, hex, dec) => {
+    if (name) return WEBFETCH_ENTITY_MAP[name] || m;
+    if (hex) return String.fromCodePoint(parseInt(hex, 16));
+    if (dec) return String.fromCodePoint(parseInt(dec, 10));
+    return m;
+  });
+}
+
+
+/**
+ * Crawl a domain: fetch seed URL, extract links, follow them up to maxDepth.
+ * Uses servo-fetch POST /v1/crawl when available, else BFS with fetchPage().
+ * Per-domain rate limiting (500ms). URL dedup via Set.
+ */
+export async function crawlDomain(seedUrl, { maxDepth = 2, maxPages = 5, sameDomainOnly = true } = {}) {
+  if (await isPrivateUrlAfterDns(seedUrl)) return [];
+  if (!isFetchableUrl(seedUrl)) return [];
+
+  // v2: Try servo-fetch crawl endpoint first
+  if (await checkServoFetchLiveness()) {
+    try {
+      const res = await fetch(`${SERVO_FETCH_URL}/v1/crawl`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: seedUrl, max_depth: maxDepth, max_pages: maxPages, same_domain_only: sameDomainOnly }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.pages?.length) {
+          return data.pages.map(p => ({
+            url: p.url,
+            title: p.title || '',
+            text: (p.markdown || p.text || '').replace(/\s+/g, ' ').trim().substring(0, MAX_TEXT_LENGTH),
+          })).filter(p => p.text.length > 50);
+        }
+      }
+    } catch (err) {
+      LOG_DEBUG && console.error('[WebFetch] servo-fetch crawl failed:', err.message);
+    }
+  }
+
+  // Fallback: BFS crawl using fetchPage
+  const visited = new Set();
+  const results = [];
+  const queue = [{ url: seedUrl, depth: 0 }];
+  const seedOrigin = new URL(seedUrl).origin;
+  const domainLastFetch = new Map();
+
+  while (queue.length > 0 && results.length < maxPages) {
+    const { url, depth } = queue.shift();
+    if (visited.has(url)) continue;
+    if (depth > maxDepth) continue;
+    visited.add(url);
+
+    // Per-domain rate limit: 500ms
+    const domain = new URL(url).hostname;
+    const lastFetch = domainLastFetch.get(domain) || 0;
+    if (Date.now() - lastFetch < 500) {
+      await new Promise(r => setTimeout(r, 500 - (Date.now() - lastFetch)));
+    }
+
+    const page = await fetchPage(url);
+    domainLastFetch.set(domain, Date.now());
+
+    if (page.error || !page.text) continue;
+    results.push({ url: page.url, title: page.title, text: page.text });
+
+    // Extract links from the page (simple regex, not full HTML parsing)
+    if (depth < maxDepth && results.length < maxPages) {
+      const pageLinks = page.links || [];
+      for (const linkUrl of pageLinks) {
+        try {
+          if (sameDomainOnly && new URL(linkUrl).origin !== seedOrigin) continue;
+          if (!visited.has(linkUrl) && isFetchableUrl(linkUrl) && !(await isPrivateUrlAfterDns(linkUrl))) {
+            queue.push({ url: linkUrl, depth: depth + 1 });
+          }
+        } catch {}
+      }
+    }
+  }
+
+  return results.filter(r => r.text.length > 50);
 }
 
 /**

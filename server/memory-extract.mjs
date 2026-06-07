@@ -1,5 +1,6 @@
-const LLM_URL = process.env.LLM_URL || process.env.GEMMA_URL || 'http://127.0.0.1:8000/v1/chat/completions';
-const LLM_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
+const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
+import { llmFetch } from './llm-fetch.mjs';
+import { LLM_URL, LLM_MODEL } from './llm-config.mjs';
 const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || ''; // empty = use LLM
 const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goal', 'pattern', 'entity', 'event', 'issue', 'setup', 'learning', 'request', 'reflection', 'summary'];
 
@@ -14,9 +15,9 @@ Rules:
 
 Example output:
 [
-  {"text": "User prefers Python over JavaScript for backend development.", "type": "preference"},
-  {"text": "User is building a Hermes Agent memory system with local AI.", "type": "project"},
-  {"text": "User's name is Tam.", "type": "entity"}
+{"text": "User prefers Python over JavaScript for backend development.", "type": "preference"},
+{"text": "User is building a Hermes Agent memory system with local AI.", "type": "project"},
+{"text": "User's name is Tam.", "type": "entity"}
 ]
 
 Conversation:
@@ -24,6 +25,29 @@ USER: {{userMessage}}
 ASSISTANT: {{assistantResponse}}
 
 Memories:`;
+
+// Extract a balanced JSON array from LLM output (handles nested brackets)
+function extractBalancedArray(text) {
+  // Strip CR to handle CRLF line endings on Windows
+  // (bare \r is invalid in JSON strings per RFC 8259 section 7)
+  text = text.replace(/\r/g, '');
+  const start = text.indexOf('[');
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\\' && inStr) { escape = !escape; continue; }
+    if (ch === '"' && inStr) { if (!escape) { inStr = false; } escape = false; continue; }
+    if (ch === '"' && !inStr) { inStr = true; escape = false; continue; }
+    escape = false;
+    if (inStr) continue;
+    if (ch === '[') depth++;
+    if (ch === ']') { depth--; if (depth === 0) return text.substring(start, i + 1); }
+  }
+  return null;
+}
 
 export async function extractMemories({ userMessage, assistantResponse, llmUrl, llmModel }) {
   const url = llmUrl || LLM_URL;
@@ -41,11 +65,10 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
   });
 
   try {
-    const res = await fetch(url, {
+    const res = await llmFetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body,
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
     });
 
     if (!res.ok) {
@@ -56,12 +79,11 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '[]';
 
-  // Extract JSON array from response (non-greedy to handle multiple arrays)
-  const matches = [...content.matchAll(/\[[\s\S]*?\]/g)];
-  if (!matches.length) return [];
-  for (const match of matches) {
+    // Extract JSON array — find balanced brackets to handle nested content
+    const arrayStr = extractBalancedArray(content);
+    if (!arrayStr) return [];
     try {
-      const memories = JSON.parse(match[0]);
+      const memories = JSON.parse(arrayStr);
       if (Array.isArray(memories) && memories.length > 0) {
         return memories.filter(m => m.text && m.type).map(m => ({
           text: m.text.trim().substring(0, 500),
@@ -69,8 +91,6 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
         }));
       }
     } catch {}
-  }
-  return [];
   } catch (err) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
       console.error('Extraction timed out (LLM too slow)');

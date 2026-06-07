@@ -1,0 +1,34 @@
+/**
+ * Central LLM configuration — single source of truth for URL, model, and API key.
+ *
+ * All Brain 2 modules should import from here instead of reading
+ * LLM_URL / LLM_MODEL / GEMMA_URL / GEMMA_MODEL / LLM_API_KEY directly.
+ */
+
+const _url = process.env.LLM_URL || process.env.GEMMA_URL || '';
+const _model = process.env.LLM_MODEL || process.env.GEMMA_MODEL || '';
+const _apiKey = process.env.LLM_API_KEY || '';
+
+/** Base LLM endpoint URL (includes /v1/chat/completions path). Must be set via LLM_URL or GEMMA_URL — no silent default. */
+export const LLM_URL = _url;
+
+/** LLM model identifier. Must be set via LLM_MODEL or GEMMA_MODEL env var — no silent default. */
+export const LLM_MODEL = _model;
+
+if (!LLM_URL) {
+  console.warn('[llm-config] No LLM URL configured. Set LLM_URL (or GEMMA_URL) before starting Brain 2.');
+}
+if (!LLM_MODEL) {
+  console.warn('[llm-config] No LLM model configured. Set LLM_MODEL (or GEMMA_MODEL) before starting Brain 2.');
+}
+
+/** LLM API key (may be empty for local endpoints). */
+export const LLM_API_KEY = _apiKey;
+
+/** Strip /v1/chat/completions suffix to get the base URL for /v1/models etc. */
+export function baseLlmUrl() {
+  return _url.replace(/\/v1\/chat\/completions\/?$/i, '').replace(/\/v1\/?$/i, '');
+}
+
+/** Maximum prompt body size in bytes (Qwen3.6 has 1M token context — 2MB is safe). */
+export const MAX_PROMPT_BYTES = parseInt(process.env.MAX_PROMPT_BYTES || '2000000');

@@ -1,6 +1,8 @@
 import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity } from './embedding-engine.mjs';
 import { deleteVec } from './vector-index.mjs';
+import { deltaProcessor, graphPruner, ambientInjector, ingestPipeline, strategyDistiller, capsuleBuilder, lessonVault, compactionCoordinator, multiSourceRouter } from './module-registry.mjs';
+import { llmFetch } from './llm-fetch.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 
@@ -52,7 +54,7 @@ export async function runMaintenance() {
         for (const m of withEmbedding) {
           if (seen.has(m.id)) continue;
           const neighbors = vectorKnnSearch(m.embedding, 20);
-          if (!neighbors) { dupes = findDuplicates(memories); break; }
+          if (!neighbors) { dupes.push(...findDuplicates(withEmbedding.filter(m => !seen.has(m.id)))); break; } // BUG-8 fix: use filtered list, preserve progress
           for (const n of neighbors) {
             if (n.id === m.id || seen.has(n.id)) continue;
             if (n.score > DUP_THRESHOLD) {
@@ -70,7 +72,7 @@ export async function runMaintenance() {
         if (alreadySuperseded.has(older.id)) continue;
         if (alreadySuperseded.has(newer.id)) continue;
         updateMemoryStatus(older.id, 'superseded', newer.id);
-        alreadySuperseded.add(older.id);
+        alreadySuperseded.add(older.id); alreadySuperseded.add(newer.id); // BUG-14 fix: prevent newer from being superseded in another pair
         results.duplicates++;
       }
       if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] Marked ${dupes.length} duplicates as superseded`);
@@ -157,7 +159,102 @@ export async function runMaintenance() {
       LOG_DEBUG && console.error('[Maintenance] Consolidation error:', err.message);
     }
 
-    const elapsed = Date.now() - start;
+    // ── v2.1 Module Maintenance ────────────────────
+  try {
+    // Stale embedding detection + re-embed
+    const staleResult = await deltaProcessor.runStaleEmbeddingMaintenance({ db, embedFn: embed });
+    if (LOG_DEBUG && staleResult.reembedded > 0) console.log(`[Maintenance] Re-embedded ${staleResult.reembedded} stale memories`);
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[Maintenance] Stale embedding scan failed:', e.message);
+  }
+
+  try {
+    // Hub-node marking + embedding eviction
+    graphPruner.markHubNodes(db);
+    const evicted = graphPruner.evictEmbeddings(db);
+    if (LOG_DEBUG && evicted > 0) console.log(`[Maintenance] Evicted ${evicted} low-importance embeddings`);
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[Maintenance] Graph pruner maintenance failed:', e.message);
+  }
+
+  try {
+    // Co-recall edge creation + idle session expiry
+    ambientInjector.createCorecallEdges(db);
+    ambientInjector.expireInactiveSessions(db);
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[Maintenance] Ambient maintenance failed:', e.message);
+  }
+
+  try {
+    // Cross-link auto-generation for shared entities
+    const linked = ingestPipeline.autoLinkMemoriesBySharedEntity(db);
+    if (LOG_DEBUG && linked > 0) console.log(`[Maintenance] Auto-linked ${linked} shared-entity pairs`);
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[Maintenance] Cross-link generation failed:', e.message);
+  }
+
+  // v2.2: Delta processor startup checks + logic re-evaluation
+	try {
+		const categorizeSrc = String(categorizeText.toString().slice(0, 200));
+		const importanceSrc = String(estimateImportance.toString().slice(0, 200));
+		const startupResult = deltaProcessor.runStartupChecks({ db, categorizeSrc, importanceSrc, modelId: 'local', embedDim: 256, dtype: 'float32', hasExistingEmbeddings: memories.length > 0 });
+		if (LOG_DEBUG && startupResult) console.log('[Maintenance] Delta startup checks:', JSON.stringify(startupResult));
+		const reevalResult = deltaProcessor.runLogicReevaluation({ db, categorizeFn: categorizeText, estimateFn: estimateImportance, limit: 1000 });
+		if (LOG_DEBUG && reevalResult?.rereaded > 0) console.log(`[Maintenance] Logic re-evaluated ${reevalResult.rereaded} memories`);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Delta processor maintenance failed:', e.message); }
+
+	try {
+		// Graph pruner: full maintenance pipeline + PQ training
+		const pipelineResult = await graphPruner.runMaintenancePipeline(db, embed);
+		if (LOG_DEBUG && pipelineResult) console.log('[Maintenance] Graph pruner pipeline:', JSON.stringify(pipelineResult));
+		const pqResult = graphPruner.trainPQCodebooks(db);
+		if (LOG_DEBUG && pqResult?.trained) console.log(`[Maintenance] PQ codebooks trained (${pqResult.subspaces} subspaces)`);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Graph pruner full pipeline failed:', e.message); }
+
+	try {
+		// Capsule builder: hot cache preload + triplet extraction
+		capsuleBuilder.preloadHotCache(db);
+		await capsuleBuilder.extractTripletsAsync('');
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Capsule builder maintenance failed:', e.message); }
+
+	try {
+		// Ambient injector: distill guides + ambient maintenance
+		await ambientInjector.distillAllEligible(llmFetch);
+		ambientInjector.runAmbientMaintenance(db);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Ambient distiller maintenance failed:', e.message); }
+
+	try {
+		// Strategy distiller: contrast trajectories + quality judgment
+		await strategyDistiller.contrastTrajectories('');
+		await strategyDistiller.judgeReasoningQuality([]);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Strategy distiller maintenance failed:', e.message); }
+
+	try {
+		// Lesson vault: audit memory poisoning + write stats
+		const poisoning = lessonVault.auditMemoryPoisoning(db);
+		if (LOG_DEBUG && poisoning?.issues?.length > 0) console.log(`[Maintenance] Memory poisoning audit: ${poisoning.issues.length} issues`);
+		const writeStats = lessonVault.getWriteStats();
+		if (LOG_DEBUG) results.writeStats = writeStats;
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Lesson vault maintenance failed:', e.message); }
+
+	try {
+		// Compaction coordinator: preview candidates
+		const preview = compactionCoordinator.previewCompactionCandidates(memories);
+		if (LOG_DEBUG && preview?.length > 0) console.log(`[Maintenance] Compaction preview: ${preview.length} candidates`);
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Compaction preview failed:', e.message); }
+
+	try {
+		// Multi-source router: refresh source catalog
+		multiSourceRouter.getSourceCatalog();
+	} catch (e) { /* source catalog refresh is optional */ }
+
+	try {
+		// Ingest pipeline status check
+		const ingestStatus = ingestPipeline.getIngestStatus();
+		if (LOG_DEBUG) results.ingestStatus = ingestStatus;
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Ingest status check failed:', e.message); }
+
+const elapsed = Date.now() - start;
     LOG_DEBUG && console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
     return results;
   } finally {
@@ -311,19 +408,29 @@ async function consolidateMemories(memories) {
     const clusters = [...groups.values()].filter(c => c.length >= CONSOLIDATION_MIN_CLUSTER);
     for (const cluster of clusters) {
       try {
-        cluster.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        cluster.sort((a, b) => { // BUG-9 fix: null-safe date sort
+        const da = a.created_at ? new Date(a.created_at.replace(' ', 'T')).getTime() : 0;
+        const db2 = b.created_at ? new Date(b.created_at.replace(' ', 'T')).getTime() : 0;
+        return (da || 0) - (db2 || 0);
+      });
         const texts = cluster.map(m => m.text);
         const summaryText = texts.join(' | ');
 
         const typePriority = ['profile', 'preference', 'setup', 'project', 'goal', 'pattern', 'entity', 'learning', 'issue', 'fact', 'event', 'request'];
+        const typePriorityMap = new Map(typePriority.map((t, i) => [t, i]));
+        const getPriority = (type) => typePriorityMap.has(type) ? typePriorityMap.get(type) : typePriority.length;
         let bestType = 'fact';
         for (const m of cluster) {
-          if (typePriority.indexOf(m.type) < typePriority.indexOf(bestType)) {
+          if (getPriority(m.type) < getPriority(bestType)) {
             bestType = m.type;
           }
         }
 
-        const newImportance = Math.min(1.0, Math.max(...cluster.map(m => m.importance)) + 0.2);
+        let maxImportance = cluster[0].importance;
+      for (let i = 1; i < cluster.length; i++) {
+        if (cluster[i].importance > maxImportance) maxImportance = cluster[i].importance;
+      }
+      const newImportance = Math.min(1.0, maxImportance + 0.2);
         const clusterIds = cluster.map(m => m.id);
 
         let embedding = null;

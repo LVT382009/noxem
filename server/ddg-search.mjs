@@ -1,13 +1,18 @@
 import * as https from 'node:https';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 import * as http from 'node:http';
+import * as dns from 'node:dns/promises';
 import { parse as parseUrl } from 'node:url';
 import { search as ddgScrapeSearch, SafeSearchType } from 'duck-duck-scrape';
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const USER_AGENT = process.env.DDG_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
 
 // S-#49: Private IP ranges for SSRF protection
-const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?fc00:/i];
+const PRIVATE_IP_RANGES = [/^127\./, /^10\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^169\.254\./, /^0\./, /^\[?::1\]?/, /^\[?fe80:/i, /^\[?f[c-d]00:/i];
+
+function isPrivateIp(ip) {
+  return PRIVATE_IP_RANGES.some(r => r.test(ip));
+}
 
 function isPrivateUrl(urlStr) {
   try {
@@ -17,42 +22,85 @@ function isPrivateUrl(urlStr) {
   // Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) and strip brackets
   const ipv4mapped = hostname.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
   const checkHost = ipv4mapped ? ipv4mapped[1] : hostname.replace(/[\[\]]/g, '');
-  return PRIVATE_IP_RANGES.some(r => r.test(checkHost));
+  return isPrivateIp(checkHost);
   } catch { return true; }
 }
 
-function fetchUrl(url, timeout = 10000, maxRedirects = 5, originalUrl = null) {
+async function isPrivateUrlAfterDns(urlStr) {
+  if (isPrivateUrl(urlStr)) return true;
+  try {
+    const parsed = parseUrl(urlStr);
+    const hostname = parsed.hostname || '';
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) return isPrivateIp(hostname);
+    const [v4, v6] = await Promise.all([dns.resolve4(hostname).catch(() => []), dns.resolve6(hostname).catch(() => [])]);
+    const addresses = [...v4, ...v6];
+    return addresses.some(ip => isPrivateIp(ip));
+  } catch { return true; }
+}
+
+const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MiB — BUG-3: prevent OOM from oversized responses
+
+async function fetchUrl(url, timeout = 10000, maxRedirects = 5, originalUrl = null) {
+  if (maxRedirects <= 0) throw new Error('Too many redirects');
+  // S-#32: Resolve relative redirect URLs against original
+  if (originalUrl && !url.startsWith('http')) {
+    const base = parseUrl(originalUrl);
+    url = `${base.protocol}//${base.host}${url.startsWith('/') ? url : '/' + url}`;
+  }
+  // S-#49: SSRF protection with DNS rebinding check
+  // BUG-5: Pin resolved IP to prevent DNS rebinding TOCTOU — connect by IP, set Host header
+  const parsed = parseUrl(url);
+  const hostname = parsed.hostname || '';
+  let pinnedHost = hostname;
+  let pinnedIp = null;
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(hostname) && !/^\[?[0-9a-fA-F:]+\]?/.test(hostname)) {
+    // Resolve DNS and pin the IP to prevent rebinding between check and connect
+    const [v4, v6] = await Promise.all([dns.resolve4(hostname).catch(() => []), dns.resolve6(hostname).catch(() => [])]);
+    const addresses = [...v4, ...v6];
+    if (addresses.some(ip => isPrivateIp(ip))) throw new Error('Blocked: private/internal URL');
+    if (addresses.length > 0) pinnedIp = addresses[0];
+  } else {
+    if (isPrivateIp(hostname.replace(/[\[\]]/g, ''))) throw new Error('Blocked: private/internal URL');
+  }
+
   return new Promise((resolve, reject) => {
-    if (maxRedirects <= 0) return reject(new Error('Too many redirects'));
-    // S-#32: Resolve relative redirect URLs against original
-    if (originalUrl && !url.startsWith('http')) {
-      const base = parseUrl(originalUrl);
-      url = `${base.protocol}//${base.host}${url.startsWith('/') ? url : '/' + url}`;
-    }
-    // S-#49: SSRF protection
-    if (isPrivateUrl(url)) return reject(new Error('Blocked: private/internal URL'));
-    const parsed = parseUrl(url);
+    let settled = false;
+    const safeReject = (err) => { if (!settled) { settled = true; reject(err); } };
+    const safeResolve = (val) => { if (!settled) { settled = true; resolve(val); } };
     const mod = parsed.protocol === 'https:' ? https : http;
+    // BUG-5: Connect to pinned IP with Host header to prevent DNS rebinding
+    const connectOpts = pinnedIp ? { host: pinnedIp, headers: { 'User-Agent': USER_AGENT, Host: parsed.host } } : { headers: { 'User-Agent': USER_AGENT } };
     const req = mod.get(url, {
-      headers: { 'User-Agent': USER_AGENT },
+      ...connectOpts,
       timeout,
     }, (res) => {
       // Follow redirects (with depth limit) — S-#32: pass original URL for relative resolution
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         const location = res.headers.location;
-        return fetchUrl(location, timeout, maxRedirects - 1, url).then(resolve).catch(reject);
+        res.resume();
+        return fetchUrl(location, timeout, maxRedirects - 1, url).then(safeResolve).catch(safeReject);
       }
       // Reject non-200 responses (e.g., 202 bot challenge, 429 rate limit)
       if (res.statusCode !== 200) {
         res.resume(); // drain the response
-        return reject(new Error(`HTTP ${res.statusCode}`));
+        return safeReject(new Error(`HTTP ${res.statusCode}`));
       }
+      // BUG-3: Track body size to prevent OOM
       const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      let bytesReceived = 0;
+      res.on('data', c => {
+        bytesReceived += c.length;
+        if (bytesReceived > MAX_BODY_SIZE) {
+          res.destroy();
+          safeReject(new Error('Response body exceeds 10 MiB limit'));
+          return;
+        }
+        chunks.push(c);
+      });
+      res.on('end', () => safeResolve(Buffer.concat(chunks).toString('utf8')));
     });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.on('error', safeReject);
+    req.on('timeout', () => { req.destroy(); safeReject(new Error('timeout')); });
   });
 }
 
@@ -69,13 +117,15 @@ function decodeDdgRedirect(url) {
   return url;
 }
 
-// S-#41: Basic HTML entity decoder
+// S-#41: Single-pass HTML entity decoder (BUG-7: prevents double-decode, BUG-4: uses fromCodePoint for above-BMP)
+const HTML_ENTITY_MAP = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", apos: "'", nbsp: ' ' };
 function decodeHtmlEntities(text) {
-  return text
-    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)));
+  return text.replace(/&(amp|lt|gt|quot|#39|apos|nbsp);|&#x([0-9a-fA-F]+);|&#(\d+);/g, (m, name, hex, dec) => {
+    if (name) return HTML_ENTITY_MAP[name] || m;
+    if (hex) return String.fromCodePoint(parseInt(hex, 16));
+    if (dec) return String.fromCodePoint(parseInt(dec, 10));
+    return m;
+  });
 }
 
 // Search DDG using duck-duck-scrape npm package, fall back to HTML scraping
@@ -184,7 +234,9 @@ export async function searchDuckDuckGoInstant(query) {
     const json = await fetchUrl(
       `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`
     );
-    const data = JSON.parse(json);
+    let data;
+    try { data = JSON.parse(json); } catch(e) { throw new Error('DDG Instant API returned non-JSON: ' + json.substring(0, 100)); }
+    if (!data || typeof data !== 'object') throw new Error('DDG Instant API returned non-object response');
     return {
       abstract: data.AbstractText || '',
       source: data.AbstractSource || '',

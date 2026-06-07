@@ -42,7 +42,6 @@ MEMORY_SERVER_DEFAULT = "http://127.0.0.1:3001"
 #   node server/memory-server.mjs --tls-cert=/path/to/cert.pem --tls-key=/path/to/key.pem
 # For self-signed certs, set NODE_TLS_REJECT_UNAUTHORIZED=0 in env (dev only).
 
-
 class NoxemMemoryProvider:
     """MemoryProvider for Hermes Agent — connects to the Noxem memory server."""
 
@@ -69,7 +68,7 @@ class NoxemMemoryProvider:
         self._hermes_home = kwargs.get("hermes_home", os.environ.get("HERMES_HOME", "~/.hermes"))
         self._hermes_home = str(Path(self._hermes_home).expanduser())  # P-#27
         self._server_url = os.environ.get("NOXEM_SERVER", MEMORY_SERVER_DEFAULT)
-        self._llm_url = os.environ.get("LLM_URL", os.environ.get("GEMMA_URL", "http://127.0.0.1:8000/v1/chat/completions"))
+        self._llm_url = os.environ.get("LLM_URL", os.environ.get("GEMMA_URL", ""))
         self._sync_thread = None
         self._server_start_thread = None
         self._server_reachable = threading.Event()  # P-#19
@@ -79,8 +78,13 @@ class NoxemMemoryProvider:
         self._pending_queue = deque(maxlen=50)
         self._queue_lock = threading.Lock()
         self._server_procs = []
+        self._silent_mode = True  # Always silent when used as Hermes provider
+        self._shutdown_done = False
+        self._atexit_registered = False
         self._stderr_logs = []  # P-#22
-        atexit.register(self.shutdown)
+        if not self._atexit_registered:
+            self._atexit_registered = True
+            atexit.register(self._atexit_shutdown)
 
         # Load noxem.json and propagate to env vars if not already set
         # This bridges the gap: config saved by `hermes memory setup` reaches Node.js servers
@@ -94,6 +98,7 @@ class NoxemMemoryProvider:
 
     def _try_start_servers_async(self):
         """Start both servers (memory + LLM) in background thread, then check health."""
+        self._silent_mode = True
         def _start():
             try:
                 self._try_start_servers()
@@ -125,9 +130,24 @@ class NoxemMemoryProvider:
             "llm_url": "LLM_URL",
             "llm_model": "LLM_MODEL",
             "embedding_enabled": "ENABLE_EMBEDDING",
+        "context_window": "NOXEM_CONTEXT_WINDOW",
+            "rlm_llm_timeout": "RLM_LLM_TIMEOUT",
+            "extract_timeout_ms": "EXTRACT_TIMEOUT_MS",
+            "vector_backend": "VECTOR_BACKEND",
+            "turbovec_url": "TURBOVEC_URL",
         }
         # Store API key separately — only pass to child server processes, not global env
         self._llm_api_key = cfg.get("llm_api_key", "")
+        # Fallback: secret fields save to .env, not noxem.json
+        if not self._llm_api_key:
+            self._llm_api_key = os.environ.get("LLM_API_KEY", "")
+        if not self._llm_api_key:
+            env_path = Path(self._hermes_home).expanduser() / ".env"
+            if env_path.exists():
+                for line in env_path.read_text().splitlines():
+                    if line.startswith("LLM_API_KEY="):
+                        self._llm_api_key = line.split("=", 1)[1].strip().strip(chr(39) + chr(34))
+                        break
         for json_key, env_var in env_map.items():
             val = cfg.get(json_key)
             if val and env_var not in os.environ:
@@ -144,6 +164,14 @@ class NoxemMemoryProvider:
             self._server_url = os.environ["NOXEM_SERVER"]
         if "LLM_URL" in os.environ:
             self._llm_url = os.environ["LLM_URL"]
+
+        # FreeLLM preset: when provider is freellm, set the fixed base URL
+        if cfg.get("brain2_provider") == "freellm":
+            if "LLM_URL" not in os.environ:
+                os.environ["LLM_URL"] = "https://api.freetheai.xyz/v1/chat/completions"
+            if "GEMMA_URL" not in os.environ:
+                os.environ["GEMMA_URL"] = "https://api.freetheai.xyz/v1/chat/completions"
+            os.environ["BRAIN2_PROVIDER"] = "local"
 
         logger.debug(f"Noxem config loaded from {config_path}: provider={cfg.get('brain2_provider', 'qwenproxy')}")
 
@@ -162,6 +190,10 @@ class NoxemMemoryProvider:
         env.setdefault("ENABLE_MAINTENANCE", "true")
         env.setdefault("ENABLE_RESEARCH", "true")
         env.setdefault("NODE_OPTIONS", "--dns-result-order=ipv4first")
+        env.setdefault("LOG_LEVEL", "quiet")
+        env.setdefault("RLM_LLM_TIMEOUT", "60")
+        env.setdefault("EXTRACT_TIMEOUT_MS", "60000")
+        env.setdefault("VECTOR_BACKEND", "hybrid")
         # Pass API key only to child server processes, not global env
         if self._llm_api_key:
             env["LLM_API_KEY"] = self._llm_api_key
@@ -192,13 +224,45 @@ class NoxemMemoryProvider:
                         [node_bin, str(path)],
                         **popen_kwargs,
                     )
-                    self._server_procs.append(proc)
+                    self._server_procs.append((proc, "LLM server"))
                     self._write_pid_file(home / 'noxem-server.pid', proc.pid)  # P-#29
                     logger.info(f"Noxem auto-started LLM server from {path} (PID {proc.pid})")
-                    sys.stderr.write(f"[Noxem] Auto-starting LLM server... (PID {proc.pid})\n")
+                    logger.debug(f"Auto-starting LLM server (PID {proc.pid})")
                     break
                 except Exception as e:
                     logger.debug(f"Failed to auto-start LLM from {path}: {e}")
+
+        # Start QwenProxy adapter if cloud Brain 2 is configured
+        brain2_provider = env.get("BRAIN2_PROVIDER", "qwenproxy")
+        if brain2_provider == "qwenproxy":
+            adapter_candidates = [
+                home / "noxem-server" / "server" / "qwenproxy-adapter.mjs",
+                home / ".hermes" / "noxem-server" / "server" / "qwenproxy-adapter.mjs",
+            ]
+            for path in adapter_candidates:
+                if path.exists():
+                    try:
+                        _adapter_stderr_log = open(home / "noxem-adapter-stderr.log", "a")
+                        self._stderr_logs.append(_adapter_stderr_log)
+                        popen_kwargs = {
+                            "cwd": str(path.parent),
+                            "env": env,
+                            "stdout": subprocess.DEVNULL,
+                            "stderr": _adapter_stderr_log,
+                            "start_new_session": True,
+                        }
+                        if platform.system() == "Windows":
+                            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                        proc = subprocess.Popen(
+                            [node_bin, str(path)],
+                            **popen_kwargs,
+                        )
+                        self._server_procs.append((proc, "Adapter"))
+                        self._write_pid_file(home / "noxem-adapter.pid", proc.pid)
+                        logger.debug(f"Auto-starting QwenProxy adapter (PID {proc.pid})")
+                        break
+                    except Exception as e:
+                        logger.debug(f"Failed to auto-start adapter from {path}: {e}")
 
         # Start memory server
         memory_candidates = [
@@ -224,9 +288,9 @@ class NoxemMemoryProvider:
                         [node_bin, str(path)],
                         **popen_kwargs,
                     )
-                    self._server_procs.append(proc)
+                    self._server_procs.append((proc, "Memory server"))
                     logger.info(f"Noxem auto-started memory server from {path} (PID {proc.pid})")
-                    sys.stderr.write(f"[Noxem] Auto-starting memory server... (PID {proc.pid})\n")
+                    logger.debug(f"Auto-starting memory server (PID {proc.pid})")
                     started = True
                     break
                 except Exception as e:
@@ -234,6 +298,43 @@ class NoxemMemoryProvider:
 
         if not started:
             return False
+
+        # Start TurboVec sidecar if hybrid/turbovec backend
+        vector_backend = env.get("VECTOR_BACKEND", "hybrid")
+        if vector_backend in ("hybrid", "turbovec"):
+            python_bin = env.get("NOXEM_PYTHON", "python3")
+            # Resolve venv python
+            venv_python = str(Path(self._hermes_home).expanduser() / "noxem-venv" / "bin" / "python")
+            if os.path.exists(venv_python):
+                python_bin = venv_python
+            turbovec_candidates = [
+                home / "noxem-server" / "server" / "turbovec_proxy.py",
+                home / ".hermes" / "noxem-server" / "server" / "turbovec_proxy.py",
+            ]
+            for tv_path in turbovec_candidates:
+                if tv_path.exists():
+                    try:
+                        _tv_stderr_log = open(home / "noxem-turbovec-stderr.log", "a")
+                        self._stderr_logs.append(_tv_stderr_log)
+                        popen_kwargs = {
+                            "cwd": str(tv_path.parent),
+                            "env": env,
+                            "stdout": subprocess.DEVNULL,
+                            "stderr": _tv_stderr_log,
+                            "start_new_session": True,
+                        }
+                        if platform.system() == "Windows":
+                            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                        proc = subprocess.Popen(
+                            [python_bin, str(tv_path)],
+                            **popen_kwargs,
+                        )
+                        self._server_procs.append((proc, "TurboVec"))
+                        self._write_pid_file(home / "noxem-turbovec.pid", proc.pid)
+                        logger.debug(f"Auto-starting TurboVec sidecar (PID {proc.pid})")
+                    except Exception as e:
+                        logger.debug(f"Failed to auto-start TurboVec: {e}")
+                    break
 
         # Wait up to 90s for memory server to become ready
         # LLM server takes longer but we don't block on it — the advisor gracefully handles it
@@ -343,38 +444,69 @@ class NoxemMemoryProvider:
         except Exception:
             pass
 
+    def _atexit_shutdown(self):
+        """Guard against double-shutdown via atexit."""
+        if not self._shutdown_done:
+            self._shutdown_done = True
+            self.shutdown()
+
     def shutdown(self) -> None:
-        """Process exit cleanup. Join daemon threads then kill auto-started server processes."""
+        """Process exit cleanup. Kill auto-started servers and show summary."""
+        self._shutdown_done = True
         self._shutdown_event.set()  # P-#24
         if self._server_start_thread and self._server_start_thread.is_alive():
             self._server_start_thread.join(timeout=5.0)
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=3.0)
         try:
-            sys.stdout.flush()
+            sys.stderr.flush()
         except Exception:
             pass
-        for proc in self._server_procs:
+
+        # User-visible shutdown summary
+        if self._silent_mode:
+            brain_info = "Brain 1"
+            brain2 = os.environ.get("BRAIN2_PROVIDER", "local")
+            if brain2 != "none":
+                brain_info += f" + Brain 2 {brain2}"
+            sys.stderr.write(chr(10))  # blank line
+            sys.stderr.write(f"Hermes session ended. ({brain_info})" + chr(10))
+
+            if self._server_procs:
+                sys.stderr.write("Shutting down Noxem servers..." + chr(10))
+
+        # Stop server processes (only if we auto-started them)
+        for item in self._server_procs:
+            proc, name = item if isinstance(item, tuple) else (item, "Server")
             try:
+                if self._silent_mode:
+                    sys.stderr.write(f" {name} stopping..." + chr(10))
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                logger.info(f"Noxem stopped auto-started server PID {proc.pid}")
+                if self._silent_mode:
+                    sys.stderr.write(f" {name} stopped" + chr(10))
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         self._server_procs.clear()
-        # P-#29: Clean up PID files on shutdown
+
+        # Clean up PID files
         home = Path(self._hermes_home).expanduser()
-        self._clean_pid_file(home / 'noxem-server.pid')
-        self._clean_pid_file(home / 'noxem-memory.pid')
-        for log_fh in self._stderr_logs:  # P-#22
+        self._clean_pid_file(home / "noxem-server.pid")
+        self._clean_pid_file(home / "noxem-memory.pid")
+        self._clean_pid_file(home / "noxem-adapter.pid")
+        self._clean_pid_file(home / "noxem-turbovec.pid")
+        for log_fh in self._stderr_logs:
             try:
                 log_fh.close()
             except Exception:
                 pass
         self._stderr_logs.clear()
+
+        if self._silent_mode:
+            sys.stderr.write("Noxem cleaned up." + chr(10))
         logger.info("Noxem shutdown complete")
 
     # ── Config ────────────────────────────────────────────────
@@ -382,55 +514,113 @@ class NoxemMemoryProvider:
     def get_config_schema(self):
         return [
             {
-                "key": "memory_server",
-                "description": "Noxem memory server URL",
-                "default": MEMORY_SERVER_DEFAULT,
-                "required": False,
-            },
-            {
                 "key": "brain2_provider",
-                "description": "Brain 2 provider: qwenproxy (cloud) or local (any OpenAI-compatible LLM)",
+                "description": "Brain 2 provider",
                 "default": "qwenproxy",
-                "choices": ["qwenproxy", "local"],
-                "required": False,
+                "choices": ["qwenproxy", "local", "freellm"],
             },
+            # ── QwenProxy (cloud) ───────────────────────
+            {
+                "key": "llm_api_key",
+                "description": "QwenProxy API key",
+                "secret": True,
+                "when": {"brain2_provider": "qwenproxy"},
+                "env_var": "LLM_API_KEY",
+            },
+            # ── Local LLM ───────────────────────────────
             {
                 "key": "llm_url",
-                "description": "LLM API endpoint (for advisor + extraction)",
-                "default": "http://127.0.0.1:8000/v1/chat/completions",
-                "required": False,
+                "description": "LLM API endpoint",
+                "default": "http://localhost:11434/v1/chat/completions",
+                "when": {"brain2_provider": "local"},
             },
             {
                 "key": "llm_model",
-                "description": "Model name for LLM calls (ignored for QwenProxy — auto-normalized)",
-                "default": "qwen3.6-plus-no-thinking",
-                "required": False,
+                "description": "Model name",
+                "default": "llama3.1",
+                "when": {"brain2_provider": "local"},
             },
             {
-                "key": "llm_api_key",
-                "description": "API key for LLM endpoint (optional, not needed for Ollama/llama.cpp)",
+                "key": "llm_api_key_local",
+                "description": "LLM API key",
+                "secret": True,
+                "when": {"brain2_provider": "local"},
+                "env_var": "LLM_API_KEY",
+            },
+            # ── FreeLLM ──────────────────────────────────
+            {
+                "key": "_freellm_tutorial",
+                "description": "\n  FreeLLM Setup Tutorial:\n  Step 1: Join the Discord server: https://discord.gg/hnz3yB3bWg\n  Step 2: Go to #how-to-signup channel to generate your API key\n  Step 3: Go to #how-to-checkin to activate your API key\n  Press Enter to continue",
                 "default": "",
-                "required": False,
+                "when": {"brain2_provider": "freellm"},
+            },
+            {
+                "key": "llm_model_freellm",
+                "description": "Model ID (browse: freetheai.xyz/models)",
+            # No hardcoded model — user must configure via `hermes memory setup` or LLM_MODEL env var
+            "default": "",
+                "when": {"brain2_provider": "freellm"},
+            },
+            {
+                "key": "llm_api_key_freellm",
+                "description": "FreeLLM API key",
+                "secret": True,
+                "when": {"brain2_provider": "freellm"},
+
+                "env_var": "LLM_API_KEY",
+            },
+            {
+                "key": "context_window",
+                "description": "Context window",
+                "default": 8192,
+                "choices": [8192, 32768, 131072, 1048576],
             },
             {
                 "key": "embedding_enabled",
-                "description": "Enable Brain-1 for vector search",
+                "description": "Brain-1 semantic search",
                 "default": "true",
                 "choices": ["true", "false"],
-                "required": False,
             },
         ]
-
     def save_config(self, values: dict, hermes_home: str) -> None:
         config_path = Path(hermes_home) / "noxem.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        # Merge with existing config so we don't lose previously saved fields
         existing = {}
         if config_path.exists():
             try:
                 existing = json.loads(config_path.read_text())
             except Exception:
                 pass
+
+        # Normalize aliased keys from conditional schema fields
+        # llm_api_key_local / llm_api_key_freellm -> llm_api_key
+        if values.get("llm_api_key_local"):
+            values["llm_api_key"] = values.pop("llm_api_key_local")
+        elif values.get("llm_api_key_freellm"):
+            values["llm_api_key"] = values.pop("llm_api_key_freellm")
+        values.pop("llm_api_key_local", None)
+        values.pop("llm_api_key_freellm", None)
+
+        # llm_model_freellm -> llm_model
+        if values.get("llm_model_freellm"):
+            values["llm_model"] = values.pop("llm_model_freellm")
+        values.pop("llm_model_freellm", None)
+        values.pop("_freellm_tutorial", None)
+
+        # FreeLLM preset: auto-set the fixed base URL
+        if values.get("brain2_provider") == "freellm":
+            values["llm_url"] = "https://api.freetheai.xyz/v1/chat/completions"
+            if not values.get("llm_model"):
+                # No silent fallback — user must choose a model during `hermes memory setup` or set LLM_MODEL env var
+                values["llm_model"] = "" 
+            if not values["llm_model"]:
+                logger.warning("No LLM model configured for FreeLLM. Run `hermes memory setup` or set LLM_MODEL env var.")
+
+        # QwenProxy: clear local-only fields
+        if values.get("brain2_provider") == "qwenproxy":
+            values.pop("llm_url", None)
+            values.pop("llm_model", None)
+
         existing.update(values)
         config_path.write_text(json.dumps(existing, indent=2))
         logger.info(f"Noxem config saved to {config_path}")
@@ -580,8 +770,9 @@ class NoxemMemoryProvider:
             "Brain-1 for semantic search + dedup. "
             "Brain-2 for advisor + context recovery + background web research.\n"
             "Memory types: preference, fact, project, goal, pattern, entity, event, issue, setup, learning, profile.\n"
-            "Use `memory_search` to look up past info and `memory_store` to save facts."
-        )
+        "Use `memory_search` to look up past info and `memory_store` to save facts.\n"
+        "IMPORTANT: Always use `memory_store` when the user shares personal facts, preferences, identity, or anything worth remembering - do not just reply, also save."
+    )
 
     MAX_MEMORY_TOKENS = 2000
     try:
@@ -762,44 +953,44 @@ class NoxemMemoryProvider:
                 with self._sync_lock:  # P-#19
                     self._sync_fail_count += 1
 
-        # Retry once after 2s (server might be starting up)
-        # Release _sync_lock before sleep to avoid blocking other threads
-        with self._sync_lock: # P-#19
-            _fail_count = self._sync_fail_count
-            _should_retry = _fail_count <= 3
-        if _should_retry:
-            time.sleep(2.0)
-            try:
-                result = self._api_post("/memory/sync", data)
-                if result.get("error"): # P-#25
-                    raise Exception(result["error"])
-                self._server_reachable.set() # P-#19
-                with self._sync_lock: # P-#19
-                    self._sync_fail_count = 0
-                self._flush_pending_queue()
-                return
-            except Exception:
-                pass
-
-            # Buffer turn for later replay
-            with self._queue_lock:
-                if len(self._pending_queue) >= self._pending_queue.maxlen:  # P-#23
-                    logger.warning(
-                        f"Noxem pending queue at capacity ({self._pending_queue.maxlen}), "
-                        f"oldest items will be dropped"
-                    )
-                self._pending_queue.append(data)
-                queue_len = len(self._pending_queue)
-
+            # Retry once after 2s (server might be starting up)
+            # Release _sync_lock before sleep to avoid blocking other threads
             with self._sync_lock:  # P-#19
                 _fail_count = self._sync_fail_count
-            if _fail_count == 1:
-                logger.warning(
-                    f"sync_turn failed — server at {self._server_url} not reachable. "
-                    f"Turn buffered (queue: {queue_len}). Server will retry on next sync."
-                )
-            elif _fail_count % 20 == 0:  # P-#19
-                logger.warning(f"sync_turn failed {_fail_count}x — queue: {queue_len}")
+            _should_retry = _fail_count <= 3
+            if _should_retry:
+                time.sleep(2.0)
+                try:
+                    result = self._api_post("/memory/sync", data)
+                    if "error" in result: # P-#25 H18
+                        raise Exception(result["error"])
+                    self._server_reachable.set() # P-#19
+                    with self._sync_lock: # P-#19
+                        self._sync_fail_count = 0
+                    self._flush_pending_queue()
+                    return
+                except Exception:
+                    pass
+
+                # Buffer turn for later replay
+                with self._queue_lock:
+                    if len(self._pending_queue) >= self._pending_queue.maxlen:  # P-#23
+                        logger.warning(
+                            f"Noxem pending queue at capacity ({self._pending_queue.maxlen}), "
+                            f"oldest items will be dropped"
+                        )
+                    self._pending_queue.append(data)
+                    queue_len = len(self._pending_queue)
+
+                with self._sync_lock:  # P-#19
+                    _fail_count = self._sync_fail_count
+                if _fail_count == 1:
+                    logger.warning(
+                        f"sync_turn failed — server at {self._server_url} not reachable. "
+                        f"Turn buffered (queue: {queue_len}). Server will retry on next sync."
+                    )
+                elif _fail_count % 20 == 0:  # P-#19
+                    logger.warning(f"sync_turn failed {_fail_count}x — queue: {queue_len}")
 
         # Join previous sync thread if still running, then start new one
         if self._sync_thread and self._sync_thread.is_alive():
@@ -810,7 +1001,7 @@ class NoxemMemoryProvider:
     def on_session_end(self, messages: list) -> None:
         try:
             result = self._api_post("/memory/session/end", {
-            "conversation_history": messages[-50:],
+            "conversation_history": messages[-100:],
                 "session_id": self._session_id,
             })
             count = result.get("extracted", 0)
@@ -822,7 +1013,7 @@ class NoxemMemoryProvider:
     def on_pre_compress(self, messages: list):
         try:
             # P-#32: Truncate conversation history to prevent oversized payloads
-            max_msgs = 50
+            max_msgs = 100
             truncated = messages[-max_msgs:] if len(messages) > max_msgs else messages
             result = self._api_post("/memory/advisor/compress", {
                 "conversation_history": truncated,  # P-#32
@@ -889,7 +1080,6 @@ class NoxemMemoryProvider:
     @staticmethod
     def _urlencode(s: str) -> str:
         return urllib.parse.quote(s, safe="")
-
 
 def register(ctx) -> None:
     """Plugin entry point — registers noxem as a memory provider."""

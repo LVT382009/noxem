@@ -1,0 +1,5 @@
+1. Stream timeout value in chat.js: 180000 milliseconds (line 91 of src/controllers/chat.js)
+2. TOOL_TAG_OPEN constant in toolcall.js: "##TOOL_CALL##" (line 18 of src/utils/toolcall.js)
+3. Keep-alive interval in accumulate.js: 15000 milliseconds (line 36 of src/utils/accumulate.js)
+4. MAX_CHARS budget when tools are active in anthropic.js: 40000 (line 145 of src/routes/anthropic.js)
+5. Assistant role truncation limit in anthropic.js: 500 characters (line 149 of src/routes/anthropic.js)

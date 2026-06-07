@@ -7,7 +7,11 @@ export ENABLE_EMBEDDING=false
 export ENABLE_ADVISOR=false
 export ENABLE_MAINTENANCE=false
 
-rm -f data/hermes-memory.db
+# Kill any leftover server on port 3001
+fuser -k 3001/tcp 2>/dev/null || true
+sleep 1
+
+rm -f data/hermes-memory.db data/hermes-memory.db-wal data/hermes-memory.db-shm
 
 # Start server in background of THIS script's process group
 node memory-server.mjs &
@@ -15,20 +19,25 @@ SERVER_PID=$!
 
 # Wait for server to be ready
 for i in $(seq 1 20); do
-  if curl -s http://127.0.0.1:3001/health > /dev/null 2>&1; then
-    echo "Server ready after ${i}s"
-    break
-  fi
-  sleep 1
+if curl -s http://127.0.0.1:3001/health > /dev/null 2>&1; then
+echo "Server ready after ${i}s"
+break
+fi
+sleep 1
 done
 
 PASS=0; FAIL=0
 check() {
-  if [ "$2" = "true" ] || [ "$2" = "ok" ]; then
-    PASS=$((PASS+1)); echo "  PASS: $1"
-  else
-    FAIL=$((FAIL+1)); echo "  FAIL: $1 — $2"
-  fi
+if [ "$2" = "true" ] || [ "$2" = "ok" ]; then
+PASS=$((PASS+1)); echo " PASS: $1"
+else
+FAIL=$((FAIL+1)); echo " FAIL: $1 — $2"
+fi
+}
+
+# Helper: extract numeric ID from store response JSON
+extract_id() {
+echo "$1" | grep -oE '"id":[0-9]+' | grep -oE '[0-9]+' | head -1
 }
 
 echo "=== Health ==="
@@ -40,19 +49,25 @@ echo "=== Store preference ==="
 R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"I prefer dark mode for VS Code","type":"preference"}')
 echo "$R"
 echo "$R" | grep -q '"ok":true' && check "store1" "true" || check "store1" "FAIL"
+ID1=$(extract_id "$R")
+echo "  ID1=$ID1"
 
 echo "=== Store contradicting preference ==="
 R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"I prefer light mode for VS Code","type":"preference"}')
 echo "$R"
 echo "$R" | grep -q '"ok":true' && check "store2" "true" || check "store2" "FAIL"
+ID2=$(extract_id "$R")
+echo "  ID2=$ID2"
 
 echo "=== Store profile ==="
 R=$(curl -s -X POST http://127.0.0.1:3001/memory/store -H "Content-Type: application/json" -d '{"text":"My name is Tam","type":"profile"}')
 echo "$R"
 echo "$R" | grep -q '"ok":true' && check "store3" "true" || check "store3" "FAIL"
+ID3=$(extract_id "$R")
+echo "  ID3=$ID3"
 
 echo "=== Get memory 1 (entity/attr) ==="
-R=$(curl -s http://127.0.0.1:3001/memory/1)
+R=$(curl -s "http://127.0.0.1:3001/memory/$ID1")
 echo "$R"
 echo "$R" | grep -q '"entity"' && check "entity field" "true" || check "entity field" "FAIL"
 echo "$R" | grep -q '"attribute"' && check "attribute field" "true" || check "attribute field" "FAIL"
@@ -61,19 +76,19 @@ echo "$R" | grep -q '"importance"' && check "importance field" "true" || check "
 echo "$R" | grep -q 'extraction_method' && check "provenance metadata" "true" || check "provenance metadata" "FAIL"
 
 echo "=== Get memory 3 (profile) ==="
-R=$(curl -s http://127.0.0.1:3001/memory/3)
+R=$(curl -s "http://127.0.0.1:3001/memory/$ID3")
 echo "$R"
 echo "$R" | grep -qE '"importance":(0\.[5-9]|1)' && check "profile importance high" "true" || check "profile importance" "FAIL"
 echo "$R" | grep -q '"entity":"user"' && check "profile entity=user" "true" || check "profile entity" "FAIL"
 echo "$R" | grep -q '"attribute":"name"' && check "profile attr=name" "true" || check "profile attr" "FAIL"
 
 echo "=== Supersede ==="
-R=$(curl -s -X POST http://127.0.0.1:3001/memory/supersede -H "Content-Type: application/json" -d '{"old_id":1,"new_id":2,"reason":"preference_change"}')
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/supersede -H "Content-Type: application/json" -d "{\"old_id\":$ID1,\"new_id\":$ID2,\"reason\":\"preference_change\"}")
 echo "$R"
 echo "$R" | grep -q '"ok":true' && check "supersede" "true" || check "supersede" "FAIL"
 
 echo "=== Lineage ==="
-R=$(curl -s http://127.0.0.1:3001/memory/1/lineage)
+R=$(curl -s "http://127.0.0.1:3001/memory/$ID1/lineage")
 echo "$R"
 echo "$R" | grep -q '"lineage"' && check "lineage" "true" || check "lineage" "FAIL"
 
@@ -100,7 +115,7 @@ echo "$R" | grep -q '"active"' && check "stats" "true" || check "stats" "FAIL"
 echo "=== Re-embed ==="
 R=$(curl -s -X POST http://127.0.0.1:3001/memory/reembed -H "Content-Type: application/json" -d '{}')
 echo "$R"
-echo "$R" | grep -qE '"ok":true|"error":"Embedding engine not ready"' && check "reembed (disabled ok)" "true" || check "reembed" "FAIL"
+echo "$R" | grep -qE '"ok":true|"error":"Brain-1 not ready"|"error":"Embedding engine not ready"' && check "reembed (disabled ok)" "true" || check "reembed" "FAIL"
 
 echo "=== Maintenance run ==="
 R=$(curl -s -X POST http://127.0.0.1:3001/memory/maintenance/run -H "Content-Type: application/json")
@@ -118,18 +133,18 @@ echo "$R"
 echo "$R" | grep -q '"results"' && check "session filter" "true" || check "session filter" "FAIL"
 
 echo "=== Bi-temporal valid_from at store ==="
-R=$(curl -s http://127.0.0.1:3001/memory/2)
+R=$(curl -s "http://127.0.0.1:3001/memory/$ID2")
 echo "$R"
 echo "$R" | grep -q '"valid_from"' && check "valid_from field" "true" || check "valid_from field" "FAIL"
 echo "$R" | grep -qE '"valid_from":"202[0-9]' && check "valid_from populated" "true" || check "valid_from populated" "FAIL"
 
 echo "=== Bi-temporal valid_until after supersede ==="
-R=$(curl -s http://127.0.0.1:3001/memory/1)
+R=$(curl -s "http://127.0.0.1:3001/memory/$ID1")
 echo "$R"
 echo "$R" | grep -qE '"valid_until":"202[0-9]' && check "valid_until after supersede" "true" || check "valid_until after supersede" "FAIL"
 
 echo "=== Lineage includes bi-temporal ==="
-R=$(curl -s http://127.0.0.1:3001/memory/1/lineage)
+R=$(curl -s "http://127.0.0.1:3001/memory/$ID1/lineage")
 echo "$R"
 echo "$R" | grep -q '"valid_from"' && check "lineage valid_from" "true" || check "lineage valid_from" "FAIL"
 echo "$R" | grep -q '"valid_until"' && check "lineage valid_until" "true" || check "lineage valid_until" "FAIL"
@@ -166,7 +181,7 @@ echo "$R"
 echo "$R" | grep -q '"ok":true' && check "ready check" "true" || check "ready check" "FAIL"
 
 echo "=== Source memory IDs in supersede ==="
-R=$(curl -s http://127.0.0.1:3001/memory/2)
+R=$(curl -s "http://127.0.0.1:3001/memory/$ID2")
 echo "$R"
 echo "$R" | grep -q 'source_memory_ids' && check "source_memory_ids field" "true" || check "source_memory_ids field" "FAIL"
 
@@ -210,7 +225,7 @@ echo "$R" | grep -q '"total"' && check "pagination has total" "true" || check "p
 echo "$R" | grep -qE '"results":\s*\[.+' && check "pagination has results" "true" || check "pagination results" "FAIL"
 
 echo "=== Purge endpoint ==="
-R=$(curl -s -X POST http://127.0.0.1:3001/memory/purge -H "Content-Type: application/json")
+R=$(curl -s -X POST http://127.0.0.1:3001/memory/purge -H "Content-Type: application/json" -d '{"confirm":true}')
 echo "$R"
 echo "$R" | grep -q '"ok":true' && check "purge ok" "true" || check "purge" "FAIL"
 
@@ -243,7 +258,7 @@ R=$(curl -s http://127.0.0.1:3001/health)
 echo "$R"
 echo "$R" | grep -q '"llm"' && check "health llm field" "true" || check "health llm" "FAIL"
 echo "$R" | grep -q '"uptime_seconds"' && check "health uptime field" "true" || check "health uptime" "FAIL"
-R=$(curl -s http://127.0.0.1:3001/memory/2)
+R=$(curl -s "http://127.0.0.1:3001/memory/$ID2")
 echo "$R"
 echo "$R" | grep -q 'source_memory_ids' && check "source_memory_ids field" "true" || check "source_memory_ids field" "FAIL"
 

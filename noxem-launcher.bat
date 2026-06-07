@@ -26,6 +26,34 @@ if %ERRORLEVEL% neq 0 (
   exit /b 1
 )
 
+REM -- Self-update: hermes-noxem --update [branch] --
+if "%~1"=="--update" (
+ set _UPDATE_BRANCH=%~2
+ if "!_UPDATE_BRANCH!"=="" set _UPDATE_BRANCH=main
+ echo.
+ echo Updating Noxem to latest from '!_UPDATE_BRANCH!'...
+ where git >nul 2>&1 || ( echo Error: git is required for --update. & exit /b 1 )
+ if not exist "%~dp0.git" ( echo Error: Noxem directory is not a git repo. & exit /b 1 )
+ pushd "%~dp0.."
+ for /f %%h in ('git rev-parse HEAD') do set _OLD_HEAD=%%h
+ git fetch origin !_UPDATE_BRANCH! --quiet 2>nul || ( echo Error: git fetch failed. & popd & exit /b 1 )
+ git checkout !_UPDATE_BRANCH! --quiet 2>nul
+ git reset --hard "origin/!_UPDATE_BRANCH!" --quiet 2>nul
+ for /f %%h in ('git rev-parse HEAD') do set _NEW_HEAD=%%h
+ if "!_OLD_HEAD!"=="!_NEW_HEAD!" (
+  echo   Already up to date [!_NEW_HEAD:~0,7!]
+ ) else (
+  echo   Updated: !_OLD_HEAD:~0,7! -^> !_NEW_HEAD:~0,7!
+ )
+ where codegraph >nul 2>&1 && (
+  echo   Re-indexing CodeGraph...
+  codegraph index 2>nul
+ )
+ echo.
+ popd
+ exit /b 0
+)
+
 REM Config
 if not defined MEMORY_PORT set MEMORY_PORT=3001
 if not defined LLM_PORT set LLM_PORT=8000
@@ -40,6 +68,11 @@ set NOXEM_CONFIG=%USERPROFILE%\.hermes\noxem.json
 if not defined ENABLE_EMBEDDING set ENABLE_EMBEDDING=true
 if not defined ENABLE_ADVISOR set ENABLE_ADVISOR=true
 if not defined ENABLE_MAINTENANCE set ENABLE_MAINTENANCE=true
+if not defined LOG_LEVEL set LOG_LEVEL=quiet
+if not defined RLM_LLM_TIMEOUT set RLM_LLM_TIMEOUT=60
+if not defined EXTRACT_TIMEOUT_MS set EXTRACT_TIMEOUT_MS=60000
+if not defined VECTOR_BACKEND set VECTOR_BACKEND=hybrid
+if not defined TURBOVEC_URL set TURBOVEC_URL=http://127.0.0.1:3003
 set NODE_OPTIONS=--dns-result-order=ipv4first
 
 REM ── Read saved config from noxem.json ──
@@ -74,6 +107,16 @@ if exist "%NOXEM_CONFIG%" (
   if not defined LLM_URL if defined _CFG_LLM_URL set LLM_URL=!_CFG_LLM_URL!
   if not defined LLM_MODEL if defined _CFG_LLM_MODEL set LLM_MODEL=!_CFG_LLM_MODEL!
   if not defined LLM_API_KEY if defined _CFG_LLM_API_KEY set LLM_API_KEY=!_CFG_LLM_API_KEY!
+)
+
+REM Fallback: secret fields save to .env, not noxem.json
+if not defined LLM_API_KEY (
+    set _ENV_FILE=%USERPROFILE%\.hermes\.env
+    if exist "!_ENV_FILE!" (
+        for /f "tokens=1,* delims==" %%e in ('findstr /B "LLM_API_KEY=" "!_ENV_FILE!"') do (
+            set LLM_API_KEY=%%f
+        )
+    )
 )
 
 REM ── Brain selection ──
@@ -155,6 +198,7 @@ REM 2. Brain 2
 if "%BRAIN2_ENABLED%"=="0" goto :skip_brain2
 
 if "%BRAIN2_PROVIDER%"=="local" goto :start_local_mode
+if "%BRAIN2_PROVIDER%"=="freellm" goto :start_local_mode
 
 REM ── QwenProxy mode (cloud) ──
 echo [2/2] Starting Brain 2 (QwenProxy)...
@@ -315,7 +359,7 @@ if not defined LOCAL_LLM_URL if defined LLM_URL (
 
 REM Start the LLM adapter (local passthrough mode)
 echo Starting LLM adapter (local mode)...
-set BRAIN2_PROVIDER=local
+if not "!BRAIN2_PROVIDER!"=="freellm" set BRAIN2_PROVIDER=local
 start /B node "%ADAPTER_SERVER%"
 set ADAPTER_PID=0
 
@@ -377,6 +421,57 @@ echo Noxem cleaned up.
 endlocal
 exit /b
 
+
+REM ── Subroutine: prompt for FreeLLM (FreeTheAI.xyz) settings ──
+:prompt_freellm
+echo.
+echo ╔══════════════════════════════════════════════╗
+echo ║ FreeLLM - FreeTheAI.xyz Free API             ║
+echo ╚══════════════════════════════════════════════╝
+echo.
+echo  Get free LLM access from FreeTheAI.xyz:
+echo.
+echo   1. Join the Discord: https://discord.gg/hnz3yB3bWg
+echo   2. Go to #how-to-signup channel to get your API key
+echo   3. Go to #how-to-checkin channel to activate your key
+echo   4. Browse models at: https://freetheai.xyz/models/
+echo   5. Check model status at: https://freetheai.xyz/status/
+echo.
+echo  Base URL: https://api.freetheai.xyz/v1 ^(fixed^)
+echo.
+
+REM API key (required)
+set /p _FREELLM_API_KEY="API key: "
+if "!_FREELLM_API_KEY!"=="" (
+    echo API key is required for FreeTheAI.xyz
+    echo Get one at: https://discord.gg/hnz3yB3bWg -^> #how-to-signup
+    set BRAIN2_ENABLED=0
+    goto :eof
+)
+
+REM Model name
+echo.
+echo Browse available models: https://freetheai.xyz/models/
+echo Check model status: https://freetheai.xyz/status/
+set _DEFAULT_FREELLM_MODEL=
+set /p _FREELLM_MODEL="Model ID [!_DEFAULT_FREELLM_MODEL!]: "
+if "!_FREELLM_MODEL!"=="" set _FREELLM_MODEL=!_DEFAULT_FREELLM_MODEL!
+
+REM Context window
+set /p _FREELLM_CTX="Context window in tokens [131072]: "
+if "!_FREELLM_CTX!"=="" set _FREELLM_CTX=131072
+
+REM Export for adapter and server processes
+set LLM_URL=https://api.freetheai.xyz/v1/chat/completions
+set LOCAL_LLM_URL=https://api.freetheai.xyz/v1
+set LLM_MODEL=!_FREELLM_MODEL!
+set LLM_API_KEY=!_FREELLM_API_KEY!
+set NOXEM_CONTEXT_WINDOW=!_FREELLM_CTX!
+set BRAIN2_PROVIDER=local
+
+echo FreeLLM configured: freetheai.xyz model=!_FREELLM_MODEL! context=!_FREELLM_CTX!
+goto :eof
+
 REM ── Subroutine: prompt for local LLM settings ──
 :prompt_local_llm
 echo.
@@ -398,7 +493,7 @@ set /p _LOCAL_URL="Base URL [!_DEFAULT_URL!]: "
 if "!_LOCAL_URL!"=="" set _LOCAL_URL=!_DEFAULT_URL!
 
 REM Model name
-set _DEFAULT_MODEL=gemma4:e4b
+set _DEFAULT_MODEL=
 if defined LLM_MODEL set _DEFAULT_MODEL=!LLM_MODEL!
 set /p _LOCAL_MODEL="Model name [!_DEFAULT_MODEL!]: "
 if "!_LOCAL_MODEL!"=="" set _LOCAL_MODEL=!_DEFAULT_MODEL!

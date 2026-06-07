@@ -8,3 +8,24 @@ start.bat
 .cache/
 .env.local
 CLAUDE.md
+
+# Working/debug files — not needed to run Noxem
+fix-*.sh
+fix-*.py
+fixinglog.md
+*_verification.md
+scripts/_tmp_fix.py
+scripts/_install_puppeteer.sh
+server/benchmark.sh
+bench/
+research/
+__pycache__/
+*.pyc
+.claude/
+.understand-anything/
+
+# Vendored reference modules — .git dirs from clones, but code is tracked
+modules/**/.git/
+modules/**/node_modules/
+modules/**/__pycache__/
+modules/**/*.pyc

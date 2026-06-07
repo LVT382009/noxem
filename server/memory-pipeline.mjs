@@ -1,0 +1,308 @@
+/**
+ * Memory Pipeline Manager — TencentDB L0-L3 progressive extraction.
+ *
+ * Cone layer mapping:
+ *   L0 (episode, cone_layer=0) — raw memories from conversation
+ *   L1 (facet, cone_layer=1) — extracted atoms (facts, preferences, setup)
+ *   L2 (abstraction, cone_layer=2) — grouped scenes per entity
+ *   L3 (core, cone_layer=3) — persona summary from 50+ L1 memories
+ *
+ * Extraction schedule: warmup pattern 1→2→4→N turns.
+ * L2 scenes are grouped by entity from L1 atoms.
+ * L3 persona is generated when 50+ L1 memories exist.
+ */
+
+import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, updateMemoryStatus, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr } from './memory-store.mjs';
+import { llmFetch } from './llm-fetch.mjs';
+import { LLM_URL, LLM_MODEL } from './llm-config.mjs';
+import { isEmbeddingReady, embed, categorizeText, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
+import { ingestPipeline, deltaProcessor, multiSourceRouter, crossModalExtractor, lessonVault } from './module-registry.mjs';
+
+const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
+
+const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+const PIPELINE_ENABLED = process.env.PIPELINE_ENABLED !== 'false';
+
+// Warmup schedule: number of new L0 memories needed before next extraction
+const WARMUP_SCHEDULE = [1, 2, 4, 8]; // After 1, 2, 4, 8 new memories
+const L3_MIN_L1_MEMORIES = 50;
+
+// Track extraction state per session
+const sessionState = new Map();
+const extractingL1 = new Set(); // Per-session lock to prevent concurrent L1 extraction
+
+// Periodic cleanup: evict stale session state (idle > 1 hour)
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, state] of sessionState) {
+    if (now - state.lastActivity > 3_600_000) { // BUG-13 fix: use lastActivity, not lastL1Extract
+      sessionState.delete(sid);
+      extractingL1.delete(sid);
+    }
+  }
+}, 300_000).unref();
+
+function getSessionState(sessionId) {
+  if (!sessionState.has(sessionId)) {
+    sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0, consecutiveFailures: 0, lastActivity: Date.now() });
+  }
+  return sessionState.get(sessionId);
+}
+
+function getWarmupThreshold(extractionIndex) {
+    if (extractionIndex < WARMUP_SCHEDULE.length) return WARMUP_SCHEDULE[extractionIndex];
+    return WARMUP_SCHEDULE[WARMUP_SCHEDULE.length - 1] * 2;
+}
+
+/**
+ * Called after each L0 memory store. Checks if extraction should run.
+ */
+export function onMemoryStored(sessionId) {
+  if (!PIPELINE_ENABLED) return;
+  const state = getSessionState(sessionId);
+  state.l0Count++; state.lastActivity = Date.now(); // BUG-13 fix: track last activity
+
+  const threshold = getWarmupThreshold(state.l1ExtractCount);
+  const newSinceExtract = state.l0Count - state.lastL1Extract;
+  if (newSinceExtract >= threshold && !extractingL1.has(sessionId)) {
+    extractingL1.add(sessionId);
+    // Schedule L1 extraction (non-blocking)
+    extractL1FromL0(sessionId).finally(() => extractingL1.delete(sessionId))
+      .catch(err => {
+      LOG_DEBUG && console.error('[Pipeline] L1 extraction error:', err.message);
+    });
+  }
+}
+
+/**
+ * L1 Extraction: extract structured atoms from recent L0 episode memories.
+ * Uses LLM to extract facts, preferences, setup details from conversation turns.
+ */
+export async function extractL1FromL0(sessionId) {
+  const state = getSessionState(sessionId);
+  if (state.consecutiveFailures > 0) {
+    const cooldownMs = Math.min(30_000 * state.consecutiveFailures, 300_000);
+    if (Date.now() - state.lastL1Extract < cooldownMs) return;
+  }
+  const episodeMems = getSessionMemories(sessionId)
+    .filter(m => m.cone_layer === 0 || !m.cone_layer)
+    .slice(-20); // Process last 20 episode memories
+
+  if (episodeMems.length < 1) return;
+
+  const memText = episodeMems.map(m => `[${m.type}] ${m.text}`).join('\n');
+
+  try {
+    const res = await llmFetch(LLM_URL, {
+      method: 'POST',
+      headers: {},
+      body: JSON.stringify({
+        model: LLM_MODEL,
+        messages: [
+          { role: 'system', content: 'Extract structured facts from these conversation memories. Return ONLY a JSON array: [{"text":"...","type":"fact|preference|setup|project|goal|entity","entity":"...","attribute":"..."}]. Extract only non-obvious, durable information. Max 10 items.' },
+          { role: 'user', content: `Memories:\n${memText}\n\nExtract L1 atoms:` },
+        ],
+        max_tokens: 1024,
+        temperature: 0.1,
+      }),
+      signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
+    });
+
+    if (!res.ok) { state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++; return; }
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content || '';
+    const jsonMatch = content.match(/\[[\s\S]*?\]/);
+    if (!jsonMatch) { state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++; return; }
+
+    let atoms;
+    try { atoms = JSON.parse(jsonMatch[0]); } catch (parseErr) {
+      LOG_DEBUG && console.error('[Pipeline] L1 JSON parse error:', parseErr.message);
+      state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++;
+      return;
+    }
+    for (const atom of atoms.slice(0, 10)) {
+      if (!atom.text || !atom.type) continue;
+      let embedding = null;
+      if (isEmbeddingReady()) {
+        try { embedding = new Float32Array(await embed(atom.text)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L1 embedding failed:', e.message); }
+      }
+      storeMemory({
+        text: atom.text,
+        type: atom.type,
+        session_id: sessionId,
+        entity: atom.entity || '',
+        attribute: atom.attribute || '',
+        context_prefix: generateContextPrefix(atom.text, atom.type, sessionId),
+        importance: estimateImportance(atom.text, atom.type),
+        cone_layer: 1, // L1 facet
+        embedding,
+      });
+    }
+
+    state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures = 0;
+				// v2.2: Mark extraction complete in ingest pipeline
+				try { ingestPipeline.markExtractionComplete(sessionId); } catch {}
+    LOG_DEBUG && console.log(`[Pipeline] L1 extraction: ${atoms.length} atoms from ${episodeMems.length} episodes`);
+  } catch (err) {
+    state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++;
+  LOG_DEBUG && console.error('[Pipeline] L1 LLM error:', err.message);
+  }
+}
+
+/**
+ * L2 Scene Extraction: group L1 memories by entity, create scene summaries.
+ */
+export async function extractL2Scenes() {
+  // BUG-7 fix: single call to getAllActiveMemoriesNoEmbed, filter locally
+  const allActive = getAllActiveMemoriesNoEmbed();
+  const l1Mems = allActive.filter(m => m.cone_layer === 1);
+  if (l1Mems.length < 5) return;
+
+  // Group by entity
+  const byEntity = new Map();
+  for (const m of l1Mems) {
+    const key = m.entity || '_unknown';
+    if (!byEntity.has(key)) byEntity.set(key, []);
+    byEntity.get(key).push(m);
+  }
+
+  // For each entity with 3+ L1 memories, create a scene
+  for (const [entity, mems] of byEntity) {
+    if (mems.length < 3) continue;
+
+ // Skip if scene already exists for this entity
+ const existing = allActive.filter(m => m.cone_layer === 2 && m.entity === entity); // BUG-7 fix: reuse cached allActive
+    // BUG-17 fix: skip only if scene is recent (< 7 days old)
+    if (existing.length > 0) {
+      const lastScene = existing[existing.length - 1];
+      const daysSinceExtract = (Date.now() - new Date(lastScene.created_at).getTime()) / 86400000;
+      if (daysSinceExtract < 7) continue; // skip if recent
+      // Supersede the stale scene and re-extract
+      for (const sc of existing) updateMemoryStatus(sc.id, 'superseded', -1);
+    }
+    const sceneText = mems.map(m => `- [${m.type}] ${m.text}`).join('\n');
+    try {
+      const res = await llmFetch(LLM_URL, {
+        method: 'POST',
+        headers: {},
+        body: JSON.stringify({
+          model: LLM_MODEL,
+          messages: [
+            { role: 'system', content: `Summarize these memories about "${entity}" into a concise scene description (1-2 sentences). Focus on the key facts and relationships.` },
+            { role: 'user', content: sceneText },
+          ],
+          max_tokens: 256,
+          temperature: 0.1,
+        }),
+        signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
+      });
+
+      if (!res.ok) continue;
+      const data = await res.json();
+      const summary = data?.choices?.[0]?.message?.content?.trim();
+      if (!summary || summary.length < 10) continue;
+
+      let embedding = null;
+      if (isEmbeddingReady()) {
+        try { embedding = new Float32Array(await embed(summary)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L2 embedding failed:', e.message); }
+      }
+      storeMemory({
+        text: summary,
+        type: 'project',
+        session_id: 'pipeline',
+        entity,
+        attribute: 'scene_summary',
+        context_prefix: `Scene, about ${entity}:`,
+        importance: 0.8,
+        cone_layer: 2, // L2 abstraction
+        embedding,
+      });
+    } catch (err) {
+      LOG_DEBUG && console.error(`[Pipeline] L2 scene error for ${entity}:`, err.message);
+    }
+  }
+
+  LOG_DEBUG && console.log(`[Pipeline] L2 scenes: processed ${byEntity.size} entities`);
+}
+
+/**
+ * L3 Persona Extraction: summarize all L1 facts/preferences into a persona.
+ * Only runs when 50+ L1 memories exist.
+ */
+export async function extractL3Persona() {
+  const l1Mems = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 1);
+  if (l1Mems.length < L3_MIN_L1_MEMORIES) return;
+
+  // BUG-17 fix: Skip only if persona is recent (< 7 days old)
+  const existingPersona = l1Mems; // reuse already-fetched L1 data for counting
+  const existingP = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 3);
+  if (existingP.length > 0) {
+    const lastPersona = existingP[existingP.length - 1];
+    const daysSinceExtract = existingP.length > 0 ? (Date.now() - new Date(lastPersona.created_at).getTime()) / 86400000 : Infinity;
+    if (daysSinceExtract < 7) return; // skip if recent
+    // Supersede the stale persona and re-extract
+    for (const p of existingP) updateMemoryStatus(p.id, 'superseded', -1);
+  }
+
+  const textBlock = l1Mems.slice(0, 80).map(m => `[${m.type}] ${m.text}`).join('\n');
+
+  try {
+    const res = await llmFetch(LLM_URL, {
+      method: 'POST',
+      headers: {},
+      body: JSON.stringify({
+        model: LLM_MODEL,
+        messages: [
+          { role: 'system', content: 'Create a concise user persona (3-5 sentences) based on stored preferences, facts, and patterns. Focus on work style, technical preferences, and key goals.' },
+          { role: 'user', content: textBlock },
+        ],
+        max_tokens: 512,
+        temperature: 0.1,
+      }),
+      signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
+    });
+
+    if (!res.ok) return;
+    const data = await res.json();
+    const persona = data?.choices?.[0]?.message?.content?.trim();
+    if (!persona || persona.length < 20) return;
+
+    let embedding = null;
+    if (isEmbeddingReady()) {
+      try { embedding = new Float32Array(await embed(persona)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L3 embedding failed:', e.message); }
+    }
+    storeMemory({
+      text: persona,
+      type: 'profile',
+      session_id: 'pipeline',
+      entity: 'user',
+      attribute: 'persona',
+      context_prefix: 'Persona, user profile:',
+      importance: 1.0,
+      cone_layer: 3, // L3 core
+      embedding,
+    });
+
+    LOG_DEBUG && console.log(`[Pipeline] L3 persona extracted from ${l1Mems.length} L1 memories`);
+  } catch (err) {
+    LOG_DEBUG && console.error('[Pipeline] L3 persona error:', err.message);
+  }
+}
+
+/**
+ * Run pipeline: L1 (auto on store), L2 (periodic), L3 (when 50+ L1).
+ * Called from maintenance cron.
+ */
+export async function runPipeline() {
+  if (!PIPELINE_ENABLED) return;
+  await extractL2Scenes();
+  await extractL3Persona();
+}
+
+export function getPipelineStatus() {
+  const l0 = getAllActiveMemoriesNoEmbed().filter(m => !m.cone_layer || m.cone_layer === 0).length;
+  const l1 = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 1).length;
+  const l2 = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 2).length;
+  const l3 = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 3).length;
+  return { enabled: PIPELINE_ENABLED, layers: { L0_episode: l0, L1_facet: l1, L2_abstraction: l2, L3_core: l3 } };
+}
