@@ -255,7 +255,7 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
                         if (currentPhase !== 'think') {
                             currentPhase = 'think'
                             // Prepend search info to first thinking chunk if available
-                            if (web_search_info) {
+                            if (web_search_info && !toolcallEnabled) {
                                 const searchTable = await accountManager.generateMarkdownTable(web_search_info, config.searchInfoMode)
                                 content = searchTable + '\n\n' + content
                             }
@@ -325,7 +325,7 @@ response.on('end', async () => {
                 }
 
                 // Append search info for non-thinking mode
-                if ((config.outThink === false || !enable_thinking) && web_search_info && config.searchInfoMode === "text") {
+                if ((config.outThink === false || !enable_thinking) && !toolcallEnabled && web_search_info && config.searchInfoMode === "text") {
                     const webSearchTable = await accountManager.generateMarkdownTable(web_search_info, "text")
                     writeChunk({ "content": `\n\n---\n${webSearchTable}` })
                 }
@@ -447,7 +447,7 @@ const handleNonStreamResponse = async (res, response, enable_thinking, enable_we
                         let content = delta.content
 
                         if (delta.phase === 'think') {
-                            if (currentPhase !== 'think' && web_search_info) {
+                            if (currentPhase !== 'think' && web_search_info && !toolcallEnabled) {
                                 const searchTable = await accountManager.generateMarkdownTable(web_search_info, config.searchInfoMode)
                                 reasoningContent += searchTable + '\n\n'
                             }
@@ -472,7 +472,7 @@ const handleNonStreamResponse = async (res, response, enable_thinking, enable_we
             response.on('error', (error) => reject(error))
         })
 
-        if ((config.outThink === false || !enable_thinking) && web_search_info && config.searchInfoMode === "text") {
+        if ((config.outThink === false || !enable_thinking) && !toolcallEnabled && web_search_info && config.searchInfoMode === "text") {
             const webSearchTable = await accountManager.generateMarkdownTable(web_search_info, "text")
             fullContent += `\n\n---\n${webSearchTable}`
         }
