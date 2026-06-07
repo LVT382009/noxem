@@ -97,7 +97,8 @@ const config = {
     disabledAccounts: parseEmailList(process.env.DISABLED_ACCOUNTS),
     // Maximum upstream-request retries when network errors look proxy-related
     proxyMaxRetries: Math.max(1, parseInt(process.env.PROXY_MAX_RETRIES) || 3),
-    // Serverless platform detection — Vercel, Netlify, AWS Lambda all
+  // Auto-continue: max continuation requests when upstream hits context length limit (default 3)
+  autoContinueMax: Math.max(0, parseInt(process.env.AUTO_CONTINUE_MAX) || 3),    // Serverless platform detection — Vercel, Netlify, AWS Lambda all
     // share the same "ephemeral container, no persistent disk" property
     // that makes DATA_SAVE_MODE=file unsafe.
     isServerless: !!(

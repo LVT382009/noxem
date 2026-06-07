@@ -124,6 +124,7 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
             total_tokens: 0
         }
         let completionContent = ''
+    let upstreamFinishReason = null
   let streamClosed = false
 
         let promptText = ''
@@ -243,8 +244,12 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
                     }
 
                     if (!delta || !delta.content ||
-                        (delta.phase !== 'think' && delta.phase !== 'answer')) {
-                        continue
+                      (delta.phase !== 'think' && delta.phase !== 'answer')) {
+                      // Capture upstream finish_reason before skipping this chunk
+                      if (decodeJson.choices[0].finish_reason) {
+                        upstreamFinishReason = decodeJson.choices[0].finish_reason
+                      }
+                      continue
                     }
 
                     let content = delta.content
@@ -338,7 +343,101 @@ response.on('end', async () => {
                 totalTokens.completion_tokens = Math.max(0, totalTokens.completion_tokens || 0)
                 totalTokens.total_tokens = totalTokens.prompt_tokens + totalTokens.completion_tokens
 
-                const finishReason = toolCallsEmitted ? 'tool_calls' : 'stop'
+        // Auto-continue: if upstream hit context length limit, send continuation
+        // This handles Qwen's 130K token context window — when the model output
+        // is truncated (finish_reason='length'), we append a continuation request
+        // transparently so the client sees a seamless response.
+        let autoContinueCount = 0
+        while (upstreamFinishReason === 'length' && autoContinueCount < config.autoContinueMax && !res.writableEnded) {
+          autoContinueCount++
+          logger.info('Auto-continue #' + autoContinueCount + ': upstream hit context limit, sending continuation', 'AUTOCONT')
+          // Build continuation request: append partial assistant content + continue prompt
+          const partialAssistant = completionContent.trimEnd()
+          if (!partialAssistant) break // Nothing to continue from
+          const continueBody = {
+            ...requestBody,
+            messages: [
+              ...(Array.isArray(requestBody?.messages) ? requestBody.messages : []),
+              { role: 'assistant', content: partialAssistant },
+              { role: 'user', content: 'Continue from where you left off. Do not repeat what you already wrote.' },
+            ],
+          }
+          // Reset tracking state for the continuation stream
+          upstreamFinishReason = null
+          currentPhase = null
+          let continueContent = ''
+          try {
+            const continueData = await sendChatRequest(continueBody)
+            if (!continueData || !continueData.status || !continueData.response) break
+            const contDecoder = new TextDecoder('utf-8')
+            let contBuf = ''
+            const contPromise = new Promise((resolve, reject) => {
+              const contTimeout = setTimeout(() => {
+                logger.warn('Auto-continue stream timeout', 'AUTOCONT')
+                try { continueData.response.destroy() } catch {}
+                resolve()
+              }, 180000)
+              continueData.response.on('data', (chunk) => {
+                const text = contDecoder.decode(chunk, { stream: true })
+                contBuf += text
+                const items = []
+                let si = 0
+                while (true) {
+                  const ds = contBuf.indexOf('data: ', si)
+                  if (ds === -1) break
+                  const de = contBuf.indexOf('\n\n', ds)
+                  if (de === -1) break
+                  items.push(contBuf.substring(ds, de).trim())
+                  si = de + 2
+                }
+                if (si > 0) contBuf = contBuf.substring(si)
+                for (const item of items) {
+                  try {
+                    let dc = item.replace('data: ', '')
+                    let p = isJson(dc) ? JSON.parse(dc) : null
+                    if (!p || !p.choices || p.choices.length === 0) continue
+                    if (p.usage) {
+                      totalTokens.prompt_tokens += p.usage.prompt_tokens || 0
+                      totalTokens.completion_tokens += p.usage.completion_tokens || 0
+                    }
+                    if (p.choices[0].finish_reason) upstreamFinishReason = p.choices[0].finish_reason
+                    const d = p.choices[0].delta
+                    if (!d || !d.content || (d.phase !== 'think' && d.phase !== 'answer')) continue
+                    let cont = d.content
+                    continueContent += cont
+                    if (d.phase === 'answer') {
+                      // Stream as regular content to client
+                      if (sieve) {
+                        const out = sieve.push(cont)
+                        if (out.textDelta) {
+                          const cleaned = cleanToolRefusal(out.textDelta)
+                          if (cleaned !== null) out.textDelta = cleaned
+                        }
+                        if (out.textDelta) writeChunk({ "content": out.textDelta })
+                        if (out.toolCallsDelta) writeToolCallDeltas(out.toolCallsDelta)
+                      } else {
+                        writeChunk({ "content": cont })
+                      }
+                    }
+                  } catch {}
+                }
+              })
+              continueData.response.on('end', () => { clearTimeout(contTimeout); resolve() })
+              continueData.response.on('error', (err) => { clearTimeout(contTimeout); logger.error('Auto-continue stream error: ' + (err && err.message), 'AUTOCONT'); resolve() })
+            })
+            await contPromise
+            completionContent += continueContent
+            logger.info('Auto-continue #' + autoContinueCount + ' done: ' + continueContent.length + ' chars, finish=' + (upstreamFinishReason || 'null'), 'AUTOCONT')
+          } catch (contErr) {
+            logger.error('Auto-continue request failed: ' + (contErr && contErr.message), 'AUTOCONT')
+            break
+          }
+        }
+        if (autoContinueCount > 0) {
+          logger.info('Auto-continue complete: ' + autoContinueCount + ' continuations, total content: ' + completionContent.length + ' chars', 'AUTOCONT')
+        }
+
+                        const finishReason = toolCallsEmitted ? 'tool_calls' : 'stop'
 
                 // Finish chunk
                 res.write(`data: ${JSON.stringify({
@@ -387,6 +486,7 @@ const handleNonStreamResponse = async (res, response, enable_thinking, enable_we
         let currentPhase = null
         let appendedImageMarkdownSet = new Set()
         let pendingImageMarkdownList = []
+      let upstreamFinishReason = null
 
         let totalTokens = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
 
@@ -442,7 +542,10 @@ const handleNonStreamResponse = async (res, response, enable_thinking, enable_we
                             }
                         }
 
-                        if (!delta || !delta.content || (delta.phase !== 'think' && delta.phase !== 'answer')) continue
+            if (!delta || !delta.content || (delta.phase !== 'think' && delta.phase !== 'answer')) {
+              if (decodeJson.choices[0].finish_reason) upstreamFinishReason = decodeJson.choices[0].finish_reason
+              continue
+            }
 
                         let content = delta.content
 
@@ -476,6 +579,79 @@ const handleNonStreamResponse = async (res, response, enable_thinking, enable_we
             const webSearchTable = await accountManager.generateMarkdownTable(web_search_info, "text")
             fullContent += `\n\n---\n${webSearchTable}`
         }
+
+    // Auto-continue for non-streaming: if upstream hit context length limit
+    let autoContinueCount = 0
+    while (upstreamFinishReason === 'length' && autoContinueCount < config.autoContinueMax) {
+      autoContinueCount++
+      logger.info('Auto-continue #' + autoContinueCount + ' (non-stream): upstream hit context limit', 'AUTOCONT')
+      const partialAssistant = fullContent.trimEnd()
+      if (!partialAssistant) break
+      const continueBody = {
+        ...requestBody,
+        messages: [
+          ...(Array.isArray(requestBody?.messages) ? requestBody.messages : []),
+          { role: 'assistant', content: partialAssistant },
+          { role: 'user', content: 'Continue from where you left off. Do not repeat what you already wrote.' },
+        ],
+      }
+      upstreamFinishReason = null
+      currentPhase = null
+      try {
+        const continueData = await sendChatRequest(continueBody)
+        if (!continueData || !continueData.status || !continueData.response) break
+        const contDecoder = new TextDecoder('utf-8')
+        let contBuf = ''
+        let contContent = ''
+        let contReasoning = ''
+        await new Promise((resolve, reject) => {
+          const contTimeout = setTimeout(() => { try { continueData.response.destroy() } catch {}; resolve() }, 180000)
+          continueData.response.on('data', (chunk) => {
+            const text = contDecoder.decode(chunk, { stream: true })
+            contBuf += text
+            const items = []
+            let si = 0
+            while (true) {
+              const ds = contBuf.indexOf('data: ', si)
+              if (ds === -1) break
+              const de = contBuf.indexOf('\n\n', ds)
+              if (de === -1) break
+              items.push(contBuf.substring(ds, de).trim())
+              si = de + 2
+            }
+            if (si > 0) contBuf = contBuf.substring(si)
+            for (const item of items) {
+              try {
+                let dc = item.replace('data: ', '')
+                let p = isJson(dc) ? JSON.parse(dc) : null
+                if (!p || !p.choices || p.choices.length === 0) continue
+                if (p.usage) {
+                  totalTokens.prompt_tokens += p.usage.prompt_tokens || 0
+                  totalTokens.completion_tokens += p.usage.completion_tokens || 0
+                }
+                if (p.choices[0].finish_reason) upstreamFinishReason = p.choices[0].finish_reason
+                const d = p.choices[0].delta
+                if (!d || !d.content) continue
+                if (d.phase === 'think') contReasoning += d.content
+                else if (d.phase === 'answer') contContent += d.content
+                else contContent += d.content
+              } catch {}
+            }
+          })
+          continueData.response.on('end', () => { clearTimeout(contTimeout); resolve() })
+          continueData.response.on('error', (err) => { clearTimeout(contTimeout); resolve() })
+        })
+        fullContent += contContent
+        reasoningContent += contReasoning
+        logger.info('Auto-continue #' + autoContinueCount + ' (non-stream) done: ' + contContent.length + ' chars', 'AUTOCONT')
+      } catch (contErr) {
+        logger.error('Auto-continue (non-stream) failed: ' + (contErr && contErr.message), 'AUTOCONT')
+        break
+      }
+    }
+    if (autoContinueCount > 0) {
+      logger.info('Auto-continue (non-stream) complete: ' + autoContinueCount + ' continuations', 'AUTOCONT')
+    }
 
         if (totalTokens.prompt_tokens === 0 && totalTokens.completion_tokens === 0) {
             totalTokens = createUsageObject(requestBody?.messages || '', fullContent + reasoningContent, null)
