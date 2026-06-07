@@ -19,6 +19,17 @@ const TOOL_TAG_OPEN = "##TOOL_CALL##"
 const TOOL_TAG_CLOSE = "##END_CALL##"
 const TOOL_RESULT_OPEN = "[Tool Result]"
 const TOOL_RESULT_CLOSE = "[/Tool Result]"
+// Regex to strip [Tool Result...]...[/Tool Result] blocks from model output.
+// The model sometimes echoes the few-shot format from the prompt as visible text.
+// Matches: [Tool Result], [Tool Result tool_call_id="..." name="...">], etc.
+const TOOL_RESULT_REGEX = /\[Tool Result[^\]]*\][\s\S]*?\[\/Tool Result\]/g
+
+function stripToolResultBlocks(text) {
+  if (!text || typeof text !== 'string') return text
+  return text.replace(TOOL_RESULT_REGEX, '').replace(/\n{3,}/g, '\n\n').trimStart()
+}
+
+
 
 /* ---------------- gate ---------------- */
 function hasTools(reqBody) {
@@ -784,7 +795,7 @@ const CLOSE = TOOL_TAG_CLOSE
     buf += chunk
     const result = _scan()
     buf = result.pending
-    return { textDelta: result.textDelta, toolCallsDelta: result.toolCallsDelta }
+    let td = result.textDelta; if (td) td = stripToolResultBlocks(td); return { textDelta: td, toolCallsDelta: result.toolCallsDelta }
   }
 
   function flush() {
@@ -813,13 +824,16 @@ const CLOSE = TOOL_TAG_CLOSE
         buf = ''
         return { textDelta: textBefore, toolCallsDelta: [tc] }
       }
-      // Can't parse — emit as raw text
-      const out = buf; buf = ''
-      return { textDelta: out, toolCallsDelta: null }
+      // Can’t parse — strip stray tags, emit cleaned text
+        let out = buf; buf = ''
+        out = out.replace(/##TOOL_CALL##/g, '').replace(/##END_CALL##/g, '');
+        out = stripToolResultBlocks(out);
+        return { textDelta: out || '', toolCallsDelta: null }
     }
 
-    // No <tool> tag at all — emit as text
-    const out = buf; buf = ''
+    // No <tool> tag at all — strip any stray format markers
+    let out = buf; buf = ''
+    out = stripToolResultBlocks(out)
     return { textDelta: out, toolCallsDelta: null }
   }
 
@@ -899,5 +913,6 @@ module.exports = {
   cleanToolRefusal,
   buildRefusalCorrection,
   cryptoRandom,
+  stripToolResultBlocks,
   _internal: { tryJsonRepair, repairQuotes, balanceBrackets, compressSchemaType, shortDesc }
 }

@@ -4,7 +4,7 @@
  * and streams Qwen raw SSE directly to Anthropic SSE (no fakeRes interception)
  */
 
-const { createSieve, deobfuscateToolName, cryptoRandom, parseToolCallsFromText, cleanToolRefusal } = require('../utils/toolcall.js')
+const { createSieve, deobfuscateToolName, cryptoRandom, parseToolCallsFromText, cleanToolRefusal, stripToolResultBlocks } = require('../utils/toolcall.js')
 const { logger } = require('../utils/logger')
 
 /**
@@ -162,7 +162,7 @@ function openaiToAnthropicResponse(openaiResponse, model) {
   if (choice && choice.message && choice.message.content) {
     content.push({
       type: 'text',
-      text: choice.message.content
+      text: stripToolResultBlocks(choice.message.content)
     })
   }
 
@@ -388,6 +388,7 @@ let keepAliveInterval = setInterval(() => {
         const content = delta.content
 
         if (delta.phase === 'think') {
+                if (toolcallEnabled) continue // suppress think-phase when tools active
           // --- Thinking phase -> Anthropic thinking block ---
           if (currentPhase !== 'think') {
             closeTextBlock()
@@ -453,7 +454,7 @@ let keepAliveInterval = setInterval(() => {
               writeEvent('content_block_delta', {
                 type: 'content_block_delta',
                 index: blockIndex,
-                delta: { type: 'text_delta', text: out.textDelta }
+                delta: { type: 'text_delta', text: stripToolResultBlocks(out.textDelta) }
               })
             }
             if (out.toolCallsDelta && out.toolCallsDelta.length > 0) {
@@ -497,7 +498,7 @@ let keepAliveInterval = setInterval(() => {
             writeEvent('content_block_delta', {
               type: 'content_block_delta',
               index: blockIndex,
-              delta: { type: 'text_delta', text: content }
+              delta: { type: 'text_delta', text: stripToolResultBlocks(content) }
             })
           }
         }
@@ -560,7 +561,7 @@ let keepAliveInterval = setInterval(() => {
         writeEvent('content_block_delta', {
           type: 'content_block_delta',
           index: blockIndex,
-          delta: { type: 'text_delta', text: out.textDelta }
+          delta: { type: 'text_delta', text: stripToolResultBlocks(out.textDelta) }
         })
       }
       if (out.toolCallsDelta && out.toolCallsDelta.length > 0) {

@@ -371,15 +371,10 @@ for (const msg of rewrittenMessages) {
     msg.content = cleanAssistantRefusals(msg.content)
   }
 }
-// For tool-call mode, prefix with /no_think to skip reasoning and speed up response.
-// This produces faster, more focused tool calls without extended thinking overhead.
-if (toolcallEnabled) {
-  const noThinkPrefix = '/no_think\n'
-  // Insert into the system text if present, or prepend to prompt
-  if (systemText) {
-    systemText = noThinkPrefix + systemText
-  }
-}
+// NOTE: /no_think prefix was previously used for tool-call mode but REMOVED.
+// Research shows /no_think is unstable (Qwen3-32B HF discussions) and degrades
+// tool-call format quality. The model needs reasoning to properly format
+// ##TOOL_CALL## blocks. feature_config already sets thinking_enabled=false.
 const { prompt: finalPrompt, sysPart: _sysPart, toolsPart: _toolsPart, historyParts: _historyParts, historyChars: _historyChars } = flattenMessagesToPrompt(rewrittenMessages, systemText, toolPrompt)
 
 
@@ -630,7 +625,7 @@ const requestBody = {
             auto_thinking: toolcallEnabled ? false : true,
             thinking_mode: thinkingConfig.thinking_enabled ? 'Thinking' : 'Auto',
             thinking_format: 'summary',
-            auto_search: effectiveChatType === "search" || !toolcallEnabled,
+            auto_search: effectiveChatType === "search",
             code_interpreter: false,
             plugins_enabled: false,
             function_calling: false,

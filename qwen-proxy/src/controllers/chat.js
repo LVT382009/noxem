@@ -256,6 +256,7 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
                     completionContent += content
 
                     if (delta.phase === 'think') {
+            if (toolcallEnabled) continue // suppress think-phase when tools active
                         // Thinking phase: send as reasoning_content (OpenAI standard)
                         if (currentPhase !== 'think') {
                             currentPhase = 'think'

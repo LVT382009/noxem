@@ -1,5 +1,5 @@
 const { logger } = require('./logger')
-const { cleanToolRefusal, parseToolCallsFromText } = require('./toolcall')
+const { cleanToolRefusal, parseToolCallsFromText, stripToolResultBlocks } = require('./toolcall')
 
 /**
  * Accumulate upstream Qwen SSE response into a single OpenAI-format response object.
@@ -86,6 +86,8 @@ function accumulateResponse(response, enable_thinking, toolcallEnabled = false, 
 
           const delta = parsed.choices[0].delta
           if (!delta) continue
+            // Capture web_search_info: skip web_search deltas to prevent metadata leaks
+            if (delta && delta.name === 'web_search') continue
 
           // Handle inline images
           if (delta.extra && delta.extra.image_list) {
@@ -101,7 +103,8 @@ function accumulateResponse(response, enable_thinking, toolcallEnabled = false, 
             currentPhase = 'answer'
             fullContent += delta.content
           } else if (delta.content && !delta.phase) {
-            fullContent += delta.content
+            // Phaseless deltas often contain echoed format markers when toolcallEnabled
+                if (!toolcallEnabled) fullContent += delta.content
           }
         } catch (parseErr) {
           logger.warn('SSE chunk parse failed in accumulateResponse: ' + (parseErr && parseErr.message || parseErr), 'ACCUMULATE')
@@ -145,10 +148,12 @@ function accumulateResponse(response, enable_thinking, toolcallEnabled = false, 
         }
 
         if (parsed.toolCalls.length > 0) {
-          message.content = parsed.content
+          message.content = stripToolResultBlocks(parsed.content)
           message.tool_calls = parsed.toolCalls
           finish_reason = 'tool_calls'
         } else if (fullContent) {
+                fullContent = stripToolResultBlocks(fullContent)
+                message.content = fullContent
           logger.info('Tool call parse failed after all fallbacks. fullContent len=' + fullContent.length + ' reasoning len=' + (reasoningContent || '').length, 'ACCUMULATE')
         }
       }
