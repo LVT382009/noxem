@@ -105,7 +105,7 @@ const handleStreamResponse = async (res, response, enable_thinking, enable_web_s
   }, 15000)
 
   // SSE retry directive — tells clients to auto-reconnect after 10s on disconnect
-  res.write('retry: 10000\n\n')
+  // NOTE: SSE 'retry:' directive removed — it breaks OpenAI Python SDK's SSE parser (JSONDecodeError)
 
   // Detect client disconnect — stop upstream if client is gone
   res.on('close', () => {
