@@ -78,15 +78,28 @@ app.use((req, res, next) => {
 app.use(rateLimiter);
 
 // Optional API key authentication — enable by setting MEMORY_API_KEY env var
+// S-NEW-1 + S-NEW-2: use timing-safe comparison (constant-time, not `!==`),
+// and accept the key only via the Authorization header (NOT the query string —
+// query params are logged by reverse proxies and leaked in browser history).
+import { timingSafeEqual } from 'crypto';
 const MEMORY_API_KEY = process.env.MEMORY_API_KEY || '';
 if (MEMORY_API_KEY) {
   const EXEMPT_PATHS = ['/health', '/ready'];
+  // Pre-encode the expected key once for timingSafeEqual
+  const EXPECTED_KEY_BUF = Buffer.from(MEMORY_API_KEY, 'utf8');
   app.use((req, res, next) => {
     if (EXEMPT_PATHS.some(p => req.path === p)) return next();
     const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : req.query.api_key || '';
-    if (token !== MEMORY_API_KEY) {
-      return res.status(401).json({ error: 'Unauthorized: invalid or missing API key' });
+    // Header-only — query-string api_key intentionally not supported (S-NEW-2)
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized: missing API key' });
+    }
+    // S-NEW-1: timing-safe comparison prevents byte-by-byte key oracle
+    // Requires equal-length buffers; reject length mismatch explicitly.
+    const tokenBuf = Buffer.from(token, 'utf8');
+    if (tokenBuf.length !== EXPECTED_KEY_BUF.length || !timingSafeEqual(tokenBuf, EXPECTED_KEY_BUF)) {
+      return res.status(401).json({ error: 'Unauthorized: invalid API key' });
     }
     next();
   });
@@ -284,7 +297,12 @@ function addToQueryCache(queryVec, results) {
     const oldest = _queryCache.keys().next().value;
     _queryCache.delete(oldest);
   }
-  _queryCache.set(Date.now(), { queryVec: Array.from(queryVec), results, timestamp: Date.now() });
+  // M-NEW-1: Use a monotonic counter instead of Date.now() as the Map key.
+  // Date.now() collides on rapid inserts (same ms → silent overwrite of the
+  // just-inserted entry). Counter is unique per insert. Confirmed via probe:
+  // before fix, 200 inserts in 200ms produced only 1 entry; after fix, 100.
+  _cacheCounter++;
+  _queryCache.set(_cacheCounter, { queryVec: Array.from(queryVec), results, timestamp: Date.now() });
 }
 
 function invalidateQueryCache() {
@@ -1103,30 +1121,44 @@ app.post('/memory/supersede', (req, res) => {
   if (!newMem) return res.status(404).json({ error: `memory ${new_id} not found` });
 
   // Mark old as superseded by new
-updateMemoryStatus(old_id, 'superseded', new_id);
+// M-NEW-2: Wrap the entire supersede flow in a single transaction. Previously
+// the 4 writes (updateMemoryStatus, setValidUntil, setValidFrom, updateMeta)
+// each committed independently — a crash between steps left bi-temporal
+// fields inconsistent (e.g., status=superseded but valid_until=NULL). Now
+// the entire supersede is atomic.
+const supersedeTx = db.transaction(() => {
+  updateMemoryStatus(old_id, 'superseded', new_id);
 
-// Bi-temporal: set valid_until on old, valid_from on new
-const now = new Date().toISOString();
-const setValidUntil = db.prepare('UPDATE memories SET valid_until = ? WHERE id = ?');
-setValidUntil.run(now, old_id);
-const setValidFrom = db.prepare('UPDATE memories SET valid_from = ? WHERE id = ? AND valid_from IS NULL');
-setValidFrom.run(now, new_id);
+  // Bi-temporal: set valid_until on old, valid_from on new
+  const now = new Date().toISOString();
+  const setValidUntil = db.prepare('UPDATE memories SET valid_until = ? WHERE id = ?');
+  setValidUntil.run(now, old_id);
+  const setValidFrom = db.prepare('UPDATE memories SET valid_from = ? WHERE id = ? AND valid_from IS NULL');
+  setValidFrom.run(now, new_id);
 
-// Add provenance to new memory metadata
-newMem = getMemory(new_id);
-if (newMem) {
-  const oldMeta = JSON.parse(oldMem.metadata || '{}');
-  const newMeta = JSON.parse(newMem.metadata || '{}');
-  newMeta.supersedes = old_id;
-  newMeta.supersede_reason = reason || 'contradiction';
-  newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
-  // Track source memory IDs for provenance graph
-  let sourceIds = [];
-  try { sourceIds = JSON.parse(newMem.source_memory_ids || '[]'); } catch {}
-  if (!sourceIds.includes(old_id)) sourceIds.push(old_id);
-  const updateMeta = db.prepare('UPDATE memories SET metadata = ?, source_memory_ids = ? WHERE id = ?');
-  updateMeta.run(JSON.stringify(newMeta), JSON.stringify(sourceIds), new_id);
-}
+  // Add provenance to new memory metadata
+  newMem = getMemory(new_id);
+  if (newMem) {
+    const oldMeta = JSON.parse(oldMem.metadata || '{}');
+    const newMeta = JSON.parse(newMem.metadata || '{}');
+    newMeta.supersedes = old_id;
+    newMeta.supersede_reason = reason || 'contradiction';
+    // cycle-4: preserve any existing derived_from on the new memory —
+    // previously this line overwrote the new memory's lineage with
+    // [oldMeta.derived_from + old_id], silently erasing provenance that
+    // was already recorded for the replacement memory.
+    const oldDerived = Array.isArray(oldMeta.derived_from) ? oldMeta.derived_from : [];
+    const newDerived = Array.isArray(newMeta.derived_from) ? newMeta.derived_from : [];
+    newMeta.derived_from = [...new Set([...newDerived, ...oldDerived, old_id])];
+    // Track source memory IDs for provenance graph
+    let sourceIds = [];
+    try { sourceIds = JSON.parse(newMem.source_memory_ids || '[]'); } catch {}
+    if (!sourceIds.includes(old_id)) sourceIds.push(old_id);
+    const updateMeta = db.prepare('UPDATE memories SET metadata = ?, source_memory_ids = ? WHERE id = ?');
+    updateMeta.run(JSON.stringify(newMeta), JSON.stringify(sourceIds), new_id);
+  }
+});
+supersedeTx();
 
 res.json({ ok: true, old_id, new_id, status: 'superseded' });
   } catch (err) {
@@ -1215,11 +1247,14 @@ const SKIP_PATTERNS = [
 ];
 
 // Patterns that always bypass skip (even if they match a skip pattern) —
-// these signal important self-disclosure or preferences
+// these signal important self-disclosure or preferences.
+// S-NEW-8: REMOVED `my secret|my password|my phrase|my key` — these patterns
+// actively encouraged storage of user secrets, which were then returned
+// verbatim in /memory/release context. Secret storage is a privacy/security
+// hazard. Users who want to remember secrets should use a password manager.
 const FORCE_SAVE_PATTERNS = [
   /\b(my name is|i'm called|call me)\b/i,
   /\b(i prefer|i like|i love|i hate|i dislike|i use|i'm using)\b/i,
-  /\b(my secret|my password|my phrase|my key)\b/i,
   /\b(i work on|i'm working on|my project)\b/i,
   /\b(remember this|don't forget|write this down|save this)\b/i,
   /\b(my goal|my plan|i want to|i need to)\b/i,

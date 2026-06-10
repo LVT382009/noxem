@@ -86,8 +86,30 @@ const DTYPE = process.env.EMBEDDING_DTYPE || 'q8'; // q8: 68.13 vs fp32: 68.36 o
 const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '256'); // MRL 256d: only 1.5% loss vs 768d, 3x less storage
 // Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
 const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || resolve(PROJECT_ROOT, '.cache/embedding');
-const HF_MIRROR = process.env.HF_ENDPOINT || '';
+// S-NEW-10: HF_ENDPOINT allows pointing transformers.js at an arbitrary host.
+// That host can serve a malicious ONNX model that gets executed by onnxruntime.
+// Pin to a small allowlist of well-known mirrors; warn loudly on override.
+const HF_ALLOWED_MIRRORS = new Set([
+  'https://huggingface.co/',
+  'https://hf-mirror.com/',
+]);
+const HF_MIRROR_RAW = process.env.HF_ENDPOINT || '';
+// cycle-4: normalize HF_ENDPOINT once — strip trailing slashes and lowercase
+// the host so that variations like 'https://HF-Mirror.com/' and
+// 'https://hf-mirror.com' both match the same allowlist entry. Without this,
+// the URL-rewriter below produces nonsense like
+// `https://hf-mirror.comorg/...` when the user sets a non-allowlisted host.
+const HF_MIRROR = HF_MIRROR_RAW
+  ? (() => { try { return new URL(HF_MIRROR_RAW).origin + '/'; } catch { return HF_MIRROR_RAW.replace(/\/+$/, '/'); } })()
+  : '';
 if (HF_MIRROR) {
+  if (!HF_ALLOWED_MIRRORS.has(HF_MIRROR)) {
+    // cycle-4: unconditional warning (was gated on LOG_DEBUG). A production
+    // deployment with LOG_LEVEL=info must still see this supply-chain alert.
+    // Verification of model integrity should happen at the model-loading
+    // step (not yet implemented; recommended as a follow-up).
+    console.warn(`[HF_ENDPOINT] WARNING: ${HF_MIRROR} is not in the trusted-mirror allowlist (${[...HF_ALLOWED_MIRRORS].join(', ')}). Supply-chain risk: an attacker controlling this host could serve a malicious ONNX model. Verify model integrity via SHA-256 before deployment.`);
+  }
   env.remoteHost = HF_MIRROR;
   LOG_DEBUG && console.log(`Component download: using mirror ${HF_MIRROR}`);
 }
@@ -109,39 +131,135 @@ let loadError = null;
 let loadPromise = null;
 
 // Concurrency semaphore: serialize inference calls (transformers.js is NOT thread-safe)
+// C-NEW-1 fix: add MAX_HOLD_MS watchdog that force-releases the lock if the
+// inference never settles (transformers.js / onnxruntime deadlock). Without this,
+// a single stuck inference permanently freezes the embedding engine.
+//
+// cycle-4: the watchdog alone is unsafe — releasing the lock while a wedged
+// inference is still running lets the next request enter `model()` concurrently,
+// and the backend (transformers.js / onnxruntime) is explicitly not thread-safe.
+// Solution: on timeout, KEEP the lock held AND set a `quarantined` flag so future
+// withLock calls reject immediately. The watchdog still force-releases the lock
+// after MAX_LOCK_HOLD_MS to prevent an infinite hang, but only if no one has
+// cleared the quarantine. Re-init (`initEmbeddingEngine()` on a successful model
+// reload) clears the quarantine.
 let inferenceLock = Promise.resolve();
+let quarantined = false;
+const MAX_LOCK_HOLD_MS = 120_000; // 2 min max — longer than 60s timeout + grace
+function clearQuarantine() { quarantined = false; }
 function withLock(fn) {
+  if (quarantined) {
+    return Promise.reject(new Error('Embedding engine is quarantined after a previous inference failure. Restart the service to recover.'));
+  }
   let release;
+  let watchdog;
   const next = new Promise(r => { release = r; });
   const prev = inferenceLock;
   inferenceLock = next;
   return prev.then(() => {
+    if (quarantined) {
+      release();
+      return Promise.reject(new Error('Embedding engine is quarantined after a previous inference failure. Restart the service to recover.'));
+    }
     let result;
     try {
       result = fn();
     } catch (syncErr) {
-      release(); // Release lock on synchronous throw to prevent deadlock
+      release();
       throw syncErr;
     }
-    // Timeout returns error to caller but does NOT release the lock —
-    // the inference may still be running in transformers.js (not thread-safe).
-    // Release only when the actual inference completes.
-    let _inferenceTimer; const timeout = new Promise((_, reject) => { _inferenceTimer = setTimeout(() => reject(new Error("Inference timeout")), 60000); });
+    // Watchdog: force-release ONLY if the engine isn't already quarantined.
+    // The actual inference is then free to settle in the background without
+    // blocking subsequent calls. Quarantined path keeps the lock held
+    // indefinitely so we never let two inferences run concurrently.
+    let released = false;
+    const safeRelease = () => { if (!released) { released = true; clearTimeout(watchdog); release(); } };
+    watchdog = setTimeout(() => {
+      if (!released && !quarantined) {
+        console.error(`[withLock] Watchdog fired — force-releasing lock after ${MAX_LOCK_HOLD_MS}ms (inference may be stuck in onnxruntime)`);
+        released = true;
+        release();
+      }
+    }, MAX_LOCK_HOLD_MS);
+    if (typeof watchdog.unref === 'function') watchdog.unref(); // don't keep process alive
+
+    let _inferenceTimer;
+    const timeout = new Promise((_, reject) => {
+      _inferenceTimer = setTimeout(() => {
+        // cycle-4: timeout quarantines the engine. The lock stays held
+        // (release() not called here) so no new inference can start until
+        // the operator restarts. This is intentional — running two
+        // inferences against a non-thread-safe backend risks OOM and
+        // process wedge.
+        quarantined = true;
+        reject(new Error('Inference timeout — embedding engine quarantined. Restart the service to recover.'));
+      }, 60000);
+    });
     return Promise.race([result, timeout]).catch(err => {
-      // On timeout, caller gets error but lock stays held until inference finishes
-      result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); release(); });
+      // On timeout/error, the inference may still be running. Quarantine
+      // prevents the next caller from racing with it.
+      if (quarantined) {
+        result.catch(() => {}).finally(() => { /* keep lock held */ });
+      } else {
+        result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); safeRelease(); });
+      }
       throw err;
-    }).then(val => { clearTimeout(_inferenceTimer); release(); return val; });
+    }).then(val => { clearTimeout(_inferenceTimer); safeRelease(); return val; });
   });
 }
 
 
 // Validate cache directory: check if tokenizer_config.json exists and is non-empty.
 // If missing or empty, the cache is corrupted — clear it before loading.
-function validateCacheDir(cacheDir) {
+
+// cycle-4: centralized cache-deletion helper. Every `rmSync` call in this file
+// must go through this function so the SYSTEM_PATH_BLOCKLIST guard can never
+// be bypassed. Previously the validator had a guard at one callsite, but other
+// callsites (in initEmbeddingEngine's retry logic) called `fs.rmSync` directly
+// and skipped the guard entirely — an attacker who controlled EMBEDDING_CACHE
+// could set it to /etc/cron.d and the retry path would recursively delete it.
+const SYSTEM_PATH_BLOCKLIST = /^\/(?:etc|usr|var|boot|sys|proc|bin|sbin|lib|lib64|opt|root|home|tmp|dev|run|srv|mnt|media|snap)(?:\/|$)/;
+function safeRmCache(cacheDir, reason) {
+  if (!cacheDir) return false;
+  let resolved;
+  try { resolved = resolve(cacheDir); } catch { return false; }
+  if (SYSTEM_PATH_BLOCKLIST.test(resolved)) {
+    console.error(`[CacheRm] REFUSING to clear cache at ${resolved} — matches system path blocklist. Set EMBEDDING_CACHE to a project-local path.`);
+    return false;
+  }
+  // Only allow deletion if the path is the configured cache dir (or a strict
+  // subpath of it). This blocks the "set EMBEDDING_CACHE to /etc/secret" attack.
+  const expected = resolve(EMBED_CACHE_DIR);
+  if (resolved !== expected && !resolved.startsWith(expected + '/')) {
+    console.error(`[CacheRm] REFUSING to clear cache at ${resolved} — not under EMBEDDING_CACHE (${expected})`);
+    return false;
+  }
+  if (!fs.existsSync(resolved)) return false;
   try {
-    const resolved = resolve(cacheDir);
-    if (!fs.existsSync(resolved)) return; // no cache yet — fine
+    fs.rmSync(resolved, { recursive: true, force: true });
+    LOG_DEBUG && console.log(`[CacheRm] cleared ${resolved}${reason ? ' — ' + reason : ''}`);
+    return true;
+  } catch (err) {
+    console.error(`[CacheRm] failed to clear ${resolved}: ${err.message}`);
+    return false;
+  }
+}
+
+function validateCacheDir(cacheDir) {
+  let resolved;
+  try {
+    resolved = resolve(cacheDir);
+  } catch (e) {
+    LOG_DEBUG && console.error('Cache validator error (resolve):', e.message);
+    return;
+  }
+  if (!fs.existsSync(resolved)) return; // no cache yet — fine
+
+  // S-NEW-11: SAFETY GUARD — refuse to delete arbitrary paths. The cache
+  // dir can be set via EMBEDDING_CACHE env var. If the user points it at
+  // /etc/important or any other sensitive path, the rmSync below would
+  // delete that entire directory recursively. The check is now centralized
+  // in safeRmCache() (declared above); every rmSync goes through it.
 
   // 1. Find .tmp files from interrupted downloads
   // Transformers.js downloads to .tmp.RANDOM.suffix, then renames on completion.
@@ -162,62 +280,62 @@ function validateCacheDir(cacheDir) {
   if (tmpFiles.length > 0) {
     LOG_DEBUG && console.log(`Cache validator: found ${tmpFiles.length} temp file(s) from interrupted download(s) — clearing cache`);
     for (const f of tmpFiles) LOG_DEBUG && console.log(`  ${basename(f)}`);
-    fs.rmSync(resolved, { recursive: true, force: true });
+    safeRmCache(resolved, 'corrupt cache — interrupted downloads');
     return;
   }
 
-    // 2. Walk directories looking for empty or corrupt tokenizer_config.json
-    function checkDir(dir) {
-      try {
-        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          if (!entry.isDirectory()) continue;
-          // Direct structure: cache_dir/org/model/tokenizer_config.json
-          const tcPath = join(dir, entry.name, 'tokenizer_config.json');
-          if (fs.existsSync(tcPath)) {
-            const stat = fs.statSync(tcPath);
-            if (stat.size === 0) {
-              LOG_DEBUG && console.log('Cache validator: empty tokenizer_config.json — clearing cache');
-              fs.rmSync(resolved, { recursive: true, force: true });
-              return true;
-            }
-            try { JSON.parse(fs.readFileSync(tcPath, 'utf8')); }
-            catch {
-              LOG_DEBUG && console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
-              fs.rmSync(resolved, { recursive: true, force: true });
-              return true;
-            }
+  // 2. Walk directories looking for empty or corrupt tokenizer_config.json
+  function checkDir(dir) {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        // Direct structure: cache_dir/org/model/tokenizer_config.json
+        const tcPath = join(dir, entry.name, 'tokenizer_config.json');
+        if (fs.existsSync(tcPath)) {
+          const stat = fs.statSync(tcPath);
+          if (stat.size === 0) {
+            LOG_DEBUG && console.log('Cache validator: empty tokenizer_config.json — clearing cache');
+            safeRmCache(resolved, 'corrupt cache — empty tokenizer');
+            return true;
           }
-          // HuggingFace hub structure: cache_dir/models--org--model/snapshots/<hash>/
-          if (entry.name.startsWith('models--')) {
-            const snapDir = join(dir, entry.name, 'snapshots');
-            if (fs.existsSync(snapDir)) {
-              for (const hash of fs.readdirSync(snapDir)) {
-                const tcFile = join(snapDir, hash, 'tokenizer_config.json');
-                if (fs.existsSync(tcFile)) {
-                  if (fs.statSync(tcFile).size === 0) {
-                    LOG_DEBUG && console.log('Cache validator: empty tokenizer_config.json — clearing cache');
-                    fs.rmSync(resolved, { recursive: true, force: true });
-                    return true;
-                  }
-                  try { JSON.parse(fs.readFileSync(tcFile, 'utf8')); }
-                  catch {
-                    LOG_DEBUG && console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
-                    fs.rmSync(resolved, { recursive: true, force: true });
-                    return true;
-                  }
+          try { JSON.parse(fs.readFileSync(tcPath, 'utf8')); }
+          catch {
+            LOG_DEBUG && console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
+            safeRmCache(resolved, 'corrupt cache — bad tokenizer JSON');
+            return true;
+          }
+        }
+        // HuggingFace hub structure: cache_dir/models--org--model/snapshots/<hash>/
+        if (entry.name.startsWith('models--')) {
+          const snapDir = join(dir, entry.name, 'snapshots');
+          if (fs.existsSync(snapDir)) {
+            for (const hash of fs.readdirSync(snapDir)) {
+              const tcFile = join(snapDir, hash, 'tokenizer_config.json');
+              if (fs.existsSync(tcFile)) {
+                if (fs.statSync(tcFile).size === 0) {
+                  LOG_DEBUG && console.log('Cache validator: empty tokenizer_config.json — clearing cache');
+                  safeRmCache(resolved, 'corrupt cache — empty tokenizer (hub)');
+                  return true;
+                }
+                try { JSON.parse(fs.readFileSync(tcFile, 'utf8')); }
+                catch {
+                  LOG_DEBUG && console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
+                  safeRmCache(resolved, 'corrupt cache — bad tokenizer JSON (hub)');
+                  return true;
                 }
               }
             }
           }
-          // Recurse into subdirectories
-          if (checkDir(join(dir, entry.name))) return true;
         }
-      } catch {}
-      return false;
-    }
-    checkDir(resolved);
-  } catch (e) {
-    LOG_DEBUG && console.error('Cache validator error:', e.message);
+        // Recurse into subdirectories
+        if (checkDir(join(dir, entry.name))) return true;
+      }
+    } catch {}
+    return false;
+  }
+  try { checkDir(resolved); }
+  catch (e) {
+    LOG_DEBUG && console.error('Cache validator error (walk):', e.message);
   }
 }
 
@@ -239,13 +357,10 @@ export async function initEmbeddingEngine() {
           // Always clear cache on mirror fallback — old host downloads are incomplete
           const mirrorSwitched = !HF_MIRROR && env.remoteHost !== 'https://huggingface.co/';
           if (cacheCorrupted || mirrorSwitched || process.env.EMBEDDING_CLEAR_CACHE_ON_RETRY === 'true') {
-            const fs = await import('fs');
-            const path = await import('path');
-            const cachePath = path.resolve(EMBED_CACHE_DIR);
-            if (fs.existsSync(cachePath)) {
-              fs.rmSync(cachePath, { recursive: true, force: true });
-              LOG_DEBUG && console.log('  Cleared Brain-1 cache (corrupted — ' + (cacheCorrupted ? 'auto-detected' : 'EMBEDDING_CLEAR_CACHE_ON_RETRY=true') + ')');
-            }
+            // cycle-4: go through safeRmCache so the system-path blocklist
+            // and the EMBEDDING_CACHE constraint are enforced here too.
+            safeRmCache(EMBED_CACHE_DIR, `corrupted — ${cacheCorrupted ? 'auto-detected' : 'EMBEDDING_CLEAR_CACHE_ON_RETRY=true'}`);
+            LOG_DEBUG && console.log('  Cleared Brain-1 cache');
           } else {
             LOG_DEBUG && console.log('  Retrying with existing cache...');
           }
@@ -280,6 +395,10 @@ export async function initEmbeddingEngine() {
       clearTimeout(loadTimeoutId); // Clear timeout timer after successful load
       modelReady = true;
         loadError = null;
+        // cycle-4: successful re-init clears any prior quarantine. Callers
+        // who were rejected with "quarantined" can call initEmbeddingEngine()
+        // again and try once more.
+        clearQuarantine();
         LOG_DEBUG && console.log(`Brain-1 ready in ${((Date.now() - start) / 1000).toFixed(1)}s`);
         return;
       } catch (err) {

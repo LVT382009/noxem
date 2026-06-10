@@ -111,4 +111,4 @@ export function deleteVec(db, memoryId) {
   } catch (err) { LOG_DEBUG && console.error('[VectorIndex] deleteVec failed:', err.message); }
 }
 
-export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec };
+export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec, deleteVecStrict };

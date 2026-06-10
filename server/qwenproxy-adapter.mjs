@@ -46,22 +46,34 @@ const RETRY_BASE_MS = 2000;
 
 async function collectSSE(url, bodyObj, timeoutMs = 60000) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(bodyObj),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  // M-NEW-6: Single AbortController per attempt that we abort on retry.
+  // Previously each iteration created a fresh AbortSignal.timeout but the
+  // previous request's response body was never consumed on the 429/502 retry
+  // path — leaked TCP connections in the agent pool under sustained errors.
+  const ac = new AbortController();
+  const timeoutId = setTimeout(() => ac.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyObj),
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    // M-NEW-6: drain the body before retrying so the underlying socket is freed.
+    try { await res.text(); } catch {}
     if ((res.status === 429 || res.status === 502) && attempt < MAX_RETRIES) {
       const delay = RETRY_BASE_MS * Math.pow(2, attempt);
       console.error(`[Adapter] ${res.status} — retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
       continue;
     }
-    throw new Error(`QwenProxy returned ${res.status}: ${text.substring(0, 500)}`);
+    throw new Error(`QwenProxy returned ${res.status}: ${res.statusText || 'unknown'}`);
   }
 
   let content = '';
@@ -100,12 +112,37 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
 // ── SSE streaming passthrough ─────────────────────────────────
 
 async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 120000) {
-  const upstream = await fetch(upstreamUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(bodyObj),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  // M-NEW-5: Wire an AbortController to the client response so we cancel the
+  // upstream fetch as soon as the client disconnects. Previously the upstream
+  // fetch kept running until the LLM finished, wasting compute and bandwidth.
+  const abortController = new AbortController();
+  let clientClosed = false;
+  const onClientClose = () => {
+    clientClosed = true;
+    abortController.abort();
+  };
+  // 'close' fires for both abrupt disconnect and normal end-of-stream
+  clientRes.once('close', onClientClose);
+
+  // cycle-4: wrap the initial fetch in try/catch so an AbortError raised
+  // while the upstream is still resolving doesn't escape and get re-thrown
+  // to a caller whose socket has already closed. Previously the abort-aware
+  // catch only wrapped reader.read(), so a client disconnect during the
+  // initial fetch() left the request hanging.
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(bodyObj),
+      signal: abortController.signal,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError' && clientClosed) {
+      return; // expected — client disconnected
+    }
+    throw err;
+  }
 
   if (!upstream.ok) {
     const text = await upstream.text().catch(() => '');
@@ -127,23 +164,53 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // Guard against writing after the client disconnected
+      if (clientClosed) {
+        try { await reader.cancel(); } catch {}
+        break;
+      }
       clientRes.write(decoder.decode(value, { stream: true }));
     }
   } catch (err) {
-    LOG_DEBUG && console.error(`[llm-adapter] Stream error: ${err.message}`);
+    if (err.name === 'AbortError' && clientClosed) {
+      // Expected — client disconnected, we aborted. Don't log as an error.
+    } else {
+      LOG_DEBUG && console.error(`[llm-adapter] Stream error: ${err.message}`);
+    }
   } finally {
-    clientRes.end();
+    // Detach the close listener to avoid leaks
+    clientRes.off('close', onClientClose);
+    if (!clientRes.writableEnded) {
+      try { clientRes.end(); } catch {}
+    }
   }
 }
 
 // ── Read request body ────────────────────────────────────────
 
+// S-NEW-5: readBody must enforce a size limit to prevent OOM/DoS. Previously
+// this concatenated chunks with no cap — an attacker could stream gigabytes.
+// Default cap is 2 MB, matching the express.json limit on gemma4-server.
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => resolve(body));
-    req.on('error', reject);
+    let bytes = 0;
+    let aborted = false;
+    req.on('data', chunk => {
+      if (aborted) return;
+      bytes += chunk.length;
+      if (bytes > MAX_BODY_BYTES) {
+        aborted = true;
+        // Destroy the request stream so no more 'data' events fire.
+        req.destroy();
+        reject(Object.assign(new Error(`Request body exceeds ${MAX_BODY_BYTES} bytes`), { statusCode: 413, code: 'BODY_TOO_LARGE' }));
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => { if (!aborted) resolve(body); });
+    req.on('error', err => { if (!aborted) reject(err); });
   });
 }
 
