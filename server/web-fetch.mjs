@@ -62,6 +62,39 @@ function isPrivateHost(hostname) {
   return PRIVATE_HOST_PATTERNS.some(p => p.test(h) || p.test(hostname));
 }
 
+// cycle-4: defense against DNS rebinding. The string-based isPrivateHost
+// only checks the literal hostname. An attacker could register
+// `evil.example.com` that resolves to 127.0.0.1 — string check passes,
+// connection happens, SSRF succeeds. We resolve once and check the actual
+// returned IPs. Cached briefly (60s) to amortize the lookup cost across
+// redirects.
+const _dnsCache = new Map(); // hostname -> { ok: boolean, expires: number }
+const DNS_CACHE_TTL_MS = 60_000;
+async function resolvesToPrivate(hostname) {
+  if (!hostname) return true;
+  const h = hostname.replace(/^\[|\]$/g, '');
+  // If it's a literal IP, no resolution needed — just check the string.
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h) || h.includes(':')) {
+    return isPrivateHost(h);
+  }
+  const cached = _dnsCache.get(h);
+  const now = Date.now();
+  if (cached && cached.expires > now) return cached.ok;
+  let addresses = [];
+  try {
+    const recs = await dns.lookup(h, { all: true });
+    addresses = recs.map(r => r.address);
+  } catch {
+    // Lookup failed — fall back to string check (most attackers can't
+    // make their own domain unresolvable in our DNS, so the string
+    // check is the better defense for typos and the like).
+    return isPrivateHost(h);
+  }
+  const ok = addresses.length > 0 && addresses.every(isPrivateHost);
+  _dnsCache.set(h, { ok, expires: now + DNS_CACHE_TTL_MS });
+  return ok;
+}
+
 export function isFetchableUrl(url) {
   try {
     const parsed = new URL(url);
@@ -82,6 +115,13 @@ export function isFetchableUrl(url) {
  * Returns { url, title, text, error } — never throws.
  */
 export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX_TEXT_LENGTH, depth = 0 } = {}) {
+  // cycle-4: DNS rebinding defense — after the cheap string check passes,
+  // resolve the hostname and confirm no returned IP is private. Catches
+  // `evil.example.com -> 127.0.0.1` that string-only isFetchableUrl misses.
+  // We re-check on every redirect hop (depth 0 entry + each recurse).
+  if (await resolvesToPrivate(new URL(url).hostname)) {
+    return { url, title: '', text: '', error: 'private-host-on-resolve' };
+  }
   if (!isFetchableUrl(url)) {
     return { url, title: '', text: '', error: 'non-html-url' };
   }
@@ -112,14 +152,25 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
     // Handle redirects manually — validate each Location header.
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
-      if (!location || !isFetchableUrl(location)) {
-        return { url, title: '', text: '', error: 'redirect-blocked-or-missing' };
+      if (!location) {
+        return { url, title: '', text: '', error: 'redirect-missing-location' };
+      }
+      // cycle-4: resolve relative redirects against the current URL before
+      // validating. Many 301/302 responses use a relative Location like
+      // `/article` or `../login`, which `new URL(location)` would reject as
+      // invalid (the previous isFetchableUrl check returned false), causing
+      // valid same-origin redirects to be blocked.
+      let nextUrl;
+      try { nextUrl = new URL(location, url).toString(); }
+      catch { return { url, title: '', text: '', error: 'redirect-bad-location' }; }
+      if (!isFetchableUrl(nextUrl)) {
+        return { url, title: '', text: '', error: 'redirect-blocked' };
       }
       // Recurse with the validated redirect target (depth-bounded to 3 to avoid loops)
       if (depth >= 3) {
         return { url, title: '', text: '', error: 'redirect-depth-exceeded' };
       }
-      return fetchPage(location, { timeout, maxText, depth: depth + 1 });
+      return fetchPage(nextUrl, { timeout, maxText, depth: depth + 1 });
     }
 
     if (!response.ok) {

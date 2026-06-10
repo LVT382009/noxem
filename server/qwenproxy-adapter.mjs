@@ -124,12 +124,25 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
   // 'close' fires for both abrupt disconnect and normal end-of-stream
   clientRes.once('close', onClientClose);
 
-  const upstream = await fetch(upstreamUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(bodyObj),
-    signal: abortController.signal,
-  });
+  // cycle-4: wrap the initial fetch in try/catch so an AbortError raised
+  // while the upstream is still resolving doesn't escape and get re-thrown
+  // to a caller whose socket has already closed. Previously the abort-aware
+  // catch only wrapped reader.read(), so a client disconnect during the
+  // initial fetch() left the request hanging.
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(bodyObj),
+      signal: abortController.signal,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError' && clientClosed) {
+      return; // expected — client disconnected
+    }
+    throw err;
+  }
 
   if (!upstream.ok) {
     const text = await upstream.text().catch(() => '');

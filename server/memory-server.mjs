@@ -1143,7 +1143,13 @@ const supersedeTx = db.transaction(() => {
     const newMeta = JSON.parse(newMem.metadata || '{}');
     newMeta.supersedes = old_id;
     newMeta.supersede_reason = reason || 'contradiction';
-    newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
+    // cycle-4: preserve any existing derived_from on the new memory —
+    // previously this line overwrote the new memory's lineage with
+    // [oldMeta.derived_from + old_id], silently erasing provenance that
+    // was already recorded for the replacement memory.
+    const oldDerived = Array.isArray(oldMeta.derived_from) ? oldMeta.derived_from : [];
+    const newDerived = Array.isArray(newMeta.derived_from) ? newMeta.derived_from : [];
+    newMeta.derived_from = [...new Set([...newDerived, ...oldDerived, old_id])];
     // Track source memory IDs for provenance graph
     let sourceIds = [];
     try { sourceIds = JSON.parse(newMem.source_memory_ids || '[]'); } catch {}

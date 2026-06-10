@@ -1,6 +1,6 @@
 import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity } from './embedding-engine.mjs';
-import { deleteVec } from './vector-index.mjs';
+import { deleteVec, deleteVecStrict } from './vector-index.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 
@@ -332,39 +332,41 @@ async function consolidateMemories(memories) {
           embedding = vec; // S-#53: storeMemory->ensureEmbeddingBuffer converts array to Buffer
         } catch {}
 
-        const newId = storeMemory({
-          session_id: cluster[0].session_id || '',
-          type: bestType,
-          text: summaryText,
-          embedding,
-          metadata: {
-            source: 'consolidation',
-            extraction_method: 'significance_gated',
-            origin_session_id: cluster[0].session_id || '',
-            consolidated_from: clusterIds,
-            stored_at: new Date().toISOString(),
-          },
-          importance: newImportance,
-          context_prefix: `Consolidated ${cluster.length} memories about ${entity}:`,
-          entity,
-          attribute: cluster[0].attribute || '',
-        });
-
-        // M-NEW-3: Wrap the post-create mutation steps in a single transaction.
-        // Previously: storeMemory commits → updateSourceIds commits → for each
-        // cluster member: updateMemoryStatus + setValidUntil + deleteVec (each
-        // commits). A crash between steps left the new summary memory in place
-        // while the source memories were still 'active' — duplicate data
-        // forever. Now the entire batch rolls back on any failure.
+        // M-NEW-3 + cycle-4: Wrap the ENTIRE post-derive flow in a single
+        // transaction — including storeMemory(). Previously storeMemory()
+        // ran OUTSIDE the transaction; if the subsequent cluster updates
+        // failed, the new consolidated memory row was committed while the
+        // source memories were still 'active' — the exact duplicate-state
+        // bug this fix was meant to eliminate. Now storeMemory() runs
+        // INSIDE the transaction so a failure anywhere rolls back
+        // everything, including the new row.
         const consolidateCluster = db.transaction(() => {
+          const newId = storeMemory({
+            session_id: cluster[0].session_id || '',
+            type: bestType,
+            text: summaryText,
+            embedding,
+            metadata: {
+              source: 'consolidation',
+              extraction_method: 'significance_gated',
+              origin_session_id: cluster[0].session_id || '',
+              consolidated_from: clusterIds,
+              stored_at: new Date().toISOString(),
+            },
+            importance: newImportance,
+            context_prefix: `Consolidated ${cluster.length} memories about ${entity}:`,
+            entity,
+            attribute: cluster[0].attribute || '',
+          });
           updateSourceIds.run(JSON.stringify(clusterIds), newId);
           for (const m of cluster) {
             updateMemoryStatus(m.id, 'superseded', newId);
             setValidUntil.run(new Date().toISOString(), m.id);
-            deleteVec(db, m.id);
+            deleteVecStrict(db, m.id);  // cycle-4: was deleteVec (swallowed errors)
           }
+          return newId;
         });
-        consolidateCluster();
+        const newId = consolidateCluster();
 
         consolidatedCount++;
         LOG_DEBUG && console.log(`[Maintenance] Consolidated ${cluster.length} memories about "${entity}" -> #${newId} (importance: ${newImportance})`);
