@@ -100,11 +100,23 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
 // ── SSE streaming passthrough ─────────────────────────────────
 
 async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 120000) {
+  // M-NEW-5: Wire an AbortController to the client response so we cancel the
+  // upstream fetch as soon as the client disconnects. Previously the upstream
+  // fetch kept running until the LLM finished, wasting compute and bandwidth.
+  const abortController = new AbortController();
+  let clientClosed = false;
+  const onClientClose = () => {
+    clientClosed = true;
+    abortController.abort();
+  };
+  // 'close' fires for both abrupt disconnect and normal end-of-stream
+  clientRes.once('close', onClientClose);
+
   const upstream = await fetch(upstreamUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify(bodyObj),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: abortController.signal,
   });
 
   if (!upstream.ok) {
@@ -127,12 +139,25 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // Guard against writing after the client disconnected
+      if (clientClosed) {
+        try { await reader.cancel(); } catch {}
+        break;
+      }
       clientRes.write(decoder.decode(value, { stream: true }));
     }
   } catch (err) {
-    LOG_DEBUG && console.error(`[llm-adapter] Stream error: ${err.message}`);
+    if (err.name === 'AbortError' && clientClosed) {
+      // Expected — client disconnected, we aborted. Don't log as an error.
+    } else {
+      LOG_DEBUG && console.error(`[llm-adapter] Stream error: ${err.message}`);
+    }
   } finally {
-    clientRes.end();
+    // Detach the close listener to avoid leaks
+    clientRes.off('close', onClientClose);
+    if (!clientRes.writableEnded) {
+      try { clientRes.end(); } catch {}
+    }
   }
 }
 

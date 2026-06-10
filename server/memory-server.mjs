@@ -1121,30 +1121,38 @@ app.post('/memory/supersede', (req, res) => {
   if (!newMem) return res.status(404).json({ error: `memory ${new_id} not found` });
 
   // Mark old as superseded by new
-updateMemoryStatus(old_id, 'superseded', new_id);
+// M-NEW-2: Wrap the entire supersede flow in a single transaction. Previously
+// the 4 writes (updateMemoryStatus, setValidUntil, setValidFrom, updateMeta)
+// each committed independently — a crash between steps left bi-temporal
+// fields inconsistent (e.g., status=superseded but valid_until=NULL). Now
+// the entire supersede is atomic.
+const supersedeTx = db.transaction(() => {
+  updateMemoryStatus(old_id, 'superseded', new_id);
 
-// Bi-temporal: set valid_until on old, valid_from on new
-const now = new Date().toISOString();
-const setValidUntil = db.prepare('UPDATE memories SET valid_until = ? WHERE id = ?');
-setValidUntil.run(now, old_id);
-const setValidFrom = db.prepare('UPDATE memories SET valid_from = ? WHERE id = ? AND valid_from IS NULL');
-setValidFrom.run(now, new_id);
+  // Bi-temporal: set valid_until on old, valid_from on new
+  const now = new Date().toISOString();
+  const setValidUntil = db.prepare('UPDATE memories SET valid_until = ? WHERE id = ?');
+  setValidUntil.run(now, old_id);
+  const setValidFrom = db.prepare('UPDATE memories SET valid_from = ? WHERE id = ? AND valid_from IS NULL');
+  setValidFrom.run(now, new_id);
 
-// Add provenance to new memory metadata
-newMem = getMemory(new_id);
-if (newMem) {
-  const oldMeta = JSON.parse(oldMem.metadata || '{}');
-  const newMeta = JSON.parse(newMem.metadata || '{}');
-  newMeta.supersedes = old_id;
-  newMeta.supersede_reason = reason || 'contradiction';
-  newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
-  // Track source memory IDs for provenance graph
-  let sourceIds = [];
-  try { sourceIds = JSON.parse(newMem.source_memory_ids || '[]'); } catch {}
-  if (!sourceIds.includes(old_id)) sourceIds.push(old_id);
-  const updateMeta = db.prepare('UPDATE memories SET metadata = ?, source_memory_ids = ? WHERE id = ?');
-  updateMeta.run(JSON.stringify(newMeta), JSON.stringify(sourceIds), new_id);
-}
+  // Add provenance to new memory metadata
+  newMem = getMemory(new_id);
+  if (newMem) {
+    const oldMeta = JSON.parse(oldMem.metadata || '{}');
+    const newMeta = JSON.parse(newMem.metadata || '{}');
+    newMeta.supersedes = old_id;
+    newMeta.supersede_reason = reason || 'contradiction';
+    newMeta.derived_from = [...(oldMeta.derived_from || []), old_id];
+    // Track source memory IDs for provenance graph
+    let sourceIds = [];
+    try { sourceIds = JSON.parse(newMem.source_memory_ids || '[]'); } catch {}
+    if (!sourceIds.includes(old_id)) sourceIds.push(old_id);
+    const updateMeta = db.prepare('UPDATE memories SET metadata = ?, source_memory_ids = ? WHERE id = ?');
+    updateMeta.run(JSON.stringify(newMeta), JSON.stringify(sourceIds), new_id);
+  }
+});
+supersedeTx();
 
 res.json({ ok: true, old_id, new_id, status: 'superseded' });
   } catch (err) {

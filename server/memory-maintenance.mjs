@@ -350,13 +350,21 @@ async function consolidateMemories(memories) {
           attribute: cluster[0].attribute || '',
         });
 
-        updateSourceIds.run(JSON.stringify(clusterIds), newId);
-
-        for (const m of cluster) {
-          updateMemoryStatus(m.id, 'superseded', newId);
-          setValidUntil.run(new Date().toISOString(), m.id);
-        deleteVec(db, m.id);
-        }
+        // M-NEW-3: Wrap the post-create mutation steps in a single transaction.
+        // Previously: storeMemory commits → updateSourceIds commits → for each
+        // cluster member: updateMemoryStatus + setValidUntil + deleteVec (each
+        // commits). A crash between steps left the new summary memory in place
+        // while the source memories were still 'active' — duplicate data
+        // forever. Now the entire batch rolls back on any failure.
+        const consolidateCluster = db.transaction(() => {
+          updateSourceIds.run(JSON.stringify(clusterIds), newId);
+          for (const m of cluster) {
+            updateMemoryStatus(m.id, 'superseded', newId);
+            setValidUntil.run(new Date().toISOString(), m.id);
+            deleteVec(db, m.id);
+          }
+        });
+        consolidateCluster();
 
         consolidatedCount++;
         LOG_DEBUG && console.log(`[Maintenance] Consolidated ${cluster.length} memories about "${entity}" -> #${newId} (importance: ${newImportance})`);
