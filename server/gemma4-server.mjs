@@ -319,8 +319,10 @@ function formatMessages(messages) {
 }
 
 function fallbackResponse(messages) {
-  const lastUser = [...messages].reverse().find(m => m.role === 'user');
-  const text = (lastUser?.content || '').substring(0, 200);
+  // S-NEW-3: NEVER echo user content in error responses. Previously this
+  // returned `Query: "${text}"` which leaked the user's prompt to whoever
+  // could trigger the fallback path. Just signal that the LLM is unavailable
+  // and let the client decide whether to retry.
   return {
     id: `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
@@ -328,7 +330,7 @@ function fallbackResponse(messages) {
     model: MODEL_ID,
     choices: [{
       index: 0,
-      message: { role: 'assistant', content: `[LLM unavailable] ${loadError?.message || 'model not loaded'}. Query: "${text}"` },
+      message: { role: 'assistant', content: '[LLM unavailable]' },
       finish_reason: 'stop',
     }],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },

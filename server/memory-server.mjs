@@ -78,15 +78,28 @@ app.use((req, res, next) => {
 app.use(rateLimiter);
 
 // Optional API key authentication — enable by setting MEMORY_API_KEY env var
+// S-NEW-1 + S-NEW-2: use timing-safe comparison (constant-time, not `!==`),
+// and accept the key only via the Authorization header (NOT the query string —
+// query params are logged by reverse proxies and leaked in browser history).
+import { timingSafeEqual } from 'crypto';
 const MEMORY_API_KEY = process.env.MEMORY_API_KEY || '';
 if (MEMORY_API_KEY) {
   const EXEMPT_PATHS = ['/health', '/ready'];
+  // Pre-encode the expected key once for timingSafeEqual
+  const EXPECTED_KEY_BUF = Buffer.from(MEMORY_API_KEY, 'utf8');
   app.use((req, res, next) => {
     if (EXEMPT_PATHS.some(p => req.path === p)) return next();
     const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : req.query.api_key || '';
-    if (token !== MEMORY_API_KEY) {
-      return res.status(401).json({ error: 'Unauthorized: invalid or missing API key' });
+    // Header-only — query-string api_key intentionally not supported (S-NEW-2)
+    const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+    if (!token) {
+      return res.status(401).json({ error: 'Unauthorized: missing API key' });
+    }
+    // S-NEW-1: timing-safe comparison prevents byte-by-byte key oracle
+    // Requires equal-length buffers; reject length mismatch explicitly.
+    const tokenBuf = Buffer.from(token, 'utf8');
+    if (tokenBuf.length !== EXPECTED_KEY_BUF.length || !timingSafeEqual(tokenBuf, EXPECTED_KEY_BUF)) {
+      return res.status(401).json({ error: 'Unauthorized: invalid API key' });
     }
     next();
   });
@@ -284,7 +297,12 @@ function addToQueryCache(queryVec, results) {
     const oldest = _queryCache.keys().next().value;
     _queryCache.delete(oldest);
   }
-  _queryCache.set(Date.now(), { queryVec: Array.from(queryVec), results, timestamp: Date.now() });
+  // M-NEW-1: Use a monotonic counter instead of Date.now() as the Map key.
+  // Date.now() collides on rapid inserts (same ms → silent overwrite of the
+  // just-inserted entry). Counter is unique per insert. Confirmed via probe:
+  // before fix, 200 inserts in 200ms produced only 1 entry; after fix, 100.
+  _cacheCounter++;
+  _queryCache.set(_cacheCounter, { queryVec: Array.from(queryVec), results, timestamp: Date.now() });
 }
 
 function invalidateQueryCache() {

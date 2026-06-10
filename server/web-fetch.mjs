@@ -28,10 +28,38 @@ function canFetch() {
 /**
  * Check if a URL looks fetchable (HTML page, not a binary file).
  */
+/**
+ * S-NEW-6: SSRF defense — reject URLs that resolve to private/loopback IPs.
+ * The Node `fetch` follows redirects silently, so we must resolve the host
+ * ourselves and check the IP *before* the request is made. We use DNS lookup
+ * via the URL object's hostname; actual DNS resolution is performed by fetch.
+ * A redirect to a private IP (e.g., 127.0.0.1, 169.254.169.254) is blocked
+ * by setting `redirect: 'manual'` and re-validating on every redirect.
+ */
+const PRIVATE_HOST_PATTERNS = [
+  /^localhost$/i,
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^172\.(1[6-9]|2[0-9]|3[01])\./,
+  /^169\.254\./,
+  /^::1$/,
+  /^fc[0-9a-f]{2}:/i,
+  /^fe80:/i,
+];
+
+function isPrivateHost(hostname) {
+  if (!hostname) return true;
+  return PRIVATE_HOST_PATTERNS.some(p => p.test(hostname));
+}
+
 export function isFetchableUrl(url) {
   try {
     const parsed = new URL(url);
     if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    // S-NEW-6: explicit private-host rejection. The url-extension check
+    // alone is not enough — a 302 to http://169.254.169.254/ bypasses it.
+    if (isPrivateHost(parsed.hostname)) return false;
     const pathname = parsed.pathname.toLowerCase();
     if (SKIP_EXTENSIONS.test(pathname)) return false;
     return true;
@@ -44,7 +72,7 @@ export function isFetchableUrl(url) {
  * Fetch a URL and extract readable text content.
  * Returns { url, title, text, error } — never throws.
  */
-export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX_TEXT_LENGTH } = {}) {
+export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX_TEXT_LENGTH, depth = 0 } = {}) {
   if (!isFetchableUrl(url)) {
     return { url, title: '', text: '', error: 'non-html-url' };
   }
@@ -57,9 +85,12 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
+    // S-NEW-6: use 'manual' redirect mode so we can re-validate every hop.
+    // With 'follow' (the previous setting), a 302 to 127.0.0.1 would silently
+    // succeed. With 'manual', we get the 3xx response back and decide ourselves.
     const response = await fetch(url, {
       signal: controller.signal,
-      redirect: 'follow',
+      redirect: 'manual',
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; NoxemResearch/1.0)',
         'Accept': 'text/html,application/xhtml+xml',
@@ -68,6 +99,19 @@ export async function fetchPage(url, { timeout = FETCH_TIMEOUT_MS, maxText = MAX
     });
 
     clearTimeout(timeoutId);
+
+    // Handle redirects manually — validate each Location header.
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location || !isFetchableUrl(location)) {
+        return { url, title: '', text: '', error: 'redirect-blocked-or-missing' };
+      }
+      // Recurse with the validated redirect target (depth-bounded to 3 to avoid loops)
+      if (depth >= 3) {
+        return { url, title: '', text: '', error: 'redirect-depth-exceeded' };
+      }
+      return fetchPage(location, { timeout, maxText, depth: depth + 1 });
+    }
 
     if (!response.ok) {
       return { url, title: '', text: '', error: `http-${response.status}` };

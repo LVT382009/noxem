@@ -138,12 +138,29 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
 
 // ── Read request body ────────────────────────────────────────
 
+// S-NEW-5: readBody must enforce a size limit to prevent OOM/DoS. Previously
+// this concatenated chunks with no cap — an attacker could stream gigabytes.
+// Default cap is 2 MB, matching the express.json limit on gemma4-server.
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => resolve(body));
-    req.on('error', reject);
+    let bytes = 0;
+    let aborted = false;
+    req.on('data', chunk => {
+      if (aborted) return;
+      bytes += chunk.length;
+      if (bytes > MAX_BODY_BYTES) {
+        aborted = true;
+        // Destroy the request stream so no more 'data' events fire.
+        req.destroy();
+        reject(Object.assign(new Error(`Request body exceeds ${MAX_BODY_BYTES} bytes`), { statusCode: 413, code: 'BODY_TOO_LARGE' }));
+        return;
+      }
+      body += chunk;
+    });
+    req.on('end', () => { if (!aborted) resolve(body); });
+    req.on('error', err => { if (!aborted) reject(err); });
   });
 }
 
