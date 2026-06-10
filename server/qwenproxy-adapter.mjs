@@ -46,22 +46,34 @@ const RETRY_BASE_MS = 2000;
 
 async function collectSSE(url, bodyObj, timeoutMs = 60000) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(bodyObj),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  // M-NEW-6: Single AbortController per attempt that we abort on retry.
+  // Previously each iteration created a fresh AbortSignal.timeout but the
+  // previous request's response body was never consumed on the 429/502 retry
+  // path — leaked TCP connections in the agent pool under sustained errors.
+  const ac = new AbortController();
+  const timeoutId = setTimeout(() => ac.abort(), timeoutMs);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyObj),
+      signal: ac.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    // M-NEW-6: drain the body before retrying so the underlying socket is freed.
+    try { await res.text(); } catch {}
     if ((res.status === 429 || res.status === 502) && attempt < MAX_RETRIES) {
       const delay = RETRY_BASE_MS * Math.pow(2, attempt);
       console.error(`[Adapter] ${res.status} — retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
       continue;
     }
-    throw new Error(`QwenProxy returned ${res.status}: ${text.substring(0, 500)}`);
+    throw new Error(`QwenProxy returned ${res.status}: ${res.statusText || 'unknown'}`);
   }
 
   let content = '';
