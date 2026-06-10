@@ -43,14 +43,23 @@ const PRIVATE_HOST_PATTERNS = [
   /^192\.168\./,
   /^172\.(1[6-9]|2[0-9]|3[01])\./,
   /^169\.254\./,
-  /^::1$/,
-  /^fc[0-9a-f]{2}:/i,
-  /^fe80:/i,
+  // S-NEW-12: IPv6 loopback + private ranges. Node's URL parser returns IPv6
+  // hostnames WITH brackets (e.g. `[::1]`, `[fc00::1]`), so patterns must
+  // accept the bracket form. We also match bare `::1` and bare `fc00:...`
+  // for callers that strip brackets themselves.
+  /^\[?::1\]?$/i,
+  /^\[?fc[0-9a-f]{2}:[0-9a-f:]+\]?$/i,  // RFC4193 unique-local (fc00::/7)
+  /^\[?fd[0-9a-f]{2}:[0-9a-f:]+\]?$/i,  // RFC4193 unique-local (fd00::/8) — both halves of /7
+  /^\[?fe80:[0-9a-f:]+\]?$/i,            // link-local
+  /^0\.0\.0\.0$/,                         // all-interfaces
+  /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./,  // CGNAT 100.64.0.0/10
 ];
 
 function isPrivateHost(hostname) {
   if (!hostname) return true;
-  return PRIVATE_HOST_PATTERNS.some(p => p.test(hostname));
+  // S-NEW-12: strip surrounding brackets that Node adds for IPv6 literals
+  const h = hostname.replace(/^\[|\]$/g, '');
+  return PRIVATE_HOST_PATTERNS.some(p => p.test(h) || p.test(hostname));
 }
 
 export function isFetchableUrl(url) {
