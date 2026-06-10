@@ -1233,11 +1233,14 @@ const SKIP_PATTERNS = [
 ];
 
 // Patterns that always bypass skip (even if they match a skip pattern) —
-// these signal important self-disclosure or preferences
+// these signal important self-disclosure or preferences.
+// S-NEW-8: REMOVED `my secret|my password|my phrase|my key` — these patterns
+// actively encouraged storage of user secrets, which were then returned
+// verbatim in /memory/release context. Secret storage is a privacy/security
+// hazard. Users who want to remember secrets should use a password manager.
 const FORCE_SAVE_PATTERNS = [
   /\b(my name is|i'm called|call me)\b/i,
   /\b(i prefer|i like|i love|i hate|i dislike|i use|i'm using)\b/i,
-  /\b(my secret|my password|my phrase|my key)\b/i,
   /\b(i work on|i'm working on|my project)\b/i,
   /\b(remember this|don't forget|write this down|save this)\b/i,
   /\b(my goal|my plan|i want to|i need to)\b/i,

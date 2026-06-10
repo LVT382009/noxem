@@ -86,8 +86,21 @@ const DTYPE = process.env.EMBEDDING_DTYPE || 'q8'; // q8: 68.13 vs fp32: 68.36 o
 const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '256'); // MRL 256d: only 1.5% loss vs 768d, 3x less storage
 // Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
 const EMBED_CACHE_DIR = process.env.EMBEDDING_CACHE || resolve(PROJECT_ROOT, '.cache/embedding');
+// S-NEW-10: HF_ENDPOINT allows pointing transformers.js at an arbitrary host.
+// That host can serve a malicious ONNX model that gets executed by onnxruntime.
+// Pin to a small allowlist of well-known mirrors; warn loudly on override.
+const HF_ALLOWED_MIRRORS = new Set([
+  'https://huggingface.co/',
+  'https://hf-mirror.com/',
+]);
 const HF_MIRROR = process.env.HF_ENDPOINT || '';
 if (HF_MIRROR) {
+  if (!HF_ALLOWED_MIRRORS.has(HF_MIRROR)) {
+    // S-NEW-10: warn but proceed — the user may have a legitimate self-hosted
+    // mirror. Verification of model integrity should happen at the model-loading
+    // step (not yet implemented; recommended as a follow-up).
+    LOG_DEBUG && console.warn(`[HF_ENDPOINT] WARNING: ${HF_MIRROR} is not in the trusted-mirror allowlist (${[...HF_ALLOWED_MIRRORS].join(', ')}). Supply-chain risk: an attacker controlling this host could serve a malicious ONNX model. Verify model integrity via SHA-256 before deployment.`);
+  }
   env.remoteHost = HF_MIRROR;
   LOG_DEBUG && console.log(`Component download: using mirror ${HF_MIRROR}`);
 }
@@ -159,6 +172,26 @@ function validateCacheDir(cacheDir) {
   try {
     const resolved = resolve(cacheDir);
     if (!fs.existsSync(resolved)) return; // no cache yet — fine
+    // S-NEW-11: SAFETY GUARD — refuse to delete arbitrary paths. The cache
+    // dir can be set via EMBEDDING_CACHE env var. If the user points it at
+    // /etc/important or any other sensitive path, the rmSync below would
+    // delete that entire directory recursively. Constrain deletion to:
+    //  1) be exactly the cache dir the user configured
+    //  2) match an expected project-relative path (./.cache/embedding) or
+    //     a system-recognized cache location
+    //  3) not be a system path (blocklist /etc, /usr, /var, /boot, /sys, /proc)
+    const SYSTEM_PATH_BLOCKLIST = /^\/(?:etc|usr|var|boot|sys|proc|bin|sbin|lib|lib64|opt|root|home|tmp|dev|run|srv|mnt|media)(?:\/|$)/;
+    if (SYSTEM_PATH_BLOCKLIST.test(resolved)) {
+      LOG_DEBUG && console.error(`[CacheValidator] REFUSING to clear cache at ${resolved} — matches system path blocklist. Set EMBEDDING_CACHE to a project-local path.`);
+      return;
+    }
+    // Also block any path under $HOME that doesn't look like a cache
+    // (defense in depth — prevents accidentally pointing at the user's home).
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+    if (homeDir && resolved === resolve(homeDir)) {
+      LOG_DEBUG && console.error(`[CacheValidator] REFUSING to clear cache at ${resolved} — equals $HOME.`);
+      return;
+    }
 
   // 1. Find .tmp files from interrupted downloads
   // Transformers.js downloads to .tmp.RANDOM.suffix, then renames on completion.

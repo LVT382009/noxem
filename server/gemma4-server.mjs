@@ -302,8 +302,11 @@ async function loadModel() {
         console.error(`Model load attempt ${attempt + 1} failed: ${err.message}`);
       }
     }
-
+    // M-NEW-4: Reset loadPromise after all attempts fail so a future call to
+    // loadModel() can retry. Previously the rejected promise stayed forever
+    // and there was no way to recover without restarting the process.
     console.error('Brain-2: all load attempts failed. Advisor will use fallback mode.');
+    loadPromise = null;
   })();
   return loadPromise;
 }
