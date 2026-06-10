@@ -109,9 +109,14 @@ let loadError = null;
 let loadPromise = null;
 
 // Concurrency semaphore: serialize inference calls (transformers.js is NOT thread-safe)
+// C-NEW-1 fix: add MAX_HOLD_MS watchdog that force-releases the lock if the
+// inference never settles (transformers.js / onnxruntime deadlock). Without this,
+// a single stuck inference permanently freezes the embedding engine.
 let inferenceLock = Promise.resolve();
+const MAX_LOCK_HOLD_MS = 120_000; // 2 min max — longer than 60s timeout + grace
 function withLock(fn) {
   let release;
+  let watchdog;
   const next = new Promise(r => { release = r; });
   const prev = inferenceLock;
   inferenceLock = next;
@@ -120,18 +125,30 @@ function withLock(fn) {
     try {
       result = fn();
     } catch (syncErr) {
-      release(); // Release lock on synchronous throw to prevent deadlock
+      release();
       throw syncErr;
     }
-    // Timeout returns error to caller but does NOT release the lock —
-    // the inference may still be running in transformers.js (not thread-safe).
-    // Release only when the actual inference completes.
+    // Watchdog: if the lock is held for longer than MAX_LOCK_HOLD_MS, force-release.
+    // The actual inference is then free to settle in the background without
+    // blocking subsequent calls. We log so operators can investigate.
+    let released = false;
+    const safeRelease = () => { if (!released) { released = true; clearTimeout(watchdog); release(); } };
+    watchdog = setTimeout(() => {
+      if (!released) {
+        LOG_DEBUG && console.error(`[withLock] Watchdog fired — force-releasing lock after ${MAX_LOCK_HOLD_MS}ms (inference may be stuck in onnxruntime)`);
+        released = true;
+        release();
+      }
+    }, MAX_LOCK_HOLD_MS);
+    if (typeof watchdog.unref === 'function') watchdog.unref(); // don't keep process alive
+
     let _inferenceTimer; const timeout = new Promise((_, reject) => { _inferenceTimer = setTimeout(() => reject(new Error("Inference timeout")), 60000); });
     return Promise.race([result, timeout]).catch(err => {
       // On timeout, caller gets error but lock stays held until inference finishes
-      result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); release(); });
+      // (or until the watchdog fires — see above)
+      result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); safeRelease(); });
       throw err;
-    }).then(val => { clearTimeout(_inferenceTimer); release(); return val; });
+    }).then(val => { clearTimeout(_inferenceTimer); safeRelease(); return val; });
   });
 }
 
