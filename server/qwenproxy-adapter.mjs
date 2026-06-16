@@ -14,14 +14,34 @@
  */
 
 import { createServer } from 'http';
+import { URL } from 'url';
 
 const BRAIN2_PROVIDER = (process.env.BRAIN2_PROVIDER || 'qwenproxy').toLowerCase();
-const QWENPROXY_URL = process.env.QWENPROXY_URL || 'http://127.0.0.1:3000';
 const LOCAL_LLM_URL = process.env.LOCAL_LLM_URL || process.env.LLM_URL || process.env.GEMMA_URL || '';
 const ADAPTER_PORT = parseInt(process.env.LLM_PORT || process.env.GEMMA4_PORT || '8000');
 const DEFAULT_MODEL = process.env.LLM_MODEL || process.env.GEMMA_MODEL || 'qwen3.6-plus-no-thinking';
 const LLM_API_KEY = process.env.LLM_API_KEY || '';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
+
+// H-1/H-2: Validate QWENPROXY_URL at startup — reject non-local targets.
+// QwenProxy mode proxies user messages externally; the upstream must be localhost.
+const QWENPROXY_URL_RAW = process.env.QWENPROXY_URL || 'http://127.0.0.1:3000';
+let QWENPROXY_URL = QWENPROXY_URL_RAW;
+if (BRAIN2_PROVIDER === 'qwenproxy') {
+  try {
+    const parsed = new URL(QWENPROXY_URL_RAW);
+    if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost' && parsed.hostname !== '::1' && parsed.hostname !== '::') {
+      throw new Error(`QWENPROXY_URL must resolve to localhost, got "${parsed.hostname}". Set QWENPROXY_URL=http://127.0.0.1:3000`);
+    }
+    QWENPROXY_URL = parsed.origin; // normalise to origin only
+  } catch (err) {
+    console.error(`[llm-adapter] FATAL: Invalid QWENPROXY_URL: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+// H-1: Per-request content-size limit to prevent proxying arbitrarily large payloads
+const MAX_REQUEST_CONTENT_SIZE = parseInt(process.env.MAX_REQUEST_CONTENT_SIZE || '32768'); // 32 KB
 
 // ── Model normalization (QwenProxy only) ─────────────────────
 // QwenProxy only accepts "qwen3.6-plus" or "qwen3.6-plus-no-thinking"
@@ -97,6 +117,38 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
   } // end retry loop
 }
 
+// Parse SSE from an already-fetched Response object (avoids double-POST).
+async function collectSSEResponse(res) {
+  let content = '';
+  let reasoning = '';
+  let model = DEFAULT_MODEL;
+  let finishReason = 'stop';
+  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+  const text = await res.text();
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed === 'data: [DONE]') continue;
+    if (!trimmed.startsWith('data: ')) continue;
+
+    try {
+      const chunk = JSON.parse(trimmed.slice(6));
+      const delta = chunk.choices?.[0]?.delta;
+      if (delta) {
+        if (delta.content) content += delta.content;
+        if (delta.reasoning_content) reasoning += delta.reasoning_content;
+        if (delta.thinking) reasoning += delta.thinking;
+      }
+      if (chunk.model) model = chunk.model;
+      if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+      if (chunk.usage) usage = chunk.usage;
+    } catch { /* skip malformed lines */ }
+  }
+
+  if (!content && reasoning) content = reasoning;
+  return { content, reasoning, model, finishReason, usage };
+}
+
 // ── SSE streaming passthrough ─────────────────────────────────
 
 async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 120000) {
@@ -137,12 +189,29 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
 }
 
 // ── Read request body ────────────────────────────────────────
+// H-1: Hard size cap independent of Content-Length header.
+// Prevents a misbehaving client from declaring a small header but sending unbounded data.
+const MAX_READ_SIZE = 10_485_760; // 10 MiB hard cap on body accumulation
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => resolve(body));
+    let size = 0;
+    let rejecting = false;
+    req.on('data', chunk => {
+      body += chunk;
+      size += chunk.length;
+      if (size > MAX_READ_SIZE && !rejecting) {
+        rejecting = true;
+        req.destroy();
+        reject(new Error(`Request body exceeds hard cap of ${MAX_READ_SIZE} bytes`));
+      }
+      // Also hard-cap individual chunk to prevent a single giant chunk inflating memory
+      if (chunk.length > MAX_READ_SIZE) {
+        if (!rejecting) { rejecting = true; req.destroy(); reject(new Error('Chunk oversized')); }
+      }
+    });
+    req.on('end', () => { if (!rejecting) resolve(body); });
     req.on('error', reject);
   });
 }
@@ -219,12 +288,47 @@ const server = createServer(async (req, res) => {
 
   // POST /v1/chat/completions
   if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
-    const body = await readBody(req);
+    const rawBody = await readBody(req);
+
+    // H-1: Reject oversized payloads before parsing
+    if (rawBody.length > MAX_REQUEST_CONTENT_SIZE) {
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({
+        error: { message: `Request body too large (${rawBody.length} bytes, max ${MAX_REQUEST_CONTENT_SIZE})`, type: 'max_tokens_exceeded' }
+      }));
+    }
 
     let reqObj;
-    try { reqObj = JSON.parse(body); } catch {
+    try { reqObj = JSON.parse(rawBody); } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: { message: 'Invalid JSON', type: 'invalid_request_error' } }));
+    }
+
+    // H-1: Validate message structure — extract text from multipart content, reject non-text modalities.
+    if (reqObj.messages) {
+      for (const msg of reqObj.messages) {
+        if (msg.content != null && typeof msg.content !== 'string') {
+          // Array content (multi-modal) — extract text parts, ignore images/audio/etc.
+          if (Array.isArray(msg.content)) {
+            msg.content = msg.content
+              .map(part => {
+                if (typeof part === 'string') return part;
+                if (part && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string') return part.text;
+                return null;
+              })
+              .filter(part => part !== null)
+              .join('\n');
+          }
+          if (typeof msg.content !== 'string') {
+            msg.content = String(msg.content);
+          }
+        }
+      }
+    }
+
+    // H-1: Cap max_tokens to a safe bound
+    if (reqObj.max_tokens == null || reqObj.max_tokens > 8192) {
+      reqObj.max_tokens = 8192;
     }
 
     const wantStream = reqObj.stream === true;
@@ -271,7 +375,25 @@ const server = createServer(async (req, res) => {
         if (wantStream) {
           return await streamSSE(upstreamUrl, proxyBody, res, { 'Content-Type': 'application/json' }, timeoutMs);
         } else {
-          const result = await collectSSE(upstreamUrl, proxyBody, timeoutMs);
+          // H-2: Reject non-SSE responses by checking Content-Type before collecting
+          const upstreamRes = await fetch(upstreamUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(proxyBody),
+            signal: AbortSignal.timeout(timeoutMs),
+            redirect: 'follow',
+          });
+          if (!upstreamRes.ok) {
+            const errText = await upstreamRes.text().catch(() => '');
+            throw new Error(`QwenProxy returned ${upstreamRes.status} ${upstreamRes.statusText}: ${errText.substring(0, 500)}`);
+          }
+          const ct = upstreamRes.headers.get('content-type') || '';
+          if (!ct.includes('text/event-stream') && !ct.includes('stream')) {
+            const text = await upstreamRes.text().catch(() => '');
+            throw new Error(`QwenProxy returned non-SSE response (${ct}): ${text.substring(0, 300)}`);
+          }
+          // Parse the already-fetched response instead of issuing a second POST
+          const result = await collectSSEResponse(upstreamRes);
           const response = {
             id: `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             object: 'chat.completion',

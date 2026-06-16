@@ -123,15 +123,29 @@ function withLock(fn) {
       release(); // Release lock on synchronous throw to prevent deadlock
       throw syncErr;
     }
-    // Timeout returns error to caller but does NOT release the lock —
-    // the inference may still be running in transformers.js (not thread-safe).
-    // Release only when the actual inference completes.
-    let _inferenceTimer; const timeout = new Promise((_, reject) => { _inferenceTimer = setTimeout(() => reject(new Error("Inference timeout")), 60000); });
-    return Promise.race([result, timeout]).catch(err => {
-      // On timeout, caller gets error but lock stays held until inference finishes
-      result.catch(() => {}).then(() => { clearTimeout(_inferenceTimer); release(); });
-      throw err;
-    }).then(val => { clearTimeout(_inferenceTimer); release(); return val; });
+    // M-4: Timeout releases the lock after 60s — inference may still be running in
+    // transformers.js (not thread-safe), but at least subsequent calls aren't blocked.
+    // After timeout, the lock is released so new calls can proceed.
+    let _inferenceTimer;
+    let _released = false;
+    const releaseOnce = () => {
+      if (_released) return;
+      _released = true;
+      release();
+    };
+    const timeout = new Promise((_, reject) => {
+      _inferenceTimer = setTimeout(() => reject(new Error('Inference timeout')), 60000);
+    });
+    return Promise.race([result, timeout])
+      .catch(err => {
+        // Immediately release lock on timeout/error — this is the fix for M-4.
+        clearTimeout(_inferenceTimer);
+        releaseOnce();
+        // Prevent unhandled rejection if inference rejects later
+        result.catch(() => {});
+        throw err;
+      })
+      .then(val => { clearTimeout(_inferenceTimer); releaseOnce(); return val; });
   });
 }
 

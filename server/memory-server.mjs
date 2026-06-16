@@ -22,9 +22,17 @@ import { triggerResearch, getRecentResearch, getResearchStatus } from './researc
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
 
 const app = express();
+// M-1: CORS — fix unsafe default (origin: true = wildcard in most Express versions).
+// Require explicit CORS_ORIGIN env var; reject accidental wide-open configs.
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '';
+if (CORS_ORIGIN === '*') {
+  console.warn('[CORS] WARNING: CORS_ORIGIN=* is insecure — set CORS_ORIGIN to a specific origin or remove the env var');
+}
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || true, // Allow all origins in dev; set CORS_ORIGIN for prod
+  origin: CORS_ORIGIN || false,   // false = same-origin only; set CORS_ORIGIN=https://example.com for cross-origin
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-memory-auth'],
+  maxAge: 86400,
 }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -390,6 +398,22 @@ function ruleBasedCompress(text, targetLevel) {
   return text;
 }
 
+// ─── Auth Middleware ────────────────────────────────────────────
+// L-1: Sensitive endpoints (/memory/export, /memory/stats) require auth.
+// Enabled by setting MEMORY_AUTH_SECRET env var.
+const MEMORY_AUTH_SECRET = process.env.MEMORY_AUTH_SECRET || '';
+function requireAuth(req, res) {
+  if (!MEMORY_AUTH_SECRET) return true; // no secret configured — skip auth (dev mode)
+  const provided = req.headers['x-memory-auth']
+    || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+  if (!provided || provided !== MEMORY_AUTH_SECRET) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
+    return false;
+  }
+  return true;
+}
+
 // ─── Health ───────────────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
   const stats = getMemoryStats();
@@ -751,7 +775,8 @@ app.post('/memory/search/feedback', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/memory/stats', (_req, res) => {
+app.get('/memory/stats', (req, res) => {
+  if (!requireAuth(req, res)) return;
   res.json(getMemoryStats());
 });
 
@@ -833,7 +858,8 @@ app.get('/memory/type/:type', (req, res) => {
 
 // ─── Export / Import ────────────────────────────────────────────
 
-app.get('/memory/export', (_req, res) => {
+app.get('/memory/export', (req, res) => {
+  if (!requireAuth(req, res)) return;
   try {
     const memories = getAllActiveMemories();
     const stats = getMemoryStats();

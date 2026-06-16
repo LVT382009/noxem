@@ -154,10 +154,18 @@ Rules:
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '';
     if (!content || content.startsWith('[LLM un')) return [];
-        const jsonMatch = content.match(/\[[\s\S]*\]/);
+    // L-3: Support both bare JSON arrays and arrays inside markdown code fences.
+    // Strip markdown fences first, then find the outermost array brackets.
+    const stripped = content.replace(/```(?:json)?\s*\n?/gi, '').replace(/```\s*$/gm, '');
+    const jsonMatch = stripped.match(/\[[\s\S]*\]/);
     if (!jsonMatch) return [];
-    const memories = JSON.parse(jsonMatch[0]);
-    return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];
+    try {
+      const memories = JSON.parse(jsonMatch[0]);
+      return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];
+    } catch {
+      LOG_DEBUG && console.error('[SessionEnd] JSON parse failed, content sample:', content.substring(0, 200));
+      return [];
+    }
   } catch (err) {
     LOG_DEBUG && console.error('Session end analysis error:', err.message);
     return [];
