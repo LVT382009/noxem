@@ -111,4 +111,13 @@ export function deleteVec(db, memoryId) {
   } catch (err) { LOG_DEBUG && console.error('[VectorIndex] deleteVec failed:', err.message); }
 }
 
-export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec };
+// cycle-5: strict variant for use inside db.transaction() — re-throws on failure
+// so a failed vector delete rolls back the surrounding transaction. The default
+// `deleteVec` swallows errors, which is fine for fire-and-forget cleanup but
+// breaks the all-or-nothing contract for transactional mutations.
+export function deleteVecStrict(db, memoryId) {
+  if (!vecTableReady) return;
+  db.prepare('DELETE FROM memory_vecs WHERE rowid = ?').run(memoryId);
+}
+
+export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec, deleteVecStrict };

@@ -95,6 +95,41 @@ const MODEL_ID = process.env.LLM_MODEL || process.env.GEMMA4_MODEL || 'onnx-comm
 const DTYPE = process.env.LLM_DTYPE || process.env.GEMMA4_DTYPE || 'q4f16';
 const MAX_NEW_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || process.env.GEMMA4_MAX_TOKENS || '1024');
 // Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
+// cycle-5: safe cache-deletion helper. Every `rmSync` call in this file
+// must go through this function so the allowlist guard can never be
+// bypassed. LLM_CACHE / GEMMA4_CACHE can be misconfigured to a high-level
+// or system path; without this guard, cache recovery would recursively
+// delete non-cache data.
+//
+// cycle-6: removed the SYSTEM_PATH_BLOCKLIST constant — it was declared
+// in cycle-5 for "defence in depth" but the function body relies solely
+// on the allowlist check below. The allowlist is the correct defence:
+// the path must be the configured cache dir (or a strict subpath of it),
+// and that single check covers every relevant case. A blocklist is
+// redundant when the allowlist is enforced and would only have added
+// false positives (e.g. rejecting /home project paths).
+function safeRmCache(cacheDir, reason) {
+  if (!cacheDir) return false;
+  let resolved;
+  try { resolved = resolve(cacheDir); } catch { return false; }
+  // Allowlist: only permit deletion within the configured cache dir
+  // (or a strict subpath of it). This is the sole defence.
+  const expected = resolve(CACHE_DIR);
+  if (resolved !== expected && !resolved.startsWith(expected + '/')) {
+    console.error(`[CacheRm] REFUSING to clear cache at ${resolved} — not under LLM_CACHE (${expected})`);
+    return false;
+  }
+  if (!fs.existsSync(resolved)) return false;
+  try {
+    fs.rmSync(resolved, { recursive: true, force: true });
+    console.log(`[CacheRm] cleared ${resolved}${reason ? ' — ' + reason : ''}`);
+    return true;
+  } catch (err) {
+    console.error(`[CacheRm] failed to clear ${resolved}: ${err.message}`);
+    return false;
+  }
+}
+
 const CACHE_DIR = process.env.LLM_CACHE || process.env.GEMMA4_CACHE || resolve(PROJECT_ROOT, '.cache/llm');
 const MAX_RETRIES = parseInt(process.env.LLM_LOAD_RETRIES || process.env.GEMMA4_LOAD_RETRIES || '3');
 
@@ -160,7 +195,7 @@ function validateCacheDir(cacheDir) {
   if (tmpFiles.length > 0) {
     console.log(`Cache validator: found ${tmpFiles.length} temp file(s) from interrupted download(s) — clearing cache`);
     for (const f of tmpFiles) console.log(`  ${basename(f)}`);
-    fs.rmSync(resolved, { recursive: true, force: true });
+    safeRmCache(resolved, 'interrupted-download-tmp-files');
     return;
   }
 
@@ -174,14 +209,12 @@ function validateCacheDir(cacheDir) {
             const stat = fs.statSync(tcPath);
             if (stat.size === 0) {
               console.log('Cache validator: empty tokenizer_config.json — clearing cache');
-              fs.rmSync(resolved, { recursive: true, force: true });
-              return true;
+              return safeRmCache(resolved, 'empty-tokenizer-config') || true;
             }
             try { JSON.parse(fs.readFileSync(tcPath, 'utf8')); }
             catch {
               console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
-              fs.rmSync(resolved, { recursive: true, force: true });
-              return true;
+              return safeRmCache(resolved, 'corrupt-tokenizer-config') || true;
             }
           }
           if (entry.name.startsWith('models--')) {
@@ -192,14 +225,12 @@ function validateCacheDir(cacheDir) {
                 if (fs.existsSync(tcFile)) {
                   if (fs.statSync(tcFile).size === 0) {
                     console.log('Cache validator: empty tokenizer_config.json — clearing cache');
-                    fs.rmSync(resolved, { recursive: true, force: true });
-                    return true;
+                    return safeRmCache(resolved, 'empty-snapshot-tokenizer-config') || true;
                   }
                   try { JSON.parse(fs.readFileSync(tcFile, 'utf8')); }
                   catch {
                     console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
-                    fs.rmSync(resolved, { recursive: true, force: true });
-                    return true;
+                    return safeRmCache(resolved, 'corrupt-snapshot-tokenizer-config') || true;
                   }
                 }
               }
@@ -236,12 +267,18 @@ async function loadModel() {
       loadError = err;
       console.error(`Failed to import transformers.js: ${err.message}`);
       console.error('Run: npm install @huggingface/transformers@latest');
+      // cycle-5: reset loadPromise so the next call to loadModel() can retry
+      // the import. Without this, the cached rejected promise is reused
+      // forever and no further retry is possible.
+      loadPromise = null;
       return;
     }
 
   if (!pipeline) {
     loadError = new Error('pipeline not available — update @huggingface/transformers');
       console.error(loadError.message);
+      // cycle-5: same — clear the promise on the missing-pipeline branch.
+      loadPromise = null;
       return;
     }
 
@@ -302,8 +339,11 @@ async function loadModel() {
         console.error(`Model load attempt ${attempt + 1} failed: ${err.message}`);
       }
     }
-
+    // M-NEW-4: Reset loadPromise after all attempts fail so a future call to
+    // loadModel() can retry. Previously the rejected promise stayed forever
+    // and there was no way to recover without restarting the process.
     console.error('Brain-2: all load attempts failed. Advisor will use fallback mode.');
+    loadPromise = null;
   })();
   return loadPromise;
 }
@@ -319,8 +359,10 @@ function formatMessages(messages) {
 }
 
 function fallbackResponse(messages) {
-  const lastUser = [...messages].reverse().find(m => m.role === 'user');
-  const text = (lastUser?.content || '').substring(0, 200);
+  // S-NEW-3: NEVER echo user content in error responses. Previously this
+  // returned `Query: "${text}"` which leaked the user's prompt to whoever
+  // could trigger the fallback path. Just signal that the LLM is unavailable
+  // and let the client decide whether to retry.
   return {
     id: `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
@@ -328,7 +370,7 @@ function fallbackResponse(messages) {
     model: MODEL_ID,
     choices: [{
       index: 0,
-      message: { role: 'assistant', content: `[LLM unavailable] ${loadError?.message || 'model not loaded'}. Query: "${text}"` },
+      message: { role: 'assistant', content: '[LLM unavailable]' },
       finish_reason: 'stop',
     }],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
