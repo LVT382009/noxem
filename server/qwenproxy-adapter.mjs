@@ -50,62 +50,83 @@ async function collectSSE(url, bodyObj, timeoutMs = 60000) {
   // Previously each iteration created a fresh AbortSignal.timeout but the
   // previous request's response body was never consumed on the 429/502 retry
   // path — leaked TCP connections in the agent pool under sustained errors.
+  //
+  // cycle-6: keep the timeout active until the body is fully consumed.
+  // The previous code cleared the timeout immediately after `await fetch(...)`
+  // resolved, leaving `res.text()` (and the 429/502 retry drain) unprotected.
+  // If the upstream sent headers and then stalled the body, `res.text()` would
+  // hang with no abort path. Restructured so clearTimeout runs only AFTER
+  // the body is consumed (or before a retry, after the drain).
   const ac = new AbortController();
-  const timeoutId = setTimeout(() => ac.abort(), timeoutMs);
-  let res;
+  const timeoutId = setTimeout(() => ac.abort(new Error('upstream-timeout')), timeoutMs);
   try {
-    res = await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(bodyObj),
       signal: ac.signal,
     });
-  } finally {
-    clearTimeout(timeoutId);
-  }
 
-  if (!res.ok) {
-    // M-NEW-6: drain the body before retrying so the underlying socket is freed.
-    try { await res.text(); } catch {}
-    if ((res.status === 429 || res.status === 502) && attempt < MAX_RETRIES) {
-      const delay = RETRY_BASE_MS * Math.pow(2, attempt);
-      console.error(`[Adapter] ${res.status} — retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
-      await new Promise(r => setTimeout(r, delay));
-      continue;
-    }
-    throw new Error(`QwenProxy returned ${res.status}: ${res.statusText || 'unknown'}`);
-  }
-
-  let content = '';
-  let reasoning = '';
-  let model = DEFAULT_MODEL;
-  let finishReason = 'stop';
-  let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-
-  const text = await res.text();
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed === 'data: [DONE]') continue;
-    if (!trimmed.startsWith('data: ')) continue;
-
-    try {
-      const chunk = JSON.parse(trimmed.slice(6));
-      const delta = chunk.choices?.[0]?.delta;
-      if (delta) {
-        if (delta.content) content += delta.content;
-        // Handle both QwenProxy (reasoning_content) and Ollama (thinking) fields
-        if (delta.reasoning_content) reasoning += delta.reasoning_content;
-        if (delta.thinking) reasoning += delta.thinking;
+    if (!res.ok) {
+      // M-NEW-6: drain the body before retrying so the underlying socket is
+      // freed. The abort signal is still active here, so a stalled drain
+      // throws AbortError which is caught by the outer catch and re-thrown.
+      try { await res.text(); } catch (err) {
+        if (err.name === 'AbortError') throw err;
+        // Non-abort errors on drain are non-fatal; continue to the retry
+        // decision below.
       }
-      if (chunk.model) model = chunk.model;
-      if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
-      if (chunk.usage) usage = chunk.usage;
-    } catch { /* skip malformed lines */ }
+      if ((res.status === 429 || res.status === 502) && attempt < MAX_RETRIES) {
+        clearTimeout(timeoutId);
+        const delay = RETRY_BASE_MS * Math.pow(2, attempt);
+        console.error(`[Adapter] ${res.status} — retry ${attempt + 1}/${MAX_RETRIES} in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw new Error(`QwenProxy returned ${res.status}: ${res.statusText || 'unknown'}`);
+    }
+
+    let content = '';
+    let reasoning = '';
+    let model = DEFAULT_MODEL;
+    let finishReason = 'stop';
+    let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+
+    // Body read is protected by the same AbortController — a stalled body
+    // (upstream sent headers but no data) will be aborted at timeoutMs.
+    const text = await res.text();
+    // Body fully consumed — safe to clear the timeout now.
+    clearTimeout(timeoutId);
+
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed === 'data: [DONE]') continue;
+      if (!trimmed.startsWith('data: ')) continue;
+
+      try {
+        const chunk = JSON.parse(trimmed.slice(6));
+        const delta = chunk.choices?.[0]?.delta;
+        if (delta) {
+          if (delta.content) content += delta.content;
+          // Handle both QwenProxy (reasoning_content) and Ollama (thinking) fields
+          if (delta.reasoning_content) reasoning += delta.reasoning_content;
+          if (delta.thinking) reasoning += delta.thinking;
+        }
+        if (chunk.model) model = chunk.model;
+        if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+        if (chunk.usage) usage = chunk.usage;
+      } catch { /* skip malformed lines */ }
+    }
+
+    if (!content && reasoning) content = reasoning;
+
+    return { content, reasoning, model, finishReason, usage };
+  } catch (err) {
+    // cycle-6: clear the timeout on any exit path (success, abort, or
+    // error) to prevent a late-fire from corrupting a future request.
+    clearTimeout(timeoutId);
+    throw err;
   }
-
-  if (!content && reasoning) content = reasoning;
-
-  return { content, reasoning, model, finishReason, usage };
   } // end retry loop
 }
 
@@ -210,8 +231,14 @@ function readBody(req) {
       bytes += chunk.length;
       if (bytes > MAX_BODY_BYTES) {
         aborted = true;
-        // Destroy the request stream so no more 'data' events fire.
-        req.destroy();
+        // cycle-6: do NOT call req.destroy() here. Previously the destroy
+        // tore down the socket before the caller could send an HTTP 413
+        // response — the client just saw ECONNRESET. Instead, mark aborted
+        // and reject; the caller's catch block (in /v1/chat/completions)
+        // will write a proper 413 response, which causes Node's HTTP
+        // server to close the connection cleanly. Memory safety is still
+        // preserved: the 'data' handler returns early for subsequent
+        // chunks, so the body string stops growing.
         reject(Object.assign(new Error(`Request body exceeds ${MAX_BODY_BYTES} bytes`), { statusCode: 413, code: 'BODY_TOO_LARGE' }));
         return;
       }
@@ -294,7 +321,29 @@ const server = createServer(async (req, res) => {
 
   // POST /v1/chat/completions
   if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
-    const body = await readBody(req);
+    // cycle-6: catch BODY_TOO_LARGE rejections from readBody() and return
+    // an HTTP 413 JSON response. Previously the rejection propagated out to
+    // the generic outer catch which only logged a debug message and
+    // returned a 200 [LLM unavailable] fallback — clients never saw the
+    // proper status code.
+    let body;
+    try {
+      body = await readBody(req);
+    } catch (err) {
+      if (err?.code === 'BODY_TOO_LARGE' || err?.statusCode === 413) {
+        if (!res.headersSent) {
+          res.writeHead(413, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: err.message, type: 'body_too_large' } }));
+        }
+        // Destroy the request stream so a malicious client can't keep
+        // streaming the rest of the oversized body. readBody() rejected
+        // without calling req.destroy() so the response above could be
+        // sent cleanly first.
+        if (!req.destroyed) req.destroy();
+        return;
+      }
+      throw err;
+    }
 
     let reqObj;
     try { reqObj = JSON.parse(body); } catch {

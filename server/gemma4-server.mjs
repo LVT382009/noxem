@@ -95,30 +95,30 @@ const MODEL_ID = process.env.LLM_MODEL || process.env.GEMMA4_MODEL || 'onnx-comm
 const DTYPE = process.env.LLM_DTYPE || process.env.GEMMA4_DTYPE || 'q4f16';
 const MAX_NEW_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || process.env.GEMMA4_MAX_TOKENS || '1024');
 // Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
-// cycle-5: safe cache-deletion helper. Mirrors the one in embedding-engine.mjs
-// — every `rmSync` call in this file must go through here so the system-path
-// blocklist guard can never be bypassed. LLM_CACHE / GEMMA4_CACHE can be
-// misconfigured to a high-level or system path; without this guard, cache
-// recovery would recursively delete non-cache data.
+// cycle-5: safe cache-deletion helper. Every `rmSync` call in this file
+// must go through this function so the allowlist guard can never be
+// bypassed. LLM_CACHE / GEMMA4_CACHE can be misconfigured to a high-level
+// or system path; without this guard, cache recovery would recursively
+// delete non-cache data.
 //
-// The cycle-5 fix mirrors embedding-engine.mjs: check the CACHE_DIR allowlist
-// first and only fall back to the blocklist for paths that aren't the
-// configured cache dir. The blocklist (which includes /home and /tmp) was
-// over-aggressive and broke legitimate project paths.
-const SYSTEM_PATH_BLOCKLIST = /^\/(?:etc|usr|var|boot|sys|proc|bin|sbin|lib|lib64|opt|root|home|tmp|dev|run|srv|mnt|media|snap)(?:\/|$)/;
+// cycle-6: removed the SYSTEM_PATH_BLOCKLIST constant — it was declared
+// in cycle-5 for "defence in depth" but the function body relies solely
+// on the allowlist check below. The allowlist is the correct defence:
+// the path must be the configured cache dir (or a strict subpath of it),
+// and that single check covers every relevant case. A blocklist is
+// redundant when the allowlist is enforced and would only have added
+// false positives (e.g. rejecting /home project paths).
 function safeRmCache(cacheDir, reason) {
   if (!cacheDir) return false;
   let resolved;
   try { resolved = resolve(cacheDir); } catch { return false; }
   // Allowlist: only permit deletion within the configured cache dir
-  // (or a strict subpath of it).
+  // (or a strict subpath of it). This is the sole defence.
   const expected = resolve(CACHE_DIR);
-  const allowlisted = resolved === expected || resolved.startsWith(expected + '/');
-  if (!allowlisted) {
+  if (resolved !== expected && !resolved.startsWith(expected + '/')) {
     console.error(`[CacheRm] REFUSING to clear cache at ${resolved} — not under LLM_CACHE (${expected})`);
     return false;
   }
-  // Allowlist match → permit.
   if (!fs.existsSync(resolved)) return false;
   try {
     fs.rmSync(resolved, { recursive: true, force: true });
