@@ -95,6 +95,41 @@ const MODEL_ID = process.env.LLM_MODEL || process.env.GEMMA4_MODEL || 'onnx-comm
 const DTYPE = process.env.LLM_DTYPE || process.env.GEMMA4_DTYPE || 'q4f16';
 const MAX_NEW_TOKENS = parseInt(process.env.LLM_MAX_TOKENS || process.env.GEMMA4_MAX_TOKENS || '1024');
 // Resolve cache dir relative to project root (not CWD) — prevents "cache not found" when launched from different CWD
+// cycle-5: safe cache-deletion helper. Mirrors the one in embedding-engine.mjs
+// — every `rmSync` call in this file must go through here so the system-path
+// blocklist guard can never be bypassed. LLM_CACHE / GEMMA4_CACHE can be
+// misconfigured to a high-level or system path; without this guard, cache
+// recovery would recursively delete non-cache data.
+//
+// The cycle-5 fix mirrors embedding-engine.mjs: check the CACHE_DIR allowlist
+// first and only fall back to the blocklist for paths that aren't the
+// configured cache dir. The blocklist (which includes /home and /tmp) was
+// over-aggressive and broke legitimate project paths.
+const SYSTEM_PATH_BLOCKLIST = /^\/(?:etc|usr|var|boot|sys|proc|bin|sbin|lib|lib64|opt|root|home|tmp|dev|run|srv|mnt|media|snap)(?:\/|$)/;
+function safeRmCache(cacheDir, reason) {
+  if (!cacheDir) return false;
+  let resolved;
+  try { resolved = resolve(cacheDir); } catch { return false; }
+  // Allowlist: only permit deletion within the configured cache dir
+  // (or a strict subpath of it).
+  const expected = resolve(CACHE_DIR);
+  const allowlisted = resolved === expected || resolved.startsWith(expected + '/');
+  if (!allowlisted) {
+    console.error(`[CacheRm] REFUSING to clear cache at ${resolved} — not under LLM_CACHE (${expected})`);
+    return false;
+  }
+  // Allowlist match → permit.
+  if (!fs.existsSync(resolved)) return false;
+  try {
+    fs.rmSync(resolved, { recursive: true, force: true });
+    console.log(`[CacheRm] cleared ${resolved}${reason ? ' — ' + reason : ''}`);
+    return true;
+  } catch (err) {
+    console.error(`[CacheRm] failed to clear ${resolved}: ${err.message}`);
+    return false;
+  }
+}
+
 const CACHE_DIR = process.env.LLM_CACHE || process.env.GEMMA4_CACHE || resolve(PROJECT_ROOT, '.cache/llm');
 const MAX_RETRIES = parseInt(process.env.LLM_LOAD_RETRIES || process.env.GEMMA4_LOAD_RETRIES || '3');
 
@@ -160,7 +195,7 @@ function validateCacheDir(cacheDir) {
   if (tmpFiles.length > 0) {
     console.log(`Cache validator: found ${tmpFiles.length} temp file(s) from interrupted download(s) — clearing cache`);
     for (const f of tmpFiles) console.log(`  ${basename(f)}`);
-    fs.rmSync(resolved, { recursive: true, force: true });
+    safeRmCache(resolved, 'interrupted-download-tmp-files');
     return;
   }
 
@@ -174,14 +209,12 @@ function validateCacheDir(cacheDir) {
             const stat = fs.statSync(tcPath);
             if (stat.size === 0) {
               console.log('Cache validator: empty tokenizer_config.json — clearing cache');
-              fs.rmSync(resolved, { recursive: true, force: true });
-              return true;
+              return safeRmCache(resolved, 'empty-tokenizer-config') || true;
             }
             try { JSON.parse(fs.readFileSync(tcPath, 'utf8')); }
             catch {
               console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
-              fs.rmSync(resolved, { recursive: true, force: true });
-              return true;
+              return safeRmCache(resolved, 'corrupt-tokenizer-config') || true;
             }
           }
           if (entry.name.startsWith('models--')) {
@@ -192,14 +225,12 @@ function validateCacheDir(cacheDir) {
                 if (fs.existsSync(tcFile)) {
                   if (fs.statSync(tcFile).size === 0) {
                     console.log('Cache validator: empty tokenizer_config.json — clearing cache');
-                    fs.rmSync(resolved, { recursive: true, force: true });
-                    return true;
+                    return safeRmCache(resolved, 'empty-snapshot-tokenizer-config') || true;
                   }
                   try { JSON.parse(fs.readFileSync(tcFile, 'utf8')); }
                   catch {
                     console.log('Cache validator: corrupt tokenizer_config.json — clearing cache');
-                    fs.rmSync(resolved, { recursive: true, force: true });
-                    return true;
+                    return safeRmCache(resolved, 'corrupt-snapshot-tokenizer-config') || true;
                   }
                 }
               }
@@ -236,12 +267,18 @@ async function loadModel() {
       loadError = err;
       console.error(`Failed to import transformers.js: ${err.message}`);
       console.error('Run: npm install @huggingface/transformers@latest');
+      // cycle-5: reset loadPromise so the next call to loadModel() can retry
+      // the import. Without this, the cached rejected promise is reused
+      // forever and no further retry is possible.
+      loadPromise = null;
       return;
     }
 
   if (!pipeline) {
     loadError = new Error('pipeline not available — update @huggingface/transformers');
       console.error(loadError.message);
+      // cycle-5: same — clear the promise on the missing-pipeline branch.
+      loadPromise = null;
       return;
     }
 

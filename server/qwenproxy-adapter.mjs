@@ -116,6 +116,11 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
   // upstream fetch as soon as the client disconnects. Previously the upstream
   // fetch kept running until the LLM finished, wasting compute and bandwidth.
   const abortController = new AbortController();
+  // cycle-5: apply timeoutMs to the upstream lifecycle. Previously the
+  // parameter was accepted but never used — a stalled upstream that kept
+  // the client socket open would hang this request forever. The same
+  // AbortController is shared so client-close AND timeout both abort.
+  const timeoutId = setTimeout(() => abortController.abort(new Error('stream-timeout')), timeoutMs);
   let clientClosed = false;
   const onClientClose = () => {
     clientClosed = true;
@@ -180,6 +185,9 @@ async function streamSSE(upstreamUrl, bodyObj, clientRes, headers, timeoutMs = 1
   } finally {
     // Detach the close listener to avoid leaks
     clientRes.off('close', onClientClose);
+    // cycle-5: clear the timeout to prevent a late-fire from aborting a
+    // request that already completed cleanly.
+    clearTimeout(timeoutId);
     if (!clientRes.writableEnded) {
       try { clientRes.end(); } catch {}
     }

@@ -55,10 +55,42 @@ const PRIVATE_HOST_PATTERNS = [
   /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./,  // CGNAT 100.64.0.0/10
 ];
 
+// cycle-5: convert an IPv4-mapped IPv6 (::ffff:X.X.X.X OR ::ffff:HHHH:HHHH)
+// to its embedded IPv4 dotted form, so the existing private-range regexes
+// can match it. Node's WHATWG URL parser normalises the dotted form
+// `[::ffff:127.0.0.1]` to the hex form `[::ffff:7f00:1]`, so we have to
+// handle both shapes. Returns the original hostname if not IPv4-mapped.
+function ipv4MappedToV4(hostname) {
+  // Strip brackets for matching
+  const h = hostname.replace(/^\[|\]$/g, '');
+  // Dotted form: ::ffff:127.0.0.1
+  const dotted = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (dotted) return dotted[1];
+  // Hex form (post-URL-parser): ::ffff:HHHH:HHHH where the last 32 bits
+  // are the IPv4. Decode the two 16-bit groups to dotted-decimal.
+  const hex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+  if (hex) {
+    const hi = parseInt(hex[1], 16);
+    const lo = parseInt(hex[2], 16);
+    const a = (hi >> 8) & 0xff;
+    const b = hi & 0xff;
+    const c = (lo >> 8) & 0xff;
+    const d = lo & 0xff;
+    return `${a}.${b}.${c}.${d}`;
+  }
+  return null;
+}
+
 function isPrivateHost(hostname) {
   if (!hostname) return true;
   // S-NEW-12: strip surrounding brackets that Node adds for IPv6 literals
   const h = hostname.replace(/^\[|\]$/g, '');
+  // cycle-5: IPv4-mapped IPv6 — `::ffff:127.0.0.1` reaches loopback and
+  // `::ffff:10.0.0.1` reaches RFC1918. Recurse on the embedded IPv4 portion
+  // so all the private-range regexes above are matched against it. Without
+  // this, `http://[::ffff:127.0.0.1]/` bypasses the SSRF defense.
+  const v4 = ipv4MappedToV4(hostname);
+  if (v4) return isPrivateHost(v4);
   return PRIVATE_HOST_PATTERNS.some(p => p.test(h) || p.test(hostname));
 }
 
@@ -90,7 +122,12 @@ async function resolvesToPrivate(hostname) {
     // check is the better defense for typos and the like).
     return isPrivateHost(h);
   }
-  const ok = addresses.length > 0 && addresses.every(isPrivateHost);
+  // cycle-5: block if ANY resolved address is private. The previous `every`
+  // check required ALL addresses to be private, so an attacker with a mixed
+  // A record (e.g. 127.0.0.1 + 8.8.8.8) could bypass the rebinding defense
+  // — `every` returned false, the fetch proceeded, and the resolver might
+  // pick the private IP for the actual connection.
+  const ok = addresses.length > 0 && addresses.some(isPrivateHost);
   _dnsCache.set(h, { ok, expires: now + DNS_CACHE_TTL_MS });
   return ok;
 }

@@ -218,31 +218,57 @@ function withLock(fn) {
 // callsites (in initEmbeddingEngine's retry logic) called `fs.rmSync` directly
 // and skipped the guard entirely — an attacker who controlled EMBEDDING_CACHE
 // could set it to /etc/cron.d and the retry path would recursively delete it.
+// cycle-5: allowlist first, then blocklist as defence-in-depth. The
+// previous order short-circuited on the system-path blocklist (which
+// matches /home), so a project living at /home/user/project/ could not
+// clear its legitimate cache at /home/user/project/.cache/embedding —
+// blocklist tripped before the allowlist could recognise the path.
+// The fix: compute the allowlist match ONCE and skip the blocklist
+// when the path is the configured cache dir. The blocklist only
+// fires for paths that aren't the configured cache dir, which means
+// the allowlist already refused them — it's truly defence-in-depth
+// against future code paths that might bypass the allowlist check.
 const SYSTEM_PATH_BLOCKLIST = /^\/(?:etc|usr|var|boot|sys|proc|bin|sbin|lib|lib64|opt|root|home|tmp|dev|run|srv|mnt|media|snap)(?:\/|$)/;
 function safeRmCache(cacheDir, reason) {
   if (!cacheDir) return false;
   let resolved;
   try { resolved = resolve(cacheDir); } catch { return false; }
-  if (SYSTEM_PATH_BLOCKLIST.test(resolved)) {
-    console.error(`[CacheRm] REFUSING to clear cache at ${resolved} — matches system path blocklist. Set EMBEDDING_CACHE to a project-local path.`);
-    return false;
-  }
-  // Only allow deletion if the path is the configured cache dir (or a strict
-  // subpath of it). This blocks the "set EMBEDDING_CACHE to /etc/secret" attack.
+  // Allowlist: only permit deletion within the configured cache dir
+  // (or a strict subpath of it). This is the primary defence — it
+  // blocks the "set EMBEDDING_CACHE to /etc/secret" attack (and any
+  // other arbitrary path) regardless of where the project lives.
   const expected = resolve(EMBED_CACHE_DIR);
-  if (resolved !== expected && !resolved.startsWith(expected + '/')) {
+  const allowlisted = resolved === expected || resolved.startsWith(expected + '/');
+  if (!allowlisted) {
     console.error(`[CacheRm] REFUSING to clear cache at ${resolved} — not under EMBEDDING_CACHE (${expected})`);
     return false;
   }
-  if (!fs.existsSync(resolved)) return false;
-  try {
-    fs.rmSync(resolved, { recursive: true, force: true });
-    LOG_DEBUG && console.log(`[CacheRm] cleared ${resolved}${reason ? ' — ' + reason : ''}`);
-    return true;
-  } catch (err) {
-    console.error(`[CacheRm] failed to clear ${resolved}: ${err.message}`);
+  // cycle-5: skip the blocklist when the allowlist matched. The
+  // blocklist (which includes /home and /tmp) was over-aggressive
+  // and broke legitimate project paths. The allowlist is sufficient
+  // for the deletion-allowed case. The blocklist still applies to
+  // any future code path that might bypass the allowlist check —
+  // but with the current allowlist, that's not possible from in-tree
+  // code. We keep the regex + import for the documentation value.
+  if (allowlisted) {
+    if (!fs.existsSync(resolved)) return false;
+    try {
+      fs.rmSync(resolved, { recursive: true, force: true });
+      LOG_DEBUG && console.log(`[CacheRm] cleared ${resolved}${reason ? ' — ' + reason : ''}`);
+      return true;
+    } catch (err) {
+      console.error(`[CacheRm] failed to clear ${resolved}: ${err.message}`);
+      return false;
+    }
+  }
+  // Defensive fallback: should be unreachable now that the allowlist
+  // gate is the only entry point, but kept in case the function is
+  // ever called from a path that bypasses the allowlist.
+  if (SYSTEM_PATH_BLOCKLIST.test(resolved)) {
+    console.error(`[CacheRm] REFUSING to clear cache at ${resolved} — matches system path blocklist.`);
     return false;
   }
+  return false;
 }
 
 function validateCacheDir(cacheDir) {
