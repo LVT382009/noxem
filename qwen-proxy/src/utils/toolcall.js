@@ -19,6 +19,10 @@ const TOOL_TAG_OPEN = "##TOOL_CALL##"
 const TOOL_TAG_CLOSE = "##END_CALL##"
 const TOOL_RESULT_OPEN = "[Tool Result]"
 const TOOL_RESULT_CLOSE = "[/Tool Result]"
+// Opener prefix without the trailing "]" — used to detect blocks that carry
+// attributes ([Tool Result tool_call_id="..." name="..."]) or are split
+// mid-marker across streaming chunks.
+const TOOL_RESULT_OPEN_PREFIX = TOOL_RESULT_OPEN.slice(0, -1)
 // Regex to strip [Tool Result...]...[/Tool Result] blocks from model output.
 // The model sometimes echoes the few-shot format from the prompt as visible text.
 // Matches: [Tool Result], [Tool Result tool_call_id="..." name="...">], etc.
@@ -711,6 +715,12 @@ const OPEN = TOOL_TAG_OPEN
 const CLOSE = TOOL_TAG_CLOSE
   let buf = ''
   let nextIndex = 0
+  // State for [Tool Result]...[/Tool Result] blocks that arrive split across
+  // streaming chunks. The <tool> scanner (_scan) already holds back partial
+  // <tool> tags; tool-result blocks need the same cross-chunk buffering or
+  // the opener and closer land in separate textDeltas and leak as visible text.
+  let inResultBlock = false     // true between a complete opener and its closer
+  let resultPending = ''       // held-back partial opener (e.g. truncated "[Tool Res")
 
   function _parseSingleToolCall(jsonStr) {
     jsonStr = jsonStr.trim()
@@ -793,18 +803,95 @@ const CLOSE = TOOL_TAG_CLOSE
     return -1
   }
 
+  // Detect a truncated "[Tool Result" opener prefix at the tail of `s`
+  // (from `from` onward) so it can be held back for the next chunk.
+  // Minimum length 7 ("[Tool R") so a lone "[" or "[Tool" in normal prose
+  // is not mis-held (it just gets emitted and re-examined next chunk if wrong).
+  function _partialResultOpenAtEnd(s, from) {
+    const tail = s.slice(from)
+    const maxN = Math.min(TOOL_RESULT_OPEN_PREFIX.length - 1, tail.length)
+    for (let n = maxN; n >= 7; n--) {
+      if (tail.endsWith(TOOL_RESULT_OPEN_PREFIX.slice(0, n))) {
+        return from + tail.length - n
+      }
+    }
+    return -1
+  }
+
+  // Consume `chunk`, returning the text that is NOT inside a [Tool Result]
+  // block and NOT part of a split opener. State (inResultBlock/resultPending)
+  // carries across calls so blocks split across chunks are stripped, not
+  // leaked as visible text.
+  function _consumeResultBlocks(chunk) {
+    let clean = ''
+    let i = 0
+    // Rejoin any partial opener held back from the previous chunk.
+    if (resultPending) { chunk = resultPending + chunk; resultPending = '' }
+
+    if (inResultBlock) {
+      // We're mid-block: discard until the closer arrives.
+      const closeIdx = chunk.indexOf(TOOL_RESULT_CLOSE, 0)
+      if (closeIdx < 0) {
+        // Still no closer — the whole chunk is block content, throw it away.
+        // Keep inResultBlock so the next chunk is checked for the closer too.
+        return ''
+      }
+      inResultBlock = false
+      i = closeIdx + TOOL_RESULT_CLOSE.length
+    }
+
+    while (i < chunk.length) {
+      const openIdx = chunk.indexOf(TOOL_RESULT_OPEN_PREFIX, i)
+      if (openIdx < 0) {
+        const partial = _partialResultOpenAtEnd(chunk, i)
+        if (partial >= 0) {
+          clean += chunk.slice(i, partial)
+          resultPending = chunk.slice(partial)
+        } else {
+          clean += chunk.slice(i)
+        }
+        break
+      }
+      clean += chunk.slice(i, openIdx)
+      // Find the "]" that ends the opener (handles attr form like
+      // [Tool Result tool_call_id="..." name="..."]).
+      const openEnd = chunk.indexOf(']', openIdx + TOOL_RESULT_OPEN_PREFIX.length)
+      if (openEnd < 0) {
+        // Opener itself is split across the chunk boundary — hold it back.
+        resultPending = chunk.slice(openIdx)
+        break
+      }
+      const closeIdx = chunk.indexOf(TOOL_RESULT_CLOSE, openEnd + 1)
+      if (closeIdx < 0) {
+        // Opener complete, closer not yet seen — enter mid-block, discard rest.
+        inResultBlock = true
+        break
+      }
+      // Full block within this chunk — discard its content, continue after close.
+      i = closeIdx + TOOL_RESULT_CLOSE.length
+    }
+    return clean
+  }
+
   function push(chunk) {
     if (typeof chunk !== 'string' || chunk === '') return { textDelta: '', toolCallsDelta: null }
 
     // Normalize special-token form (tool)(/tool) → <tool></tool>
   chunk = chunk.replace(/##TOOL_CALL##/g, OPEN).replace(/##END_CALL##/g, CLOSE).replace(/\(tool_call\)/g, OPEN).replace(/\(\/tool_call\)/g, CLOSE).replace(/<tool>/gi, OPEN).replace(/<\/tool>/gi, CLOSE)
-    buf += chunk
+    // Strip [Tool Result]...[/Tool Result] blocks (handles cross-chunk splits)
+    // before the <tool> scanner sees the text.
+    const cleanChunk = _consumeResultBlocks(chunk)
+    buf += cleanChunk
     const result = _scan()
     buf = result.pending
     let td = result.textDelta; if (td) td = stripToolResultBlocks(td); return { textDelta: td, toolCallsDelta: result.toolCallsDelta }
   }
 
   function flush() {
+    // Stream ended — drop any held partial opener and discard a never-closed
+    // tool-result block (its text never made it into buf, so nothing to emit).
+    resultPending = ''
+    inResultBlock = false
     if (!buf) return { textDelta: '', toolCallsDelta: null }
 
     // Normalize any remaining (tool)/(/tool) tokens
