@@ -26,7 +26,13 @@ const TOOL_RESULT_REGEX = /\[Tool Result[^\]]*\][\s\S]*?\[\/Tool Result\]/g
 
 function stripToolResultBlocks(text) {
   if (!text || typeof text !== 'string') return text
-  return text.replace(TOOL_RESULT_REGEX, '').replace(/\n{3,}/g, '\n\n').trimStart()
+  // Only collapse+trim when a tool-result block was actually removed.
+  // Calling this on every streaming textDelta means an unconditional
+  // .trimStart() would eat the leading space of each chunk and glue
+  // words together ("me systematically" -> "mesystematically").
+  const cleaned = text.replace(TOOL_RESULT_REGEX, '')
+  if (cleaned === text) return text
+  return cleaned.replace(/\n{3,}/g, '\n\n').trimStart()
 }
 
 

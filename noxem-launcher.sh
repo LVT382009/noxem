@@ -57,8 +57,13 @@ for _arg in "$@"; do
     --qwenproxy) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=qwenproxy; shift ;;
     --local) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=local; shift ;;
       --freellm) BRAIN2_ENABLED=1; BRAIN2_PROVIDER=freellm; shift ;;
- --update) _UPDATE=1; shift ;;
- --update=*) _UPDATE=1; _UPDATE_BRANCH="${_arg#--update=}"; shift ;;
+--update)
+    _UPDATE=1
+    if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then
+      _UPDATE_BRANCH="$2"; shift
+    fi
+    shift ;;
+--update=*) _UPDATE=1; _UPDATE_BRANCH="${_arg#--update=}"; shift ;;
   esac
 done
 
