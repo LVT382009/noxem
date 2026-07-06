@@ -94,8 +94,33 @@ app.notFound((c) => c.json({ error: 'Not found' }, 404))
 export async function startServer(): Promise<void> {
   await cache.connect()
 
-  const { loadAccounts } = await import('../core/accounts.js')
-  const accounts = loadAccounts()
+  const { loadAccounts, addAccount } = await import('../core/accounts.js')
+  let accounts = loadAccounts()
+
+  // Seed an account row from .env credentials when none are configured, so the
+  // chat route (getNextAccount → SQLite accounts table) has a lane. Without
+  // this, the empty-accounts branch only logs in the default browser session
+  // via attemptAutoLogin (saving _default state) and never registers a chat
+  // lane — every chat request returns "No available account lanes". This
+  // honours the .env.example contract: QWEN_EMAIL/QWEN_PASSWORD = automatic
+  // login / account rotation. addAccount encrypts the password with the
+  // persistent data/.encryption_key and invalidates the accounts cache, so the
+  // re-load below picks up the new row. On later boots accounts.length > 0
+  // skips this (idempotent). Guest-only mode intentionally leaves it empty.
+  if (accounts.length === 0) {
+    const envEmail = process.env.QWEN_EMAIL?.trim()
+    const envPw = process.env.QWEN_PASSWORD
+    const guestOnly = String(process.env.QWEN_GUEST_MODE_ONLY || '').toLowerCase() === 'true'
+    if (envEmail && envPw && !guestOnly) {
+      try {
+        addAccount(envEmail, envPw)
+        accounts = loadAccounts()
+        console.log(`[Server] Seeded account lane from .env credentials: ${envEmail}`)
+      } catch (err: any) {
+        console.warn(`[Server] Could not seed account from .env: ${err.message}`)
+      }
+    }
+  }
 
   const { initPlaywright, initPlaywrightForAccount } = await import('../services/playwright.js')
 
