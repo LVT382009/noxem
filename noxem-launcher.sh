@@ -196,12 +196,19 @@ if [ -z "${LLM_API_KEY:-}" ]; then
 	fi
 fi
 
-# ── Ensure QwenProxy .env (session-based: NO password prompt, NO ACCOUNTS) ──
+# ── Ensure QwenProxy .env + account (prompt for login ONLY when no account) ──
 # The fixed qwenproxy is session-based: it reads PORT (not SERVICE_PORT) in
-# config.ts and stores account state in SQLite (qwen_profiles/), never a
-# plaintext ACCOUNTS= line. This fn only ensures .env exists + PORT is set,
-# never clobbering an existing user .env. An account is added via the proxy's
-# own login flow, or you run guest mode (QWEN_GUEST_MODE_ONLY=true in .env).
+# config.ts and loads .env itself (index.ts: `import 'dotenv/config'`), so
+# QWEN_EMAIL/QWEN_PASSWORD written to .env reach the browser-relay login
+# (browser-manager attemptAutoLogin) on the empty-accounts boot branch. The
+# proxy logs in once, then saves the session in qwen_profiles/ — later starts
+# reuse it. An account lives in the proxy's SQLite `accounts` table (added via
+# `npm run login`) OR as QWEN_EMAIL/QWEN_PASSWORD in .env. This fn:
+#   - ensures .env exists + PORT set, never clobbering an existing user .env;
+#   - drops legacy keys the fixed proxy no longer reads;
+#   - if NO account exists, interactively prompts for a Qwen email + password
+#     (TTY only) so chat works; if an account already exists, it just starts.
+# Non-interactive/headless runs skip the prompt (guest mode) rather than hang.
 prompt_qwen_credentials() {
   mkdir -p "$QWENPROXY_DIR"
 
@@ -228,8 +235,90 @@ prompt_qwen_credentials() {
   sed -i '/^ACCOUNTS=/d'      "$QWENPROXY_ENV" 2>/dev/null || true
   sed -i '/^OUTPUT_THINK=/d'  "$QWENPROXY_ENV" 2>/dev/null || true
 
-  dim " QwenProxy .env ready (session-based, no credentials stored) at $QWENPROXY_ENV"
-  dim " Set QWEN_GUEST_MODE_ONLY=true in .env for guest mode, or run the proxy's login flow to add an account."
+  # ── Account detection ── has-account if a SQLite row exists OR .env has creds.
+  # Covers both real login paths: `npm run login` (writes a SQLite account row)
+  # and .env QWEN_EMAIL/QWEN_PASSWORD (read by the empty-accounts boot branch).
+  local _db_count=0
+  local _db="$QWENPROXY_DIR/data/qwenproxy.db"
+  if [ -f "$_db" ]; then
+    local _py=""
+    command -v python3 >/dev/null 2>&1 && _py=python3 || { command -v python >/dev/null 2>&1 && _py=python; }
+    if [ -n "$_py" ]; then
+      _db_count=$( "$_py" - "$_db" 2>/dev/null <<'PY'
+import sqlite3, sys
+try:
+    c = sqlite3.connect(sys.argv[1]); n = c.execute('SELECT count(*) FROM accounts').fetchone()[0]; c.close(); print(int(n or 0))
+except Exception:
+    print(0)
+PY
+)
+      : "${_db_count:=0}"
+      case "$_db_count" in *[!0-9]*) _db_count=0;; esac
+    fi
+  fi
+  local _has_env_creds=0
+  if grep -Eq '^QWEN_EMAIL=[^[:space:]]' "$QWENPROXY_ENV" 2>/dev/null \
+     && grep -Eq '^QWEN_PASSWORD=[^[:space:]]' "$QWENPROXY_ENV" 2>/dev/null; then
+    _has_env_creds=1
+  fi
+
+  # Account already configured → start without prompting.
+  if [ "$_db_count" -gt 0 ] || [ "$_has_env_creds" -eq 1 ]; then
+    green " QwenProxy account found (db=$_db_count, env_creds=$_has_env_creds) — skipping login prompt."
+    dim " QwenProxy .env at $QWENPROXY_ENV"
+    return 0
+  fi
+
+  dim " QwenProxy .env ready at $QWENPROXY_ENV"
+
+  # No account: prompt for login (interactive TTY only). Guest mode hits the
+  # Aliyun WAF on chat.qwen.ai and can't answer chat requests.
+  if [ "${NOXEM_NONINTERACTIVE:-0}" = "1" ] || ! [ -t 0 ]; then
+    dim " Non-interactive shell: skipping Qwen login prompt. Set QWEN_EMAIL/QWEN_PASSWORD in"
+    dim " .env (or run \`npm run login\` in the qwen-proxy dir) to enable chat. Guest mode will hit the WAF."
+    return 0
+  fi
+
+  echo ""
+  green '╔══════════════════════════════════════════════╗'
+  green '║ QwenProxy — Account Login                    ║'
+  green '╚══════════════════════════════════════════════╝'
+  echo " No Qwen account configured. Guest mode hits the Aliyun WAF and can't chat."
+  echo " Enter your chat.qwen.ai account. The proxy browser-relays the login once,"
+  echo " then saves the session in qwen_profiles/ — you won't be asked again."
+  echo " (Password is typed silently and stored plaintext ONLY in local .env,"
+  echo "  never echoed or logged.)"
+  echo ""
+
+  local _acct_email _acct_pw
+  read -rp "  Qwen email: " _acct_email
+  if [ -z "$_acct_email" ]; then
+    dim " No email entered — continuing in guest mode (chat hits the WAF until you add an account)."
+    return 0
+  fi
+  read -rs -p "  Qwen password: " _acct_pw; echo
+  if [ -z "$_acct_pw" ]; then
+    dim " No password entered — continuing in guest mode (chat hits the WAF until you add an account)."
+    return 0
+  fi
+
+  # Escape backslashes + double quotes for a dotenv double-quoted value.
+  local _pw_env
+  _pw_env=$(printf '%s' "$_acct_pw" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+  # Replace (or append) the three keys. Remove old lines first to avoid dupes;
+  # QWEN_GUEST_MODE_ONLY=false so chat uses the logged-in account, not guest.
+  sed -i '/^QWEN_EMAIL=/d; /^QWEN_PASSWORD=/d; /^QWEN_GUEST_MODE_ONLY=/d' "$QWENPROXY_ENV"
+  {
+    printf 'QWEN_EMAIL="%s"\n' "$_acct_email"
+    printf 'QWEN_PASSWORD="%s"\n' "$_pw_env"
+    printf 'QWEN_GUEST_MODE_ONLY=false\n'
+  } >> "$QWENPROXY_ENV"
+  chmod 600 "$QWENPROXY_ENV"
+
+  green " Qwen account saved to .env (email: $_acct_email)."
+  dim " Starting now: the proxy browser-relays the login (5-15s), then saves the"
+  dim " session in qwen_profiles/ — subsequent runs start without re-prompting."
   return 0
 }
 # ── Prompt for local LLM settings ──
