@@ -196,47 +196,41 @@ if [ -z "${LLM_API_KEY:-}" ]; then
 	fi
 fi
 
-# ── Prompt for Qwen credentials (email + password) ──
+# ── Ensure QwenProxy .env (session-based: NO password prompt, NO ACCOUNTS) ──
+# The fixed qwenproxy is session-based: it reads PORT (not SERVICE_PORT) in
+# config.ts and stores account state in SQLite (qwen_profiles/), never a
+# plaintext ACCOUNTS= line. This fn only ensures .env exists + PORT is set,
+# never clobbering an existing user .env. An account is added via the proxy's
+# own login flow, or you run guest mode (QWEN_GUEST_MODE_ONLY=true in .env).
 prompt_qwen_credentials() {
-  # Check if .env already has ACCOUNTS
-  if [ -f "$QWENPROXY_ENV" ] && grep -q '^ACCOUNTS=' "$QWENPROXY_ENV"; then
-    dim " QwenProxy credentials found in $QWENPROXY_ENV"
-    if ! grep -q "^SERVICE_PORT=" "$QWENPROXY_ENV"; then
-      echo "SERVICE_PORT=${QWENPROXY_PORT}" >> "$QWENPROXY_ENV"
-    else
-      sed -i "s/^SERVICE_PORT=.*/SERVICE_PORT=${QWENPROXY_PORT}/" "$QWENPROXY_ENV"
-    fi
-    return 0
-  fi
-
-  echo ""
-  green '╔══════════════════════════════════════════════╗'
-  green '║     Qwen Account Login Required             ║'
-  green '╚══════════════════════════════════════════════╝'
-  echo ""
-  echo "QwenProxy needs your Qwen account credentials."
-  echo "These will be saved to $QWENPROXY_ENV"
-  echo ""
-
-  read -rp 'Qwen Email: ' _qwen_email
-  read -rsp 'Qwen Password: ' _qwen_password
-  echo ""
-
-  if [ -z "$_qwen_email" ] || [ -z "$_qwen_password" ]; then
-    red " Email and password are required."
-    return 1
-  fi
-
-  # Write .env file (ACCOUNTS format: email:password)
   mkdir -p "$QWENPROXY_DIR"
-  cat > "$QWENPROXY_ENV" <<ENVEOF
-SERVICE_PORT=${QWENPROXY_PORT}
-ACCOUNTS=${_qwen_email}:${_qwen_password}
-OUTPUT_THINK=true
-LOG_LEVEL=INFO
-ENVEOF
-  chmod 600 "$QWENPROXY_ENV"
-  green " Credentials saved to $QWENPROXY_ENV"
+
+  # Seed .env from the template only if none exists (never clobber existing .env)
+  if [ ! -f "$QWENPROXY_ENV" ]; then
+    if [ -f "$QWENPROXY_DIR/.env.example" ]; then
+      cp "$QWENPROXY_DIR/.env.example" "$QWENPROXY_ENV"
+    else
+      printf 'PORT=%s\nHOST=127.0.0.1\nBROWSER=chromium\n' "$QWENPROXY_PORT" > "$QWENPROXY_ENV"
+    fi
+    chmod 600 "$QWENPROXY_ENV"
+  fi
+
+  # Ensure PORT points at the launcher port
+  if grep -q '^PORT=' "$QWENPROXY_ENV"; then
+    sed -i "s/^PORT=.*/PORT=${QWENPROXY_PORT}/" "$QWENPROXY_ENV"
+  else
+    echo "PORT=${QWENPROXY_PORT}" >> "$QWENPROXY_ENV"
+  fi
+
+  # Drop legacy keys the fixed proxy no longer reads (left from old v1.1.2 .env).
+  # ACCOUNTS held a plaintext password — safe + hygienic to remove on upgrade.
+  sed -i '/^SERVICE_PORT=/d' "$QWENPROXY_ENV" 2>/dev/null || true
+  sed -i '/^ACCOUNTS=/d'      "$QWENPROXY_ENV" 2>/dev/null || true
+  sed -i '/^OUTPUT_THINK=/d'  "$QWENPROXY_ENV" 2>/dev/null || true
+
+  dim " QwenProxy .env ready (session-based, no credentials stored) at $QWENPROXY_ENV"
+  dim " Set QWEN_GUEST_MODE_ONLY=true in .env for guest mode, or run the proxy's login flow to add an account."
+  return 0
 }
 # ── Prompt for local LLM settings ──
 prompt_local_llm() {
@@ -343,7 +337,7 @@ prompt_freellm() {
 }
 
 
-# ── Setup QwenProxy (npm install, no Playwright) ──
+# ── Setup QwenProxy (npm install + Chromium for Playwright) ──
 setup_qwenproxy() {
   if [ ! -d "$QWENPROXY_DIR" ]; then
     red " QwenProxy directory not found: $QWENPROXY_DIR"
@@ -351,18 +345,39 @@ setup_qwenproxy() {
     return 1
   fi
 
-  if [ ! -d "$QWENPROXY_DIR/node_modules" ]; then
+  # Reinstall deps if missing OR stale. Vendored swap from v1.1.2 drops tsx/hono,
+  # so a dev box that ran the old v1.1.2 would have node_modules without the new
+  # TS runtime. Sentinel: tsx is a runtime dep of the fixed repo; old v1.1.2 never
+  # installed it. (install.sh already populated node_modules in prod.)
+  if [ ! -d "$QWENPROXY_DIR/node_modules/tsx" ]; then
     echo ""
-    dim " Setting up QwenProxy (first run)..."
+    dim " Setting up QwenProxy (first run or upgraded)..."
     dim " Installing npm dependencies..."
-    (cd "$QWENPROXY_DIR" && npm install --silent 2>/dev/null) || {
+    (cd "$QWENPROXY_DIR" && npm install --no-audit --no-fund 2>&1 | tail -3) || {
       red " npm install failed."
       return 1
     }
-    green " QwenProxy setup complete!"
+    green " QwenProxy deps installed!"
   fi
 
-  # Prompt for credentials if needed
+  # Best-effort Chromium for Playwright (cross-platform, never fatal; skipped if
+  # a playwright browser cache already exists).
+  if [ ! -d "$HOME/.cache/ms-playwright" ] && [ ! -d "$HOME/Library/Caches/ms-playwright" ] && [ ! -d "$HOME/AppData/Local/ms-playwright" ]; then
+    dim " Installing Chromium for Playwright..."
+    _case_os="$(uname -s)"
+    case "$_case_os" in
+      MINGW*|MSYS*) (cd "$QWENPROXY_DIR" && npx -y playwright install chromium 2>&1 | tail -1) || dim "  chromium skipped — run 'npx -y playwright install chromium' later" ;;
+      Darwin)       (cd "$QWENPROXY_DIR" && npx -y playwright install chromium 2>&1 | tail -1) || dim "  chromium skipped — run 'npx -y playwright install chromium' later" ;;
+      Linux*)       if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+                      timeout 600 bash -c 'cd "$0" && npx -y playwright install --with-deps chromium' "$QWENPROXY_DIR" 2>&1 | tail -3 || dim "  chromium --with-deps failed — try 'npx -y playwright install chromium' later"
+                    else
+                      timeout 600 bash -c 'cd "$0" && npx -y playwright install chromium' "$QWENPROXY_DIR" 2>&1 | tail -1 || dim "  chromium skipped — install OS libs + 'npx -y playwright install chromium' later"
+                    fi ;;
+      *)            dim "  chromium skipped — run 'npx -y playwright install chromium' later" ;;
+    esac
+  fi
+
+  # Ensure .env (session-based, no credentials)
   prompt_qwen_credentials || return 1
 }
 cleanup() {
@@ -684,11 +699,11 @@ if [ "$BRAIN2_ENABLED" = '1' ]; then
     else
 # Start QwenProxy server (port already cleaned up above)
       dim " Starting QwenProxy server..."
-      mkdir -p "$HOME/.hermes" && (cd "$QWENPROXY_DIR" && node src/start.js >"$HOME/.hermes/qwenproxy.log" 2>&1) &
+      mkdir -p "$HOME/.hermes" && (cd "$QWENPROXY_DIR" && exec node --import tsx src/index.ts >"$HOME/.hermes/qwenproxy.log" 2>&1) &
       QWENPROXY_PID=$!
- dim " (QwenProxy authenticating via direct HTTP login — takes 5-15s)"
-dim "  Logs: tail -f ~/.hermes/qwenproxy.log"
-wait_for_port $QWENPROXY_PORT "QwenProxy" 30
+      dim " (QwenProxy authenticating via browser relay — takes 5-15s)"
+      dim "  Logs: tail -f ~/.hermes/qwenproxy.log"
+      wait_for_port $QWENPROXY_PORT "QwenProxy" 30
 
 # Model selection — fetch available models from QwenProxy
 if [ -z "${LLM_MODEL:-}" ] && [ -t 0 ]; then

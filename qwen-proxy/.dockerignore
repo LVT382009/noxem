@@ -1,10 +1,51 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Build
+dist/
+
+# Environment
 .env
-data
-logs
+.env.*
+
+# Database & persistent data
+data/
+*.db
+*.db-wal
+*.db-shm
+accounts.json
+accounts.json.bak
+
+# Browser profiles (session data)
+qwen_profiles/
+
+# Logs
 *.log
-.git
+npm-debug.log*
+
+# Git
+.git/
 .gitignore
-.vercel
+
+# Docs
 README.md
-docker-compose.yml
+LICENSE
+AGENTS.md
+
+# CI/CD
+.github/
+
+# Coverage & cache
+coverage/
+.cache/
+
+# IDE / Editor
+.kilo/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tests
+src/tests/
+src/benchmarks/

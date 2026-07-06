@@ -1,24 +1,27 @@
-# Stage 1: Install dependencies
-FROM node:20-alpine AS deps
-WORKDIR /app
-COPY package.json ./
-RUN npm install --production
+FROM mcr.microsoft.com/playwright:v1.60.0-noble
 
-# Stage 2: Production image
-FROM node:20-alpine AS runner
+RUN apt-get update && apt-get install -y --no-install-recommends dumb-init gosu \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-ENV NODE_ENV=production
+COPY package*.json ./
+RUN npm ci && npm cache clean --force
 
-# Copy dependencies
-COPY --from=deps /app/node_modules ./node_modules
+COPY tsconfig.json tsconfig.build.json ./
+COPY src/ ./src/
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
-# Copy source code
-COPY . .
+RUN npm run build && npm prune --omit=dev
 
-# Create data directory for file mode
-RUN mkdir -p /app/data /app/logs
+RUN mkdir -p /app/data /app/qwen_profiles /tmp/playwright \
+    && chown -R pwuser:pwuser /app /tmp/playwright \
+    && chmod +x /app/docker-entrypoint.sh
+
+VOLUME ["/app/data", "/app/qwen_profiles"]
 
 EXPOSE 3000
+ENV NODE_ENV=production PORT=3000
 
-CMD ["node", "src/start.js"]
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/app/docker-entrypoint.sh"]
+CMD ["node", "dist/index.js"]

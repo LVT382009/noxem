@@ -1,43 +1,71 @@
 {
-  "name": "qwen-proxy",
-  "version": "1.1.2",
-  "description": "Qwen-Proxy — OpenAI / Anthropic / Gemini three-protocol gateway in front of chat.qwen.ai",
-  "main": "src/server.js",
+  "name": "@pedrofariasx/qwenproxy",
+  "version": "1.12.9",
+  "description": "Local OpenAI-compatible proxy API that routes requests to Qwen (chat.qwen.ai) via Playwright browser automation.",
   "scripts": {
-    "start": "node src/start.js",
-    "dev": "nodemon src/start.js",
-    "build:webui": "cd webui && npm install && npm run build",
-    "vercel-build": "cd webui && npm install && npm run build"
+    "start": "npx tsx src/index.ts",
+    "start:firefox": "npx tsx src/index.ts --browser=firefox",
+    "start:chrome": "npx tsx src/index.ts --browser=chrome",
+    "start:edge": "npx tsx src/index.ts --browser=edge",
+    "login": "npx tsx src/login.ts",
+    "login:firefox": "npx tsx src/login.ts --browser=firefox",
+    "login:chrome": "npx tsx src/login.ts --browser=chrome",
+    "login:edge": "npx tsx src/login.ts --browser=edge",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix"
   },
   "keywords": [
-    "qwen",
     "openai",
-    "api",
     "proxy",
-    "serverless",
-    "vercel"
+    "qwen",
+    "playwright",
+    "llm",
+    "api",
+    "chat-completions"
   ],
-  "author": "",
-  "license": "MIT",
+  "author": "Pedro Farias",
+  "license": "ISC",
   "dependencies": {
-    "ali-oss": "^6.22.0",
-    "axios": "^1.11.0",
-    "body-parser": "^1.20.3",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.7",
-    "express": "^4.21.2",
-    "form-data": "^4.0.2",
-    "https-proxy-agent": "^7.0.6",
-    "jwt-decode": "^4.0.0",
-    "mime-types": "^3.0.1",
-    "multer": "^1.4.5-lts.1",
-    "serverless-http": "^4.0.0",
-    "socks-proxy-agent": "^8.0.5"
+    "@hono/node-server": "^2.0.3",
+    "ajv": "^8.20.0",
+    "ali-oss": "^6.23.0",
+    "better-sqlite3": "^12.10.1",
+    "dotenv": "^17.4.2",
+    "hono": "^4.12.21",
+    "playwright": "^1.60.0",
+    "tsx": "^4.22.3",
+    "uuid": "^14.0.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7"
+    "@eslint/js": "^10.0.1",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^10.0.1",
+    "@types/ajv": "^0.0.5",
+    "@types/ali-oss": "^6.23.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.9.1",
+    "eslint": "^10.5.0",
+    "semantic-release": "^25.0.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
   },
+  "bin": {
+    "qwenproxy": "./bin/qwenproxy.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src/**/*",
+    "bin/**/*"
+  ],
+  "type": "module",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }

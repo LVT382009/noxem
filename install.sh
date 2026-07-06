@@ -303,7 +303,7 @@ chmod +x "$HERMES_SERVER_DIR/server/.noxem-python" 2>/dev/null || true
 fi
 # Install Qwen-Proxy deps in the deployed copy (rsync excludes node_modules)
 if [ -f "$HERMES_SERVER_DIR/qwen-proxy/package.json" ]; then
-  cd "$HERMES_SERVER_DIR/qwen-proxy" && npm install --no-audit --no-fund 2>&1 | tail -1
+  cd "$HERMES_SERVER_DIR/qwen-proxy" && npm install --no-audit --no-fund 2>&1 | tail -1 && npm run build --if-present --silent 2>&1 | tail -1
 fi
 echo " Deployed to $HERMES_SERVER_DIR"
 
@@ -313,10 +313,49 @@ QP_DIR="$APP_DIR/qwen-proxy"
 if [ -f "$QP_DIR/package.json" ]; then
   cd "$QP_DIR"
   npm install --no-audit --no-fund 2>&1 | tail -1
+  npm run build --if-present --silent 2>&1 | tail -1 || true
   echo " Done"
 else
   echo " No qwen-proxy/ directory found — skipping (Brain 2 cloud mode won't work)"
 fi
+
+# ── 8b. Chromium for Playwright (used by Qwen-Proxy scraping) ──
+# Runs AFTER qwen-proxy npm install (playwright is a runtime dep, now in node_modules).
+# Non-fatal: a failed browser fetch must NOT abort the server install.
+# sudo-safe: never race a bare `sudo -n true` probe under `set -euo pipefail` —
+# gate inside `if command -v sudo && sudo -n true`. Browser installs as the
+# invoking USER (not root), so the non-root server can read it.
+export npm_config_yes=1
+echo "[8b/9] Installing Chromium for Playwright (cross-platform, best-effort)..."
+_case_os="$(uname -s)"
+case "$_case_os" in
+  MINGW*|MSYS*)
+    (cd "$QP_DIR" && npx -y playwright install chromium 2>&1 | tail -1) \
+      || echo "  WARN: chromium install skipped (Windows) — run 'npx -y playwright install chromium' manually if E2E needed"
+    ;;
+  Darwin)
+    (cd "$QP_DIR" && npx -y playwright install chromium 2>&1 | tail -1) \
+      || echo "  WARN: chromium install skipped — run 'npx -y playwright install chromium' manually"
+    xattr -dr com.apple.quarantine "$HOME/Library/Caches/ms-playwright" 2>/dev/null || true
+    ;;
+  Linux*)
+    if [ -f /etc/alpine-release ] || ldd --version 2>&1 | grep -qi musl; then
+      echo "  WARN: musl/Alpine detected — chromium skipped (glibc build segfaults). Use a glibc container or BROWSER=edge channel."
+    elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+      # NOPASSWD sudo: playwright's internal apt-get sudo succeeds w/out prompt.
+      timeout 600 bash -c 'cd "$0" && npx -y playwright install --with-deps chromium' "$QP_DIR" 2>&1 | tail -3 \
+        || echo "  WARN: chromium --with-deps failed — falling back to browser-only"
+    else
+      timeout 600 bash -c 'cd "$0" && npx -y playwright install chromium' "$QP_DIR" 2>&1 | tail -1 \
+        || echo "  WARN: chromium install skipped. Install OS libs manually or headless crashes: libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libasound2t64"
+    fi
+    ;;
+  *)
+    echo "  WARN: unrecognized OS '$_case_os' — chromium skipped. Run 'npx -y playwright install chromium' manually."
+    ;;
+esac
+echo "  Done"
+unset npm_config_yes
 
 # ── 9. Launcher setup ──
 echo "[9/9] Setting up launcher..."
@@ -367,7 +406,7 @@ echo "========================================"
 echo ""
 echo "DEPENDENCIES INSTALLED:"
 echo " Node.js: npm packages (express, better-sqlite3, sqlite-vec, etc.)"
-echo " Qwen-Proxy: npm packages (ali-oss, axios, express, multer, etc.)"
+echo " Qwen-Proxy: npm packages (playwright, express, better-sqlite3, hono, tsx, etc.)"
 echo " Python core: httpx, numpy"
 echo " Python optional: turbovec, fastapi, uvicorn (sidecar features)"
 if [ -d "$NOXEM_VENV" ]; then

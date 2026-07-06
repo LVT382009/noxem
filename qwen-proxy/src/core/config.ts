@@ -1,0 +1,141 @@
+import { z } from 'zod'
+
+const envSchema = z.object({
+  PORT: z.string().default('3000'),
+  HOST: z.string().default('0.0.0.0'),
+  HEADLESS: z.string().default('true'),
+  BROWSER: z.enum(['chromium', 'firefox', 'webkit', 'chrome', 'edge']).default('chromium'),
+  USER_DATA_DIR: z.string().default('./qwen_profiles'),
+  USER_AGENT: z.string().default('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36'),
+  LOG_CONSOLE: z.string().default('false'),
+  NAVIGATION_TIMEOUT: z.string().default('90000'),
+  PAGE_TIMEOUT: z.string().default('60000'),
+  HTTP_TIMEOUT: z.string().default('45000'),
+  HEADERS_TIMEOUT: z.string().default('90000'),
+  CHAT_TIMEOUT: z.string().default('120000'),
+  STREAM_IDLE_TIMEOUT: z.string().default('180000'),
+  CACHE_TTL: z.string().default('3600'),
+  RESPONSE_TTL: z.string().default('1800'),
+  METRICS_INTERVAL: z.string().default('10000'),
+  WATCHDOG_INTERVAL: z.string().default('5000'),
+  WATCHDOG_FAILURES: z.string().default('3'),
+  RAM_WARNING: z.string().default('80'),
+  RAM_CRITICAL: z.string().default('95'),
+  WS_WARNING: z.string().default('50'),
+  WS_CRITICAL: z.string().default('100'),
+  QWEN_BASE_URL: z.string().default('https://chat.qwen.ai'),
+  QWEN_HTTP_ENDPOINT: z.string().default('https://api.qwen.ai/v1/chat'),
+  QWEN_API_KEY: z.string().default(''),
+  API_KEY: z.string().default(''),
+  HEADERS_TTL_MS: z.string().default('1800000'),
+  BACKGROUND_HEADER_REFRESH: z.string().default('false'),
+  WARM_POOL_SIZE: z.string().default('0'),
+  WARM_POOL_LOW_WATER: z.string().default('0'),
+  WARM_POOL_TTL_MS: z.string().default('600000'),
+  WARM_POOL_STARTUP: z.string().default('false'),
+  SESSION_KEEPER_ENABLED: z.string().default('false'),
+  ACCOUNT_INIT_CONCURRENCY: z.string().default('2'),
+  ACCOUNT_INIT_STAGGER_MIN_MS: z.string().default('300'),
+  ACCOUNT_INIT_STAGGER_MAX_MS: z.string().default('900'),
+  PRECAPTURE_HEADERS_STARTUP: z.string().default('false'),
+  PRECAPTURE_HEADERS_CONCURRENCY: z.string().default('1'),
+  PRECAPTURE_HEADERS_STAGGER_MIN_MS: z.string().default('2500'),
+  PRECAPTURE_HEADERS_STAGGER_MAX_MS: z.string().default('5000'),
+  SINGLE_ACCOUNT_MODE: z.string().default('false'),
+  SINGLE_ACCOUNT_ID: z.string().default(''),
+  SINGLE_ACCOUNT_EMAIL: z.string().default(''),
+  ACCOUNT_LANES: z.string().default('1'),
+})
+
+const env = envSchema.parse(process.env)
+
+export const config = {
+  server: {
+    port: parseInt(env.PORT),
+    host: env.HOST,
+  },
+  browser: {
+    headless: env.HEADLESS !== 'false',
+    type: env.BROWSER,
+    userDataDir: env.USER_DATA_DIR,
+    userAgent: env.USER_AGENT,
+    args: [
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--disable-features=IsolateOrigins,site-per-process',
+    ],
+    launchTimeout: 30000,
+    healthCheckInterval: 30000,
+    headers: {
+      'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'accept-language': 'en-US,en;q=0.9',
+    },
+    logConsole: env.LOG_CONSOLE === 'true',
+  },
+  timeouts: {
+    navigation: parseInt(env.NAVIGATION_TIMEOUT),
+    page: parseInt(env.PAGE_TIMEOUT),
+    http: parseInt(env.HTTP_TIMEOUT),
+    headers: parseInt(env.HEADERS_TIMEOUT),
+    chat: parseInt(env.CHAT_TIMEOUT),
+    streamIdle: parseInt(env.STREAM_IDLE_TIMEOUT),
+  },
+  cache: {
+    defaultTTL: parseInt(env.CACHE_TTL),
+    responseTTL: parseInt(env.RESPONSE_TTL),
+  },
+  metrics: {
+    interval: parseInt(env.METRICS_INTERVAL),
+  },
+  watchdog: {
+    checkInterval: parseInt(env.WATCHDOG_INTERVAL),
+    consecutiveFailuresThreshold: parseInt(env.WATCHDOG_FAILURES),
+    ram: {
+      warningThreshold: parseInt(env.RAM_WARNING),
+      criticalThreshold: parseInt(env.RAM_CRITICAL),
+    },
+    streams: {
+      warningThreshold: parseInt(env.WS_WARNING),
+      criticalThreshold: parseInt(env.WS_CRITICAL),
+    },
+  },
+  apiKey: env.API_KEY,
+  qwen: {
+    baseUrl: env.QWEN_BASE_URL,
+    httpEndpoint: env.QWEN_HTTP_ENDPOINT,
+    apiKey: env.QWEN_API_KEY,
+  },
+  headers: {
+    ttlMs: parseInt(env.HEADERS_TTL_MS),
+    backgroundRefresh: env.BACKGROUND_HEADER_REFRESH === 'true',
+  },
+  warmPool: {
+    size: parseInt(env.WARM_POOL_SIZE),
+    lowWater: parseInt(env.WARM_POOL_LOW_WATER),
+    ttlMs: parseInt(env.WARM_POOL_TTL_MS),
+    startup: env.WARM_POOL_STARTUP === 'true',
+  },
+  sessionKeeper: {
+    enabled: env.SESSION_KEEPER_ENABLED === 'true',
+  },
+  accounts: {
+    initConcurrency: parseInt(env.ACCOUNT_INIT_CONCURRENCY),
+    initStaggerMinMs: parseInt(env.ACCOUNT_INIT_STAGGER_MIN_MS),
+    initStaggerMaxMs: parseInt(env.ACCOUNT_INIT_STAGGER_MAX_MS),
+    singleAccountMode: env.SINGLE_ACCOUNT_MODE === 'true',
+    singleAccountId: env.SINGLE_ACCOUNT_ID,
+    singleAccountEmail: env.SINGLE_ACCOUNT_EMAIL,
+    lanes: Math.max(1, parseInt(env.ACCOUNT_LANES)),
+  },
+  precapture: {
+    headersStartup: env.PRECAPTURE_HEADERS_STARTUP === 'true',
+    concurrency: parseInt(env.PRECAPTURE_HEADERS_CONCURRENCY),
+    staggerMinMs: parseInt(env.PRECAPTURE_HEADERS_STAGGER_MIN_MS),
+    staggerMaxMs: parseInt(env.PRECAPTURE_HEADERS_STAGGER_MAX_MS),
+  },
+}
+
+export type Config = typeof config

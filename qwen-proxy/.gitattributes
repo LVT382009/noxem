@@ -1,0 +1,9 @@
+# Enforce LF in the vendored qwen-proxy subtree (cross-platform: Win/Linux/mac).
+* text=auto eol=lf
+*.ts   text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+*.json text eol=lf
+*.sh   text eol=lf
+*.md   text eol=lf
