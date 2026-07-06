@@ -303,7 +303,7 @@ chmod +x "$HERMES_SERVER_DIR/server/.noxem-python" 2>/dev/null || true
 fi
 # Install Qwen-Proxy deps in the deployed copy (rsync excludes node_modules)
 if [ -f "$HERMES_SERVER_DIR/qwen-proxy/package.json" ]; then
-  cd "$HERMES_SERVER_DIR/qwen-proxy" && npm install --no-audit --no-fund 2>&1 | tail -1 && npm run build --if-present --silent 2>&1 | tail -1
+  cd "$HERMES_SERVER_DIR/qwen-proxy" && npm install --no-audit --no-fund 2>&1 | tail -1 && (npm run build --if-present --silent 2>&1 | tail -1 || true)
 fi
 echo " Deployed to $HERMES_SERVER_DIR"
 
