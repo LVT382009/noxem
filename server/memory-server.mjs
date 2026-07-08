@@ -12,7 +12,7 @@ import { LLM_URL, LLM_MODEL, baseLlmUrl } from './llm-config.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
-  getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType, setEmbeddingModelId,
+  getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType, setEmbeddingModelId, isForeignEmbeddingModel,
   deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
   getMemoriesByEntityAttr, db,
@@ -1039,7 +1039,7 @@ app.get("/memory/search", async (req, res) => {
  const knnHits = vectorKnnSearch(vec, limitNum * 3);
  if (knnHits && knnHits.length > 0) { hits = applyRecencyScore(knnHits); }
  else {
- const cands = searchByEmbedding(vec, getAllActiveMemories(), limitNum * 3, intent.intent);
+ const cands = searchByEmbedding(vec, getAllActiveMemories().filter(m => !isForeignEmbeddingModel(m)), limitNum * 3, intent.intent);
  hits = applyRecencyScore(mmrRerank(vec, cands, limitNum * 2, 0.7));
  }
  if (hits && hits.length > 0) {

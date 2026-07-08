@@ -12,6 +12,12 @@ import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, knnS
 let _currentEmbeddingModelId = null;
 export function setEmbeddingModelId(id) { _currentEmbeddingModelId = id || null; }
 export function getCurrentEmbeddingModelId() { return _currentEmbeddingModelId; }
+// E13: embedding-drift helper for the searchByEmbedding/bundle-search live paths. Cosine across
+// DIFFERENT embedding spaces is meaningless — cross-model rows must be filtered out before they
+// reach similarity ranking. NULL model id (pre-E13 legacy rows) is treated compatible.
+export function isForeignEmbeddingModel(mem) {
+  return !!(mem && mem.embedding_model_id && _currentEmbeddingModelId && mem.embedding_model_id !== _currentEmbeddingModelId);
+}
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
@@ -469,7 +475,7 @@ SELECT id, session_id, type, text, status, metadata, created_at, importance, rec
 `);
 
 const getActiveWithEmbeddings = db.prepare(
-  `SELECT id, type, text, embedding, created_at, importance, recall_count FROM memories WHERE status = 'active' AND embedding IS NOT NULL`
+  `SELECT id, type, text, embedding, embedding_model_id, created_at, importance, recall_count, status FROM memories WHERE status = 'active' AND embedding IS NOT NULL`
 );
 
 const getAllWithEmbeddings = db.prepare(
@@ -829,6 +835,10 @@ export function vectorKnnSearch(queryEmbedding, topK = 5) {
   return hits.map(h => {
     const mem = getById.get(h.id);
     if (!mem || mem.status !== 'active') return null;
+    // E13: embedding-drift guard — cosine across DIFFERENT embedding spaces is meaningless.
+    // Drop rows whose stored embedding_model_id differs from the current live model. NULL
+    // model id (pre-E13 legacy rows) is treated compatible. Mirrors vectorKnnSearchAsync.
+    if (mem.embedding_model_id && _currentEmbeddingModelId && mem.embedding_model_id !== _currentEmbeddingModelId) return null;
     return {
       id: mem.id,
       text: mem.text,

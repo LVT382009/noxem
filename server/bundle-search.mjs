@@ -10,7 +10,7 @@
  */
 
 
-import { storeMemory, getAllActiveMemoriesNoEmbed, getMemoriesByEntityAttr, traverseMemoryGraph, getActiveMemories, getMemoriesByIds, db } from './memory-store.mjs';
+import { storeMemory, getAllActiveMemoriesNoEmbed, getMemoriesByEntityAttr, traverseMemoryGraph, getActiveMemories, getMemoriesByIds, isForeignEmbeddingModel, db } from './memory-store.mjs';
 import { isEmbeddingReady, embed, searchByEmbedding } from './embedding-engine.mjs';
 import { knnSearch, knnSearchHybrid, getVectorBackend } from './vector-index.mjs';
 import { entityRanker, ingestPipeline, crossModalExtractor, lessonVault, spatialFilter, multiSourceRouter } from './module-registry.mjs';
@@ -136,7 +136,7 @@ async function searchLayer(queryVec, layer, limit) {
       const mem = memById.get(String(r.id));
       // E1: bundle search must gate on active status like the vectorKnn paths — without this,
       // superseded/archived rows returned by knnSearch surfaced dead memories in cone layers.
-      if (mem && mem.status === 'active' && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer))) {
+      if (mem && mem.status === 'active' && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer)) && !isForeignEmbeddingModel(mem)) {
         results.push({ ...mem, score: r.score });
         if (results.length >= limit) break;
       }

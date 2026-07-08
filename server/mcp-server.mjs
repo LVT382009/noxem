@@ -20,7 +20,7 @@ import {
   getMemoryStats, deleteMemory, getAllActiveMemoriesNoEmbed, traverseMemoryGraph,
   storeEdge, getEdgesByRel, getMemory, getRawText,
   upsertCoreBlock, getCoreBlock, getAllCoreBlocks, deleteCoreBlock,
-  getActiveWithEmbedding, updateMemoryStatus, incrementRecallCounts,
+  getActiveWithEmbedding, isForeignEmbeddingModel, updateMemoryStatus, incrementRecallCounts,
   close, db, getMemoriesByEntityAttr, compressMemory,
   getEdgesFromMemory, getEdgesToMemory,
 } from './memory-store.mjs';
@@ -68,7 +68,7 @@ server.registerTool(
       let vecResults = [];
       if (isEmbeddingReady()) {
         const queryEmbedding = await embed(query);
-        vecResults = searchByEmbedding(queryEmbedding, getActiveWithEmbedding(), limit, intent);
+        vecResults = searchByEmbedding(queryEmbedding, getActiveWithEmbedding().filter(m => !isForeignEmbeddingModel(m)), limit, intent);
       }
       // Step 3: Merge with simple dedup (FTS first, then vector fill)
       const seen = new Set();

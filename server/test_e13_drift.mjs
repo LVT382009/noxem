@@ -1,12 +1,21 @@
 // E13 embedding-drift — PERMANENT regression test.
 //
-// Asserts the drift guard in vectorKnnSearchAsync drops rows embedded under a DIFFERENT model
-// than the current one (cosine across embedding spaces is meaningless — silent recall corruption
-// on a 384->768 or model swap), while NULL model id rows (pre-E13 legacy) stay compatible.
+// Asserts the drift guard drops rows embedded under a DIFFERENT model than the current one
+// (cosine across embedding spaces is meaningless — silent recall corruption on a 384->768 or
+// model swap), while NULL model id rows (pre-E13 legacy) stay compatible.
+//
+// CRITICAL: verifies BOTH the isolated vectorKnnSearchAsync AND the LIVE search paths that
+// production actually uses:
+//   - vectorKnnSearch (SYNC) — the /memory/search primary + memory-maintenance (the async variant
+//     has zero production callers; testing it alone certifies a dead function).
+//   - searchByEmbedding at call sites — /memory/search fallback, /memory/bundle-search, MCP
+//     memory_search. These filter foreign-model rows at the call site via isForeignEmbeddingModel
+//     before passing the corpus into the cosine ranker.
 //
 // Run (WSL Ubuntu-24.04, fresh db): bash run-test-e13.sh
 // Standalone: ENABLE_EMBEDDING=false EMBEDDING_DIM=256 node test_e13_drift.mjs
-import { storeMemory, db, vectorKnnSearchAsync, setEmbeddingModelId, getCurrentEmbeddingModelId } from './memory-store.mjs';
+import { storeMemory, db, vectorKnnSearch, vectorKnnSearchAsync, setEmbeddingModelId, getCurrentEmbeddingModelId, isForeignEmbeddingModel, getActiveWithEmbedding } from './memory-store.mjs';
+import { searchByEmbedding } from './embedding-engine.mjs';
 import { isVecReady } from './vector-index.mjs';
 
 const EMBED_DIM = parseInt(process.env.EMBEDDING_DIM || '256');
@@ -21,7 +30,13 @@ for (let i = 0; i < 40; i++) { if (isVecReady()) { vecReady = true; break; } awa
 check('vec table ready', vecReady);
 
 if (vecReady) {
-  const fakeVec = () => new Float32Array(EMBED_DIM);
+  // Non-zero deterministic vector so cosine is defined (a zero-norm vector makes searchByEmbedding
+  // skip every row with a zero-norm warning — unrelated to the drift guard under test).
+  const fakeVec = () => {
+    const v = new Float32Array(EMBED_DIM);
+    for (let i = 0; i < EMBED_DIM; i++) v[i] = 0.1 + (i % 5) * 0.01;
+    return v;
+  };
 
   // Register model A, store a row WITH an embedding -> stamped embedding_model_id='modelA'.
   setEmbeddingModelId('embedding-model-A');
@@ -44,6 +59,26 @@ if (vecReady) {
   const ids = new Set((results || []).map(r => r.id));
   check('model-A row DROPPED by drift filter (cross-model cosine)', !ids.has(idA), 'cross-model row surfaced — silent recall corruption');
   check('NULL-model legacy row KEPT (treated compatible)', ids.has(idLegacy), 'legacy pre-E13 row wrongly dropped');
+
+  // === LIVE-PATH: vectorKnnSearch (SYNC) — the REAL /memory/search primary + maintenance path.
+  // The async variant above has zero production callers; this sync one is what actually runs.
+  console.log('\n--- E13 LIVE path: vectorKnnSearch (sync) drops cross-model, keeps legacy ---');
+  const syncHits = vectorKnnSearch(fakeVec(), 50);
+  const syncIds = new Set((syncHits || []).map(r => r.id));
+  check('LIVE vectorKnnSearch (sync) drops model-A row', !syncIds.has(idA), 'sync primary search surfaced a cross-model row — recall corruption');
+  check('LIVE vectorKnnSearch (sync) keeps legacy NULL row', syncIds.has(idLegacy), 'primary search dropped a compatible legacy row');
+
+  // === LIVE-PATH: searchByEmbedding at call sites (/memory/search fallback, bundle-search,
+  // MCP memory_search). Call sites filter the corpus via isForeignEmbeddingModel before ranking.
+  // Reproduce that exact pattern to prove the live corpus is cross-model-clean at the cosine ranker.
+  console.log('\n--- E13 LIVE path: searchByEmbedding call-site filter drops cross-model ---');
+  const corpus = getActiveWithEmbedding().filter(m => !isForeignEmbeddingModel(m));
+  const sbeHits = searchByEmbedding(fakeVec(), corpus, 50);
+  const sbeIds = new Set((sbeHits || []).map(r => r.id));
+  check('LIVE searchByEmbedding (filtered corpus) drops model-A row', !sbeIds.has(idA), 'fallback/bundle/MCP corpus surfaced a cross-model row');
+  check('LIVE searchByEmbedding (filtered corpus) keeps legacy NULL row', sbeIds.has(idLegacy), 'fallback/bundle/MCP dropped a compatible legacy row');
+  check('isForeignEmbeddingModel true for cross-model row under model B', isForeignEmbeddingModel({ embedding_model_id: 'embedding-model-A' }) === true);
+  check('isForeignEmbeddingModel false for legacy NULL row', isForeignEmbeddingModel({ embedding_model_id: null }) === false);
 
   // Sanity: under the ORIGINAL model again, both rows return.
   setEmbeddingModelId('embedding-model-A');
