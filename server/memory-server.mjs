@@ -24,7 +24,7 @@ import {
  addFacet, getFacets, addFacetPoint, getFacetPoints,
  linkMemoryToEntity, getMemoriesForEntity, getEntitiesForMemory,
 } from './memory-store.mjs';
-import { tryReactivateCandidates } from './reactivation-engine.mjs';
+import { tryReactivateCandidates, tryCrossArchivedDedup } from './reactivation-engine.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, getRLMStatus, shutdownRLM } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { checkServoFetchLiveness, crawlDomain } from './web-fetch.mjs';
@@ -242,7 +242,23 @@ function processEmbedQueue() {
           try {
             const vec = new Float32Array(embeddings[i]);
             updateMemoryEmbedding(batch[i].id, vec);
-            addVecsToIndex([batch[i].id], [embeddings[i]]);
+            // E8: cross-archived dedup. The fresh store is now embedded and still 'active', so the
+            // inherited J2 contradiction gate treats it as the newest row of any shared
+            // entity/attribute. On a clean near-dup (>=0.92) archived L1/L2 fact it reactivates that
+            // fact and we supersede THIS fresh row (audit kept, vec pruned) instead of leaving a
+            // visible duplicate. Gated by ENABLE_REACTIVATION. Never blocks the vec insert on error.
+            let e8SupersedeId = null;
+            if (process.env.ENABLE_REACTIVATION !== 'false') {
+              try {
+                const e8 = tryCrossArchivedDedup(vec);
+                if (e8) e8SupersedeId = e8.id;
+              } catch (e) { LOG_DEBUG && console.error('[E8] store dedup error:', e.message); }
+            }
+            if (e8SupersedeId) {
+              updateMemoryStatus(batch[i].id, 'superseded', e8SupersedeId);
+            } else {
+              addVecsToIndex([batch[i].id], [embeddings[i]]);
+            }
           } catch (embedErr) { LOG_DEBUG && console.error(`[EmbedQueue] Failed for ${batch[i]?.id}:`, embedErr.message); }
         }
       } catch (err) {

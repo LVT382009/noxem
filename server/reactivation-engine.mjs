@@ -78,3 +78,40 @@ export function tryReactivateCandidates(queryEmbedding, {
   }
   return reactivated;
 }
+
+// E8 cross-archived dedup — STORE-path engine. Master report §3 scenario B line 107: the store
+// path scans BOTH active AND archived (via the E7 archive index) before inserting; on a clean
+// match it REACTIVATES (E7) the archived row instead of leaving a duplicate. The v2 store path
+// embeds asynchronously (memory-server embed worker), so E8 hooks AFTER the fresh row is embedded
+// and persisted — and CRUCIALLY while it is still 'active'. That lets the inherited J2 contradiction
+// gate treat the fresh store as the newest row of any shared entity/attribute: an incoming
+// re-reference that AGREES with the archived candidate reactivates it (preserve + recall++), while
+// one that CONTRADICTS (detectContradiction != null) is caught as stale -> skip, the new memory is
+// stored as normal (it is the new truth). This is the E7 gate reused; E8 only widens the caller
+// (the store worker superseding the fresh dup after a hit) and TIGHTENS the threshold.
+//
+// Threshold: strict 0.92 (cross-archived DEDUP), not E7's fuzzy 0.85 (query reference). Archived
+// candidates are L1/L2 facets; the fresh store is usually L0 — cross-layer cosine is naturally a
+// hair lower, so 0.92 fires only on genuine near-identical re-references, never on loose relations
+// (avoids the false-positive-merge = silent-loss risk the master report flags). maxReactivate=1:
+// dedup wants the single best match, not a fuzzy handful. E13 foreign-model archived rows are
+// filtered before ranking (inherited). Enabled alongside E7 by ENABLE_REACTIVATION (default on).
+//
+// Returns the single reactivated row (already flipped active + recalled + vec re-inserted by the
+// E7 machinery) for the caller to supersede the fresh store against, or null if nothing eligible.
+// Never throws to the store hot path.
+export function tryCrossArchivedDedup(queryEmbedding, {
+  threshold = parseFloat(process.env.E8_DEDUP_THRESHOLD || '0.92'),
+  maxReactivate = 1,
+  coneLayers = [1, 2],
+} = {}) {
+  if (!queryEmbedding) return null;
+  if (process.env.ENABLE_REACTIVATION === 'false') return null;
+  try {
+    const rows = tryReactivateCandidates(queryEmbedding, { threshold, maxReactivate, coneLayers });
+    return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[E8] cross-archived dedup error:', e.message);
+    return null;
+  }
+}
