@@ -84,7 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 // Fresh installs get CREATE TABLE IF NOT EXISTS (above) + all migrations.
 // Existing DBs run only the migrations they haven't seen yet.
 
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 function addColumn(table, column, def) {
 	if (!/^[a-zA-Z_]\w*$/.test(column)) throw new Error(`Invalid column name: ${column}`);
@@ -320,6 +320,22 @@ const migrations = {
 		// pre-E13" (treated as compatible with the current model so this migration is non-breaking;
 		// only rows embedded AFTER this change carry an explicit model id).
 		addColumn('memories', 'embedding_model_id', 'TEXT');
+	},
+	7: () => {
+		// E7: archive index + reactivation-on-reference. archiveStaleMemories() flips L1/L2 rows to
+		// 'archived' (lost from retrieval). Without an index, a later reference re-inserts a silent
+		// duplicate. The archive index keeps a small hot-set pointer so the query path can scan
+		// archived rows cheaply and reactivate an exact match instead of duplicating it. Only L1/L2
+		// are ever archived (E6 cardinal guard), so this table is L1/L2-only by construction.
+		db.exec(`CREATE TABLE IF NOT EXISTS memory_archive_index (
+  archived_id INTEGER PRIMARY KEY,
+  archived_at TEXT NOT NULL,
+  cone_layer INTEGER NOT NULL,
+  entity TEXT,
+  attribute TEXT,
+  FOREIGN KEY (archived_id) REFERENCES memories(id) ON DELETE CASCADE
+)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_cone_layer ON memory_archive_index(cone_layer, archived_at DESC)`);
 	}
 
 };// Run pending migrations
@@ -789,13 +805,61 @@ export function archiveStaleMemories() {
     // episode (oracle/audit), 1=L1 facet, 2=L2 scene, 3=L3 persona. Archiving removes a row
     // from retrieval (E7) so archiving L0/L3 there would lose oracle/persona rows — cardinal
     // violation. Gate to cone_layer IN (1,2): L0 + L3 survive archive forever.
-    const rows = db.prepare(`SELECT id FROM memories WHERE status = 'active' AND recall_count = 0 AND created_at < datetime('now', '-90 days') AND cone_layer IN (1,2)`).all();
+    const rows = db.prepare(`SELECT id, cone_layer, entity, attribute FROM memories WHERE status = 'active' AND recall_count = 0 AND created_at < datetime('now', '-90 days') AND cone_layer IN (1,2)`).all();
     if (rows.length === 0) return 0;
     const archiveOne = db.prepare("UPDATE memories SET status = 'archived', updated_at = datetime('now') WHERE id = ?");
-    for (const r of rows) { archiveOne.run(r.id); pruneVectors(db, r.id); }
+    const insArchive = db.prepare("INSERT OR IGNORE INTO memory_archive_index (archived_id, archived_at, cone_layer, entity, attribute) VALUES (?, datetime('now'), ?, ?, ?)");
+    for (const r of rows) {
+      archiveOne.run(r.id);
+      pruneVectors(db, r.id);
+      // E7: index the archived row so the query path can reactivate an exact reference later
+      // instead of letting a re-store create a silent duplicate. L1/L2-only by the SELECT gate.
+      insArchive.run(r.id, r.cone_layer ?? 0, r.entity ?? null, r.attribute ?? null);
+    }
     return rows.length;
   });
   try { return tx(); } catch (e) { LOG_DEBUG && console.error('[Store] archiveStaleMemories error:', e.message); return 0; }
+}
+
+// === E7: reactivation-on-reference (archive index hot-set) ===
+// Scan the bounded archive hot set for L1/L2 rows whose stored embedding survives archive
+// (pruneVectors only drops the vec0 row, not the memories.embedding BLOB). Returns rows with
+// embedding as Float32 so reactivation-engine can rank them via searchByEmbedding without re-reading.
+const archiveIndexScanStmt = db.prepare(
+  `SELECT m.id, m.text, m.entity, m.attribute, m.importance, m.embedding, m.embedding_model_id, m.status, m.created_at, ai.cone_layer, ai.archived_at
+   FROM memory_archive_index ai JOIN memories m ON m.id = ai.archived_id
+   WHERE ai.cone_layer IN (1,2) ORDER BY ai.archived_at DESC LIMIT 500`
+);
+export function getArchivedCandidates(_coneLayers, _limit = 500) {
+  return archiveIndexScanStmt.all().map(m => ({ ...m, embedding: bufferToFloat32(m.embedding) }));
+}
+
+// E7: flip an archived row back to active on query-reference. Recovers it from the archive so a
+// later store doesn't re-insert a silent duplicate. recall_count++, importance +0.1, last_recalled_at
+// refresh, vector re-inserted into memory_vecs (+ TurboVec) from the stored BLOB, archive_index entry
+// removed. L1/L2 only by archive_index construction (E6 cardinal: L0/L3 never archived → never here).
+const reactivateOneStmt = db.prepare(
+  `UPDATE memories SET status = 'active', recall_count = recall_count + 1, last_recalled_at = datetime('now'),
+   importance = MIN(1.0, importance + 0.1), updated_at = datetime('now') WHERE id = ? AND status = 'archived'`
+);
+const deleteArchiveIndexStmt = db.prepare(`DELETE FROM memory_archive_index WHERE archived_id = ?`);
+export function reactivateMemory(id) {
+  const row = getById.get(id);
+  if (!row || row.status !== 'archived') return null;
+  try {
+    db.transaction(() => {
+      const r = reactivateOneStmt.run(id);
+      if (r.changes > 0) deleteArchiveIndexStmt.run(id);
+    })();
+  } catch (e) { LOG_DEBUG && console.error('[E7] reactivate tx error:', e.message); return null; }
+  const after = getById.get(id);
+  if (!after || after.status !== 'active') return null;
+  // Re-insert vector (outside tx — TurboVec add is HTTP). The stored embedding BLOB survives archive.
+  const embRow = db.prepare('SELECT embedding FROM memories WHERE id = ?').get(id);
+  if (embRow?.embedding) {
+    try { addVecsToIndex([id], [bufferToFloat32(embRow.embedding)]); } catch (e) { LOG_DEBUG && console.error('[E7] vec re-insert error:', e.message); }
+  }
+  return after;
 }
 
 export function getMemoriesWithoutEmbedding(limit = 100) {

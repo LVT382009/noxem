@@ -12,6 +12,8 @@
 
 import { storeMemory, getAllActiveMemoriesNoEmbed, getMemoriesByEntityAttr, traverseMemoryGraph, getActiveMemories, getMemoriesByIds, isForeignEmbeddingModel, db } from './memory-store.mjs';
 import { isEmbeddingReady, embed, searchByEmbedding } from './embedding-engine.mjs';
+import { tryReactivateCandidates } from './reactivation-engine.mjs';
+
 import { knnSearch, knnSearchHybrid, getVectorBackend } from './vector-index.mjs';
 import { entityRanker, ingestPipeline, crossModalExtractor, lessonVault, spatialFilter, multiSourceRouter } from './module-registry.mjs';
 
@@ -105,8 +107,19 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
 
   rankedEpisodes.sort((a, b) => a.cost - b.cost);
 
+  // E7: reactivation-on-reference — archived rows referenced by this M-Flow query get reactivated
+  // (flipped active, recall++, importance bump, vec re-inserted) instead of staying lost + causing
+  // a silent duplicate on a later store. J2 contradiction gate blocks stale facts. Surfaced in a
+  // separate `reactivated` field. Gated by ENABLE_REACTIVATION (default on).
+  let reactivatedRows = [];
+  if (queryVec && process.env.ENABLE_REACTIVATION !== 'false') {
+    try { reactivatedRows = tryReactivateCandidates(queryVec, { coneLayers: [1, 2] }); }
+    catch (e) { if (LOG_DEBUG) console.error('[E7 bundle] reactivation error:', e.message); }
+  }
+
   return {
     episodes: rankedEpisodes.slice(0, topK),
+    reactivated: reactivatedRows.length > 0 ? reactivatedRows : undefined,
     layers_searched: {
       L0: l0Hits.length,
       L1: l1Hits.length,

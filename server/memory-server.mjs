@@ -24,6 +24,7 @@ import {
  addFacet, getFacets, addFacetPoint, getFacetPoints,
  linkMemoryToEntity, getMemoriesForEntity, getEntitiesForMemory,
 } from './memory-store.mjs';
+import { tryReactivateCandidates } from './reactivation-engine.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, getRLMStatus, shutdownRLM } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { checkServoFetchLiveness, crawlDomain } from './web-fetch.mjs';
@@ -1157,12 +1158,25 @@ try {
   LOG_DEBUG && console.error('[Associative] Entity lookup error:', err.message);
 }
 
+// E7: reactivation-on-reference — archived memories embedded close to this query get reactivated
+// (flipped active, recall_count++, importance bump, last_recalled_at refresh, vec re-inserted)
+// instead of staying lost and causing a silent duplicate on a later store. J2 contradiction gate
+// (rule-based) blocks promoting a stale fact. Surfaced in a separate `reactivated` field so the
+// ranked `results` ordering + pagination stay intact. Gated by ENABLE_REACTIVATION (default on).
+let reactivatedRows = [];
+if (queryVecForCache && process.env.ENABLE_REACTIVATION !== 'false') {
+  try { reactivatedRows = tryReactivateCandidates(queryVecForCache, { coneLayers: [1, 2] }); }
+  catch (err) { LOG_DEBUG && console.error('[E7] reactivation error:', err.message); }
+  if (reactivatedRows?.length && LOG_DEBUG) console.log('[E7] reactivated', reactivatedRows.length, 'archived rows on query reference');
+}
+
 res.json({
   ok: true,
   method: searchMethod,
   queries: queries.length > 1 ? queries : undefined,
   results: searchResults,
   related: associativeResults.length > 0 ? associativeResults : undefined,
+  reactivated: reactivatedRows.length > 0 ? reactivatedRows : undefined,
 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

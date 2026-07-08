@@ -331,7 +331,7 @@ function extractValue(text) {
 
 // Detect contradiction between two memories about the same entity+attribute
 // Returns the contradiction type or null if no contradiction
-function detectContradiction(olderText, newerText) {
+export function detectContradiction(olderText, newerText) {
   const olderVal = extractValue(olderText);
   const newerVal = extractValue(newerText);
   if (!olderVal || !newerVal) return null;
