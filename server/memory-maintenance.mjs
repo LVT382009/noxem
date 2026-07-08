@@ -1,6 +1,5 @@
 import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity } from './embedding-engine.mjs';
-import { deleteVec } from './vector-index.mjs';
 import { deltaProcessor, graphPruner, ambientInjector, ingestPipeline, strategyDistiller, capsuleBuilder, lessonVault, compactionCoordinator, multiSourceRouter } from './module-registry.mjs';
 import { llmFetch } from './llm-fetch.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
@@ -460,9 +459,8 @@ async function consolidateMemories(memories) {
         updateSourceIds.run(JSON.stringify(clusterIds), newId);
 
         for (const m of cluster) {
-          updateMemoryStatus(m.id, 'superseded', newId);
+          updateMemoryStatus(m.id, 'superseded', newId); // E1: prunes vectors (both backends) same-tx
           setValidUntil.run(new Date().toISOString(), m.id);
-        deleteVec(db, m.id);
         }
 
         consolidatedCount++;

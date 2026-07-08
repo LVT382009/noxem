@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, knnSearchHybrid, deleteVec, getVectorBackend, addToTurboVec, removeFromTurboVec } from './vector-index.mjs';
+import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, knnSearchHybrid, deleteVec, getVectorBackend, addToTurboVec, removeFromTurboVec, pruneVectors, getActiveVectorIds } from './vector-index.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
@@ -400,7 +400,7 @@ const updateType = db.prepare(
 
 const removeById = db.prepare(`DELETE FROM memories WHERE id = ?`);
 const removeByStatus = db.prepare(`DELETE FROM memories WHERE status = 'invalid'`);
-const archiveStale = db.prepare(`UPDATE memories SET status = 'archived', updated_at = datetime('now') WHERE status = 'active' AND recall_count = 0 AND created_at < datetime('now', '-90 days')`);
+// archiveStale bulk UPDATE removed — archiveStaleMemories() now does per-row archive + pruneVectors (E1).
 
 const incrementRecall = db.prepare(
   `UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = datetime('now'), importance = MIN(1.0, importance + 0.01) WHERE id = ?`
@@ -612,7 +612,15 @@ export function storeMemories(items) {
 }
 
 export function updateMemoryStatus(id, status, supersededBy = null) {
-  updateStatus.run({ id, status, superseded_by: supersededBy });
+  // E1: prune the dead memory's vector from BOTH backends in the SAME transaction as the
+  // status flip so superseded/archived/invalid vectors never linger in the KNN index
+  // (stale-vector bleed root cause). 'active' (reactivation) does NOT prune — E7 re-inserts.
+  if (status === 'active') { updateStatus.run({ id, status, superseded_by: supersededBy }); return; }
+  const tx = db.transaction(() => {
+    updateStatus.run({ id, status, superseded_by: supersededBy });
+    pruneVectors(db, id);
+  });
+  tx();
 }
 
 export function updateMemoryType(id, type) {
@@ -738,8 +746,16 @@ export function boostUsedMemories(ids) {
 }
 
 export function archiveStaleMemories() {
-  const result = archiveStale.run();
-  return result.changes;
+  // E1: archive must prune vectors same-tx too (the old bulk archiveStale UPDATE left archived
+  // memories' vectors in memory_vecs → KNN returned dead rows). Per-row so we can pruneVec.
+  const tx = db.transaction(() => {
+    const rows = db.prepare(`SELECT id FROM memories WHERE status = 'active' AND recall_count = 0 AND created_at < datetime('now', '-90 days')`).all();
+    if (rows.length === 0) return 0;
+    const archiveOne = db.prepare("UPDATE memories SET status = 'archived', updated_at = datetime('now') WHERE id = ?");
+    for (const r of rows) { archiveOne.run(r.id); pruneVectors(db, r.id); }
+    return rows.length;
+  });
+  try { return tx(); } catch (e) { LOG_DEBUG && console.error('[Store] archiveStaleMemories error:', e.message); return 0; }
 }
 
 export function getMemoriesWithoutEmbedding(limit = 100) {
@@ -801,8 +817,12 @@ export function vectorKnnSearch(queryEmbedding, topK = 5) {
 export async function vectorKnnSearchAsync(queryEmbedding, topK = 5) {
     if (!isVecReady()) return null;
     const backend = getVectorBackend();
+    // E1b: thread the active-ID allowlist into TurboVec/hybrid KNN so the native kernel
+    // SIMD-filters dead (superseded/archived/invalid) vectors at the block level instead of
+    // post-hoc .filter(Boolean) after they already consumed topK budget (bleed root cause #2).
+    const allowlist = (backend === 'turbovec' || backend === 'hybrid') ? getActiveVectorIds(db) : null;
     const hits = (backend === 'turbovec' || backend === 'hybrid')
-        ? await knnSearchHybrid(db, queryEmbedding, topK)
+        ? await knnSearchHybrid(db, queryEmbedding, topK, allowlist)
         : knnSearch(db, queryEmbedding, topK);
     if (!hits) return null;
     return hits.map(h => {

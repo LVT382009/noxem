@@ -134,7 +134,9 @@ async function searchLayer(queryVec, layer, limit) {
     const results = [];
     for (const r of scored) {
       const mem = memById.get(String(r.id));
-      if (mem && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer))) {
+      // E1: bundle search must gate on active status like the vectorKnn paths — without this,
+      // superseded/archived rows returned by knnSearch surfaced dead memories in cone layers.
+      if (mem && mem.status === 'active' && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer))) {
         results.push({ ...mem, score: r.score });
         if (results.length >= limit) break;
       }

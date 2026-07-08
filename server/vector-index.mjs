@@ -29,6 +29,19 @@ export async function initVectorIndex(db) {
     vecAvailable = true;
     vecTableReady = true;
     if (LOG_DEBUG) console.log(`[VectorIndex] sqlite-vec loaded — native KNN search enabled (${EMBED_DIM}d, cosine)`);
+
+    // E1 one-shot backlog purge: remove vectors whose memory row is no longer active.
+    // pruneVectors (wired into updateMemoryStatus) keeps the index clean going forward;
+    // this purge clears the pre-E1 backlog once, gated by a core_memory flag so it doesn't re-scan every boot.
+    try {
+      let purgeFlag = null;
+      try { purgeFlag = db.prepare('SELECT value FROM core_memory WHERE key = ?').get('e1_purge_v1'); } catch { /* core_memory not ready yet — skip until next boot */ }
+      if (purgeFlag === undefined || purgeFlag === null) {
+        const dead = db.prepare(`DELETE FROM memory_vecs WHERE rowid NOT IN (SELECT id FROM memories WHERE status = 'active')`).run();
+        try { db.prepare('INSERT OR REPLACE INTO core_memory (key, value) VALUES (?, ?)').run('e1_purge_v1', String(dead.changes)); } catch { /* best-effort flag */ }
+        if (LOG_DEBUG) console.log(`[VectorIndex] E1 backlog purge: removed ${dead.changes} stale vectors (one-shot, gated by core_memory.e1_purge_v1)`);
+      }
+    } catch (e) { if (LOG_DEBUG) console.warn('[VectorIndex] E1 purge error:', e.message); }
   } catch (err) {
     vecAvailable = false;
     if (LOG_DEBUG) console.log(`[VectorIndex] sqlite-vec unavailable — JS cosine fallback active (install sqlite-vec for native KNN)`);
@@ -131,6 +144,33 @@ export function deleteVec(db, memoryId) {
   try {
     db.prepare('DELETE FROM memory_vecs WHERE rowid = ?').run(BigInt(memoryId));
   } catch (err) { LOG_DEBUG && console.error('[VectorIndex] deleteVec failed:', err.message); }
+}
+
+// E1: pruneVectors — single chokepoint that purges a memory's vector from BOTH backends.
+// Called in the same transaction as a memories.status flip to superseded/archived/invalid
+// so dead vectors never linger in the KNN index (the root cause of stale-vector bleed).
+// removeFromTurboVec is an HTTP call (cannot live in the sqlite tx), so we fire it best-effort
+// before the sync sqlite DELETE — if TurboVec prune fails the active-ID allowlist at search time
+// is the safety net; if the sqlite tx rolls back the TurboVec hole is harmless (id filters out).
+export function pruneVectors(db, memoryId) {
+  try {
+    const tb = getVectorBackend();
+    if (tb === 'turbovec' || tb === 'hybrid') removeFromTurboVec(memoryId).catch(() => {});
+  } catch { /* best-effort */ }
+  deleteVec(db, memoryId);
+}
+
+// E1b: active-ID allowlist for TurboVec / hybrid KNN. TurboVec has no status metadata, so the
+// search caller threads this set as a native kernel allowlist (SIMD block-filter); the sqlite-vec
+// fallback path filters by the returned ids too. Computing the active set per search is O(active);
+// conventional on a bounded active set (E5 bounds L1/L2). Preserved vectors are NOT pruned —
+// archived vectors stay in the index only if pruneVectors skipped them, but pruneVectors fires on
+// every non-active status, so this set is tight.
+export function getActiveVectorIds(db) {
+  if (!vecTableReady) return null;
+  try {
+    return db.prepare("SELECT id FROM memories WHERE status = 'active'").all().map(r => Number(r.id));
+  } catch (err) { LOG_DEBUG && console.error('[VectorIndex] getActiveVectorIds error:', err.message); return null; }
 }
 
 
@@ -291,4 +331,4 @@ export async function knnSearchHybrid(db, queryEmbedding, topK = 10, allowlist =
 export function isTurboVecHealthy() { return turboVecHealthy; }
 export function getVectorBackend() { return VECTOR_BACKEND; }
 
-export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec, knnSearchHybrid, knnSearchTurbo, addToTurboVec, removeFromTurboVec, saveTurboVec, checkTurboVecHealth, isTurboVecHealthy, getVectorBackend };
+export default { initVectorIndex, isVecReady, insertVec, insertVecBatch, knnSearch, deleteVec, knnSearchHybrid, knnSearchTurbo, addToTurboVec, removeFromTurboVec, saveTurboVec, checkTurboVecHealth, isTurboVecHealthy, getVectorBackend, pruneVectors, getActiveVectorIds };
