@@ -15,7 +15,7 @@
 import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, updateMemoryStatus, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr } from './memory-store.mjs';
 import { llmFetch } from './llm-fetch.mjs';
 import { LLM_URL, LLM_MODEL } from './llm-config.mjs';
-import { isEmbeddingReady, embed, categorizeText, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
+import { isEmbeddingReady, embed, categorizeText, classifyIntent, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
 import { ingestPipeline, deltaProcessor, multiSourceRouter, crossModalExtractor, lessonVault } from './module-registry.mjs';
 
 const EXTRACT_TIMEOUT_MS = parseInt(process.env.EXTRACT_TIMEOUT_MS || '60000');
@@ -135,6 +135,8 @@ export async function extractL1FromL0(sessionId) {
         context_prefix: generateContextPrefix(atom.text, atom.type, sessionId),
         importance: estimateImportance(atom.text, atom.type),
         cone_layer: 1, // L1 facet
+        // E2: tag intent so extracted L1 facets cluster by speech-act in consolidateSemantically.
+        intent_type: classifyIntent(atom.text),
         embedding,
       });
     }
@@ -215,6 +217,7 @@ export async function extractL2Scenes() {
         context_prefix: `Scene, about ${entity}:`,
         importance: 0.8,
         cone_layer: 2, // L2 abstraction
+        intent_type: classifyIntent(summary), // E2 intent tag for semantic clustering
         embedding,
       });
     } catch (err) {
@@ -280,6 +283,7 @@ export async function extractL3Persona() {
       context_prefix: 'Persona, user profile:',
       importance: 1.0,
       cone_layer: 3, // L3 core
+      intent_type: classifyIntent(persona), // E2 intent tag for semantic clustering
       embedding,
     });
 

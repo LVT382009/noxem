@@ -49,6 +49,13 @@ app.post('/v1/chat/completions', (req, res) => {
       drift_detected: false,
       hints: ['Check the auth middleware', 'Review the session token handling'],
     });
+  } else if (sysMsg.includes('consolidate-synth')) {
+    // E2 J3 consolidate-synth: return ONE canonical sentence OR empty. An empty completion makes
+    // synthesizeConsolidation fall to { degraded: true, reason: 'empty' }, which the test uses to
+    // prove the SILENT-LOSS gate (content cluster left untouched on degraded). The "FORCE_DEGRADE"
+    // marker anywhere in the user content (the numbered texts) requests the empty reply.
+    if (lastMsg.includes('FORCE_DEGRADE')) content = '';
+    else content = 'User prefers neural networks for deep learning tasks.';
   } else {
     content = 'Mock LLM response for: ' + lastMsg.substring(0, 50);
   }

@@ -84,7 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 // Fresh installs get CREATE TABLE IF NOT EXISTS (above) + all migrations.
 // Existing DBs run only the migrations they haven't seen yet.
 
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 
 function addColumn(table, column, def) {
 	if (!/^[a-zA-Z_]\w*$/.test(column)) throw new Error(`Invalid column name: ${column}`);
@@ -336,8 +336,16 @@ const migrations = {
   FOREIGN KEY (archived_id) REFERENCES memories(id) ON DELETE CASCADE
 )`);
 		db.exec(`CREATE INDEX IF NOT EXISTS idx_archive_cone_layer ON memory_archive_index(cone_layer, archived_at DESC)`);
-	}
-
+	},
+	// v8 (E2): semantic-intent merge. classifyIntent() tags each stored memory's speech-act intent
+	// (greeting/acknowledgment/.../state_change) into intent_type so the maintenance cron can cluster
+	// trivial function-word rows (greetings share ~zero lexical tokens → cosine 0.20-0.45, below both
+	// the 0.92 dedup and 0.75 consolidate bars → never merge → unbounded useless growth). NULL = untagged
+	// → consolidated by the existing entity+cosine path only. Non-breaking: additive column.
+	8: () => {
+		addColumn('memories', 'intent_type', 'TEXT');
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_intent_cluster ON memories(intent_type, entity, status)`);
+	},
 };// Run pending migrations
 const currentVersion = db.pragma('user_version', { simple: true });
 for (let v = currentVersion + 1; v <= DB_VERSION; v++) {
@@ -417,8 +425,8 @@ try { db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')"); } ca
 initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
 
 const insert = db.prepare(
-	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer, embedding_model_id)
-	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer, @embedding_model_id)`
+	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer, embedding_model_id, intent_type)
+	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer, @embedding_model_id, @intent_type)`
 );
 
 const insertTx = db.transaction((items) => {
@@ -464,7 +472,7 @@ const getActiveAll = db.prepare(`SELECT * FROM memories WHERE status = 'active'`
 const getBySession = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`);
 const getByType = db.prepare(`SELECT * FROM memories WHERE type = ? AND status = 'active' ORDER BY created_at DESC LIMIT ?`);
 const getBySessionBefore = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?`);
-const getActiveAllNoEmbed = db.prepare(`SELECT id, session_id, type, text, metadata, importance, context_prefix, entity, attribute, valid_from, valid_until, recall_count, created_at FROM memories WHERE status = 'active'`);
+const getActiveAllNoEmbed = db.prepare(`SELECT id, session_id, type, text, metadata, importance, context_prefix, entity, attribute, valid_from, valid_until, recall_count, cone_layer, intent_type, created_at FROM memories WHERE status = 'active'`);
 
 const countAll = db.prepare(`SELECT status, type, COUNT(*) as count FROM memories GROUP BY status, type`);
 const countActive = db.prepare(`SELECT COUNT(*) as count FROM memories WHERE status = 'active'`);
@@ -491,7 +499,7 @@ SELECT id, session_id, type, text, status, metadata, created_at, importance, rec
 `);
 
 const getActiveWithEmbeddings = db.prepare(
-  `SELECT id, type, text, embedding, embedding_model_id, created_at, importance, recall_count, status FROM memories WHERE status = 'active' AND embedding IS NOT NULL`
+  `SELECT id, session_id, type, text, embedding, metadata, context_prefix, entity, attribute, valid_until, cone_layer, intent_type, embedding_model_id, created_at, importance, recall_count, status FROM memories WHERE status = 'active' AND embedding IS NOT NULL`
 );
 
 const getAllWithEmbeddings = db.prepare(
@@ -590,7 +598,7 @@ function ensureEmbeddingBuffer(embedding) {
   return null;
 }
 
-export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null, cone_layer = 0 }) {
+export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null, cone_layer = 0, intent_type = null }) {
   embedding = ensureEmbeddingBuffer(embedding);
   const result = insert.run({
     session_id: session_id || '',
@@ -605,6 +613,7 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
     valid_from: valid_from ?? new Date().toISOString(),
  summary: summary ?? null,
  cone_layer,
+ intent_type: intent_type ?? null,
  // E13: stamp the embedding model id only when an embedding is written, so the KNN drift
  // filter can later drop rows embedded under a different model. NULL when no embedding.
  embedding_model_id: embedding ? _currentEmbeddingModelId : null,
@@ -638,6 +647,7 @@ export function storeMemories(items) {
     valid_from: m.valid_from ?? now,
     summary: m.summary ?? null,
     cone_layer: m.cone_layer ?? 0,
+    intent_type: m.intent_type ?? null,
     embedding_model_id: m.embedding ? _currentEmbeddingModelId : null, // E13 drift stamp
   }));
   const ids = insertTx(prepared);
@@ -667,6 +677,35 @@ export function updateMemoryStatus(id, status, supersededBy = null) {
     pruneVectors(db, id);
   });
   tx();
+}
+
+// E2 A-MEM evolve helper. Master report §3 scenario A step 5: non-contradicting fresh context is
+// APPENDED to an existing anchor IN PLACE (UPDATE, no supersede of the anchor) — the folded-away
+// non-anchors are superseded-as-audit by the caller. Mutates the anchor's metadata only:
+//   metadata.evolved_context  = array of folded texts (the appended context)
+//   metadata.evolved_from_ids = audit lineage of folded row ids
+//   metadata.canonical        = optional J3-synthed canonical sentence (content clusters only)
+//   metadata.synthesized      = true when canonical was set
+//   importance                = anchor.importance + importanceBump (capped [0,1]; trivial=0 bump)
+// Pure metadata UPDATE — never re-embeds/re-indexes, so the anchor keeps its indexed embedding +
+// original text (A-MEM "append in place", not replace — zero retrieval churn, zero silent loss).
+export function appendEvolvedContext(anchorId, extras, { canonical = null, importanceBump = 0 } = {}) {
+  if (!anchorId) return false;
+  const row = getById.get(anchorId);
+  if (!row) return false;
+  let meta = {};
+  try { meta = row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : {}; } catch { meta = {}; }
+  const arr = Array.isArray(extras) ? extras : [];
+  const texts = arr.map(e => (typeof e === 'string' ? e : e?.text)).filter(t => t);
+  const ids = arr.map(e => (typeof e === 'string' ? null : (e?.id != null ? String(e.id) : ''))).filter(Boolean);
+  if (texts.length === 0) return false;
+  meta.evolved_context = Array.isArray(meta.evolved_context) ? [...meta.evolved_context, ...texts] : texts;
+  meta.evolved_from_ids = Array.isArray(meta.evolved_from_ids) ? [...meta.evolved_from_ids, ...ids] : ids;
+  if (canonical && typeof canonical === 'string') { meta.canonical = canonical; meta.synthesized = true; }
+  meta.updated_at = new Date().toISOString();
+  const imp = Math.min(1.0, Math.max(0, Number(row.importance || 0) + Number(importanceBump || 0)));
+  db.prepare('UPDATE memories SET metadata = ?, importance = ? WHERE id = ?').run(JSON.stringify(meta), imp, anchorId);
+  return true;
 }
 
 export function updateMemoryType(id, type) {

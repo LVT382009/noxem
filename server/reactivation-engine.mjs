@@ -16,9 +16,9 @@
 // Cardinal: archive_index is L1/L2-only by archiveStaleMemories() construction (E6 guard), so L0/L3
 // can never reach here. All-cosine paths honor E13 (isForeignEmbeddingModel filters cross-model rows
 // before ranking — a row embedded under a previous model is not reactivate-eligible).
-import { searchByEmbedding } from './embedding-engine.mjs';
+import { searchByEmbedding, isTrivialIntent } from './embedding-engine.mjs';
 import { detectContradiction } from './memory-maintenance.mjs';
-import { reactivateMemory, getArchivedCandidates, isForeignEmbeddingModel, getMemoriesByEntityAttr } from './memory-store.mjs';
+import { reactivateMemory, getArchivedCandidates, isForeignEmbeddingModel, getMemoriesByEntityAttr, getActiveWithEmbedding, appendEvolvedContext, updateMemoryStatus } from './memory-store.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const REACTIVATION_THRESHOLD = parseFloat(process.env.E7_REACTIVATION_THRESHOLD || '0.85');
@@ -112,6 +112,79 @@ export function tryCrossArchivedDedup(queryEmbedding, {
     return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
   } catch (e) {
     if (LOG_DEBUG) console.error('[E8] cross-archived dedup error:', e.message);
+    return null;
+  }
+}
+
+// E2 A-MEM store-time evolve — STORE-path engine (ACTIVE agree-fold). Master report §3 scenario A
+// + step 5: when a fresh store AGREES (non-contradicting) with an EXISTING *active* memory of the
+// same intent bucket + entity, we do NOT create a retrieval duplicate — we APPEND the fresh context
+// to the older row IN PLACE (A-MEM evolve: metadata.evolved_context[], importance bump) and
+// SUPERSEDE-AS-AUDIT the fresh row (audit kept, vec pruned). This is the structural fix for the
+// silent-loss vector the §7 symptom names: trivial greetings ("hi" / "nice to meet you") used to
+// pile up as L0 near-dups that overwhelmed retrieval; now they fold into a single evolving facet.
+//
+// Bucket: trivials (greeting/ack/agreement/farewell/thanks/smalltalk) share bucket '__trivial__'
+// (interchangeable — folding carries no fact, so NO cosine bar; anchor = oldest = lineage root).
+// Content intents cluster by the specific intent_type and REQUIRE cosine >= E2_EVOLVE_THRESHOLD
+// (0.85 default) + detectContradiction==null, which rules out silently dropping a distinct,
+// contradicting, updating fact.
+//
+// Cardinal guards: cone_layer 3 (persona) is never a candidate; L0/L1/L2 all evolve (greetings land
+// as L0). E13 foreign-model active rows are filtered before matching. Enabled by ENABLE_AEVOLVE
+// (default on; independent of ENABLE_REACTIVATION so it survives even if reactivation is disabled).
+//
+// Runs in the embed worker AFTER E8 (cross-archived) returns null — archived reactivation takes
+// precedence; only when no archived dup exists do we check active agree-evolution. Never throws to
+// the store worker. Returns { id } of the anchor folded into (caller SUPERSEDEs-as-audit the fresh
+// row by it — shape mirrors tryCrossArchivedDedup) or null = normal store (addVecsToIndex).
+export function tryActiveEvolveDedup(queryEmbedding, freshCtx, {
+  threshold = parseFloat(process.env.E2_EVOLVE_THRESHOLD || '0.85'),
+} = {}) {
+  if (!queryEmbedding) return null;
+  if (process.env.ENABLE_AEVOLVE === 'false') return null;
+  const freshId = freshCtx?.id != null ? String(freshCtx.id) : null;
+  if (!freshId) return null;
+  const freshIntent = freshCtx?.intentType || null;
+  const freshTrivial = isTrivialIntent(freshIntent);
+  const freshEntity = (freshCtx?.entity ?? '').toString();
+  const freshText = (freshCtx?.text ?? '').toString();
+  const _ts = x => { try { return new Date(String(x?.created_at || '').replace(' ', 'T')).getTime() || 0; } catch { return 0; } };
+  try {
+    const all = getActiveWithEmbedding();
+    const cand = all.filter(m =>
+      (m.cone_layer === 0 || m.cone_layer === 1 || m.cone_layer === 2)
+      && !isForeignEmbeddingModel(m)
+      && String(m.id) !== freshId
+      && (freshTrivial ? isTrivialIntent(m.intent_type) : m.intent_type === freshIntent)
+      && ((m.entity ?? '') === freshEntity)
+    );
+    if (cand.length === 0) return null;
+    let anchor = null;
+    if (freshTrivial) {
+      anchor = cand.slice().sort((a, b) =>
+        (_ts(a) - _ts(b)) || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0)
+      )[0];
+    } else {
+      const ranked = searchByEmbedding(queryEmbedding, cand, 10, 'mixed') || [];
+      const hit = ranked.find(h => (h.score ?? 0) >= threshold);
+      if (!hit) return null;
+      const full = cand.find(c => String(c.id) === String(hit.id));
+      if (!full) return null;
+      if (freshText && detectContradiction(full.text, freshText) != null) return null; // contradict -> store fresh (new truth)
+      anchor = full;
+    }
+    const ok = appendEvolvedContext(anchor.id, [{ id: freshId, text: freshText }], {
+      importanceBump: freshTrivial ? 0 : 0.05,
+    });
+    if (!ok) return null;
+    // Caller already declined to addVecsToIndex for the fresh id; mark the fresh row superseded-as-audit
+    // against the anchor (E1 prunes its vec, audit row kept) so it is out of retrieval but not deleted.
+    updateMemoryStatus(freshId, 'superseded', anchor.id);
+    if (LOG_DEBUG) console.log(`[E2] active-evolve: folded mem #${freshId} -> anchor #${anchor.id} (trivial=${freshTrivial})`);
+    return { id: anchor.id };
+  } catch (e) {
+    if (LOG_DEBUG) console.error('[E2] active-evolve error:', e.message);
     return null;
   }
 }

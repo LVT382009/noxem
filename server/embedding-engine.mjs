@@ -494,6 +494,63 @@ export function categorizeText(text) {
   return 'fact';
 }
 
+// E2 classifyIntent — speech-act intent bucket for semantic-intent merge.
+//
+// Regex-first (J1 rule tier): deterministic, O(1), offline-testable. The intent label only ROUTES
+// clustering in consolidateSemantically — it is NOT the merge gate. The high-stakes gate is the
+// LLM synth + all-pairs contradiction check there, so a slightly-wrong intent label can never
+// silently lose content. The LLM J1 judge is reserved and deliberately NOT on the store hot path
+// (store latency stays deterministic; the cost of a wrong label is harmless clustering).
+//
+// TRIVIAL buckets (greeting/acknowledgment/agreement/farewell/thanks/smalltalk) use FULL-MATCH
+// anchors — the whole text must be the trivial phrase + a bounded salutation filler + trailing
+// punctuation. This is load-bearing precision: "hi I fixed the bug" must NOT classify as 'greeting'
+// (it would fold real content into the greeting heap = silent data loss). Conservative under-tag
+// (a greeting missed → slightly smaller cluster, no loss) is always safe; over-tag is not.
+//
+// See NOXEM_MASTER_REPORT.md §3 scenario A + §4 J1.
+export const TRIVIAL_INTENTS = new Set(['greeting', 'acknowledgment', 'agreement', 'farewell', 'thanks', 'smalltalk']);
+
+// Bounded salutation fillers allowed after a trivial anchor (there/everyone/folks/...). Keeps whole-
+// match precision: "hi there" greets, "hi I prefer vim" does not. Backtick strings keep apostrophes
+// literal (single-quoted would need escaping).
+const _SALUT = `(?:\\s+(there|everyone|everybody|guys|all|friend|friends|team|folks|world|sir|mate|y'all))?`;
+// Trailing punctuation only (no letters/digits). A greeting with trailing content fails the anchor.
+const _TRIV_TAIL = `\\s*[!?.~\\u2026]*`;
+const _triv = (anchor) => new RegExp(`^${anchor}${_SALUT}${_TRIV_TAIL}$`);
+
+export function classifyIntent(text) {
+  const t = (text || '').trim();
+  if (!t) return 'unknown';
+  const lower = t.toLowerCase();
+
+  // === Trivial intents — whole-match anchors (start + end, only salutation/punct tail) ===
+  if (_triv('(hi|hello|hey|yo|sup|howdy|greetings|welcome|good morning|good afternoon|good evening)').test(lower)) return 'greeting';
+  if (_triv(`(ok|okay|k|got it|understood|gotcha|ack|roger|noted|sure thing|right|yep that's right)`).test(lower)) return 'acknowledgment';
+  if (_triv(`(yes|yeah|yep|yup|agreed|correct|exactly|true|sounds good|will do|i agree)`).test(lower)) return 'agreement';
+  if (_triv(`(bye|goodbye|see you later|see ya later|catch you later|see you then|talk to you later|see you|see ya|cya|farewell|good night|later|gotta go|talk later)`).test(lower)) return 'farewell';
+  if (_triv(`(thanks|thank you|thx|appreciate it|cheers|grateful|thank you so much)`).test(lower)) return 'thanks';
+  if (_triv(`(how are you|how's it going|what's up|how do you do|nice to meet you|how's everything|howdy)`).test(lower)) return 'smalltalk';
+
+  // === Content intents — specific → general, no shadowing ===
+  // state_change first (most specific: explicit switch/replacement phrasing)
+  if (/\b(switched (?:to|from)|changed (?:to|from)|no longer|migrated to|replaced|now using|uninstalled|stopped using|switched from)\b/.test(lower)) return 'state_change';
+  if (/\b(prefer|like |love |hate |dislike|favourite|favorite|enjoy|not a fan|rather)\b/.test(lower)) return 'preference';
+  if (/\b(install|setup|configure|config|stack|framework|library|using |env(?:ironment)?|variable|deployed)\b/.test(lower)) return 'setup';
+  // command: imperative-led (run/build/deploy/...)
+  if (/^\s*(run|execute|build|deploy|fix|create|delete|make|start|stop|kill|install|update|upgrade|push|commit)\b/i.test(lower)) return 'command';
+  // question: trailing '?' OR interrogative-led
+  if (/[?？]\s*$/.test(t) || /^\s*(what|why|how|where|when|who|which|can|could|would|do|does|is|are|should|will)\b/i.test(lower)) return 'question';
+
+  return 'fact';
+}
+
+// true iff intent is a trivial function-word bucket that consolidateSemantically may merge freely
+// (interchangeable, low-content) without the LLM/non-contradiction gate content clusters require.
+export function isTrivialIntent(intent) {
+  return TRIVIAL_INTENTS.has(intent);
+}
+
 // Estimate memory importance (0-1) based on content analysis
 // Used for retrieval weighting and consolidation priority
 export function estimateImportance(text, type) {

@@ -1,7 +1,7 @@
 import express from 'express';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import cors from 'cors';
-import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, getEmbeddingModelId, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, getEmbeddingModelId, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, classifyIntent, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
 let _isShuttingDown = false; // Hoisted: needed by shutdown-aware middleware
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const LOG_QUIET = process.env.LOG_LEVEL === 'quiet';
@@ -24,7 +24,7 @@ import {
  addFacet, getFacets, addFacetPoint, getFacetPoints,
  linkMemoryToEntity, getMemoriesForEntity, getEntitiesForMemory,
 } from './memory-store.mjs';
-import { tryReactivateCandidates, tryCrossArchivedDedup } from './reactivation-engine.mjs';
+import { tryReactivateCandidates, tryCrossArchivedDedup, tryActiveEvolveDedup } from './reactivation-engine.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, getRLMStatus, shutdownRLM } from './advisor-engine.mjs';
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { checkServoFetchLiveness, crawlDomain } from './web-fetch.mjs';
@@ -257,7 +257,28 @@ function processEmbedQueue() {
             if (e8SupersedeId) {
               updateMemoryStatus(batch[i].id, 'superseded', e8SupersedeId);
             } else {
-              addVecsToIndex([batch[i].id], [embeddings[i]]);
+              // E2 A-MEM active agree-evolve: when E8 (archived reactivation) found nothing, fold
+              // THIS fresh row into an existing *active* anchor that AGREES with it (same intent
+              // bucket + entity; trivials no cosine bar, content >= E2_EVOLVE_THRESHOLD + non-
+              // contradicting) instead of leaving a retrieval near-dup. The fresh row becomes a
+              // superseded-as-audit (kept, vec pruned); the surviving anchor grows in place. Runs
+              // in the async embed worker, never on the store hot path. Gated by ENABLE_AEVOLVE
+              // (default on). On any error we fall through to a normal addVecsToIndex (safe store).
+              let e2AnchorId = null;
+              if (process.env.ENABLE_AEVOLVE !== 'false') {
+                try {
+                  const e2 = tryActiveEvolveDedup(vec, {
+                    id: batch[i].id, text: batch[i].text,
+                    intentType: batch[i].intentType, entity: batch[i].entity,
+                  });
+                  if (e2) e2AnchorId = e2.id;
+                } catch (e) { LOG_DEBUG && console.error('[E2] active-evolve hook error:', e.message); }
+              }
+              if (e2AnchorId) {
+                updateMemoryStatus(batch[i].id, 'superseded', e2AnchorId);
+              } else {
+                addVecsToIndex([batch[i].id], [embeddings[i]]);
+              }
             }
           } catch (embedErr) { LOG_DEBUG && console.error(`[EmbedQueue] Failed for ${batch[i]?.id}:`, embedErr.message); }
         }
@@ -281,12 +302,15 @@ function processEmbedQueue() {
   });
 }
 
-function enqueueEmbedding(id, text, contextPrefix) {
+function enqueueEmbedding(id, text, contextPrefix, meta) {
   if (_embedQueue.length >= EMBED_QUEUE_MAX) {
     LOG_DEBUG && console.warn('[EmbedQueue] Queue full, dropping embedding for', id);
     return false;
   }
-  _embedQueue.push({ id, text, contextPrefix });
+  // E2: carry the fresh row's intent_type + entity through to the embed worker so
+  // tryActiveEvolveDedup can bucket-match without an extra DB read. meta is optional; callers
+  // that omit it just skip the A-MEM active-evolve fold (normal addVecsToIndex store).
+  _embedQueue.push({ id, text, contextPrefix, ...(meta && typeof meta === 'object' ? meta : {}) });
   processEmbedQueue();
   return true;
 }
@@ -825,7 +849,7 @@ const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goa
 
 app.post('/memory/store', async (req, res) => {
   try {
-    const { text, session_id, type, metadata } = req.body;
+    const { text, session_id, type, metadata, intent } = req.body;
     if (!text || typeof text !== 'string' || !text.trim()) return res.status(400).json({ error: 'text required (non-empty string)' });
     if (text.length > 10000) return res.status(400).json({ error: 'text too long (max 10000 chars)' });
     if (type && !VALID_TYPES.includes(type)) return res.status(400).json({ error: `invalid type: ${type}. Valid: ${VALID_TYPES.join(', ')}` });
@@ -848,11 +872,16 @@ app.post('/memory/store', async (req, res) => {
       context_prefix: contextPrefix,
       entity,
  attribute,
+ // E2: tag speech-act intent (greeting/preference/fact/...) so consolidateSemantically can cluster
+ // trivial function-word rows greetings miss by cosine. Caller may pass `intent` to override.
+ intent_type: intent || classifyIntent(trimmed),
  summary: ruleBasedCompress(trimmed, 2),
     });
 
-  // Queue background embedding
-  const enqueued = enqueueEmbedding(id, trimmed, contextPrefix);
+  // Queue background embedding. E2: pass intent_type + entity so the embed worker can run the
+  // A-MEM active-evolve fold (greetings / same-intent paraphrases) without an extra DB read.
+  const _storeIntent = intent || classifyIntent(trimmed);
+  const enqueued = enqueueEmbedding(id, trimmed, contextPrefix, { intentType: _storeIntent, entity });
 
 	// v2: Wire graph edge extraction
  await extractAndStoreEdges(id, trimmed, session_id);
@@ -894,7 +923,7 @@ app.post('/memory/store-batch', (req, res) => {
       const trimmed = m.text.trim();
       const { entity, attribute } = extractEntityAttribute(trimmed);
       const contextPrefix = generateContextPrefix(trimmed, catType, m.session_id);
-      return { ...m, catType, trimmed, entity, attribute, contextPrefix };
+      return { ...m, catType, trimmed, entity, attribute, contextPrefix, intentType: m.intent || classifyIntent(trimmed) };
     });
 
     // Store immediately without waiting for embedding
@@ -908,6 +937,8 @@ app.post('/memory/store-batch', (req, res) => {
       context_prefix: m.contextPrefix,
       entity: m.entity,
       attribute: m.attribute,
+      // E2: tag intent per item so batch stores cluster by intent_type too.
+      intent_type: m.intentType,
     }));
 
     const ids = storeMemories(items);
@@ -919,7 +950,7 @@ app.post('/memory/store-batch', (req, res) => {
   // Queue background embedding for all stored memories
   let embedDropped = 0;
   for (let i = 0; i < ids.length; i++) {
-    if (!enqueueEmbedding(ids[i], items[i].text, items[i].context_prefix)) embedDropped++;
+    if (!enqueueEmbedding(ids[i], items[i].text, items[i].context_prefix, { intentType: items[i].intent_type, entity: items[i].entity })) embedDropped++;
   }
 
   res.json({ ok: true, ids, embedding: embedDropped ? 'partial' : 'queued', dropped: embedDropped || undefined });

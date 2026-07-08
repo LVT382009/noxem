@@ -30,6 +30,51 @@ function callLLM(messages, maxTokens = 1024, temperature = 0.3) {
     }),
     }, { timeoutMs: 30_000, enforceSizeLimit: true });
 }
+
+/**
+ * E2 J3 consolidate-synth — synthesize ONE canonical facet text for a near-duplicate cluster,
+ * REPLACING the literal `texts.join(' | ')` the old consolidateMemories used.
+ *
+ * High-stakes: this runs inside the maintenance cron's content-merge path. The caller
+ * (consolidateSemantically) REQUIRES a clean (degraded===false) synth before it will merge a
+ * CONTENT cluster — on any miss (LLM off / qwenproxy WAF / timeout / bad shape) it returns
+ * degraded:true and the caller performs NO merge (today's behavior preserved = zero data loss).
+ * Trivial-intent clusters are merged by the caller even when degraded (interchangeable greetings).
+ *
+ * Never throws (cron hot path). Returns {text, degraded, reason}.
+ *   - text   : canonical sentence (string|null)
+ *   - degraded: true when no LLM or LLM failed → caller must NOT merge content clusters
+ *   - reason  : short diagnostic for logs
+ */
+export async function synthesizeConsolidation(cluster, { temperature = 0.4, timeoutMs = 40_000, maxTokens = 256 } = {}) {
+  try {
+    const texts = (Array.isArray(cluster) ? cluster : []).map(m => (m?.text ?? '').trim()).filter(Boolean);
+    if (texts.length < 2) return { text: texts[0] || null, degraded: true, reason: 'too-few' };
+    const messages = [
+      {
+        role: 'system',
+        content: 'synthesize (E2 J3 consolidate-synth): condense the N near-duplicate memories below into ONE canonical facet sentence. Preserve every distinct fact; drop pure duplicates; NEVER invent information not present. Output ONLY the single sentence — no quotes, no JSON, no preamble, no numbering.',
+      },
+      { role: 'user', content: texts.map((t, i) => `${i + 1}. ${t}`).join('\n') },
+    ];
+    const res = await llmFetch(LLM_URL, {
+      method: 'POST',
+      headers: {},
+      body: JSON.stringify({ model: LLM_MODEL, messages, max_tokens: maxTokens, temperature }),
+    }, { timeoutMs, enforceSizeLimit: true });
+    if (!res.ok) return { text: null, degraded: true, reason: `http ${res.status}` };
+    const data = await res.json().catch(() => null);
+    const content = (data?.choices?.[0]?.message?.content || '').trim();
+    if (!content) return { text: null, degraded: true, reason: 'empty' };
+    // strip surrounding quotes/backticks a model may add
+    const text = content.replace(/^["'`]+|["'`.,;\s]+$/g, '').trim();
+    if (!text || text.length < 3 || text.length > 2000) return { text: null, degraded: true, reason: 'bad-shape' };
+    return { text, degraded: false };
+  } catch (e) {
+    return { text: null, degraded: true, reason: e?.name === 'AbortError' ? 'timeout' : (e?.message || 'error') };
+  }
+}
+
 // Pre-compression advisor: analyze conversation before compaction
 export async function analyzeBeforeCompress(conversationHistory, sessionMemories, { structured = false } = {}) {
   if (!ADVISOR_ENABLED) return fallbackCompressAnalysis(conversationHistory, sessionMemories);

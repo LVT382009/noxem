@@ -1,5 +1,7 @@
 import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
-import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity, isTrivialIntent } from './embedding-engine.mjs';
+import { appendEvolvedContext } from './memory-store.mjs';
+import { synthesizeConsolidation } from './advisor-engine.mjs';
 import { deltaProcessor, graphPruner, ambientInjector, ingestPipeline, strategyDistiller, capsuleBuilder, lessonVault, compactionCoordinator, multiSourceRouter } from './module-registry.mjs';
 import { llmFetch } from './llm-fetch.mjs';
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
@@ -156,6 +158,18 @@ export async function runMaintenance() {
       if (consolidated > 0) LOG_DEBUG && console.log(`[Maintenance] Consolidated ${consolidated} memory clusters`);
     } catch (err) {
       LOG_DEBUG && console.error('[Maintenance] Consolidation error:', err.message);
+    }
+
+    // 6b. E2 semantic-intent consolidation: A-MEM evolve + intent-cluster merge over L1/L2 facets.
+    //     Runs AFTER the legacy entity consolidation so it sees the post-merge facet set. It is its
+    //     own gate (ENABLE_CONSOLIDATION_SEMANTIC) and is SILENT-LOSS-SAFE (content clusters only
+    //     merge on a clean J3 synth). Never aborts maintenance on error.
+    try {
+      const semantic = await consolidateSemantically(memories);
+      results.semanticConsolidated = semantic;
+      if (semantic > 0) LOG_DEBUG && console.log(`[Maintenance] E2 semantic-consolidated ${semantic} clusters`);
+    } catch (err) {
+      LOG_DEBUG && console.error('[Maintenance] E2 semantic consolidation error:', err.message);
     }
 
     // ── v2.1 Module Maintenance ────────────────────
@@ -472,6 +486,118 @@ async function consolidateMemories(memories) {
   }
 
   return consolidatedCount;
+}
+
+// E2 consolidateSemantically — A-MEM evolve + intent-cluster merge (CRON). Parallels the legacy
+// consolidateMemories (same-source entity merge) with an intent-aware pass: clusters L1/L2 *facet*
+// rows by intent BUCKET + entity and, for agreeing (non-contradicting) clusters, EVOLVES the oldest
+// anchor IN PLACE (metadata.evolved_context + evolved_from_ids + optional J3 canonical) and
+// SUPERSEDES-AS-AUDIT the rest (audit kept, vec pruned). Cardinal guards: L0 raw episodes and L3
+// persona are NEVER touched here (L0 = raw audit, handled by the store-time A-MEM evolve; L3 =
+// persona cardinal). This is the SILENT-LOSS-SAFE consolidation — content clusters require a clean
+// J3 synth (degraded===false) before any merge; on any LLM miss the cluster is left untouched
+// (today's behavior preserved = zero data loss). Trivial clusters (greetings/ack/farewell/...) are
+// interchangeable and merge even when synth is degraded (they carry no fact to lose).
+//
+// Gate: ENABLE_CONSOLIDATION_SEMANTIC (default on, independent of the legacy consolidation toggle).
+// Returns the count of clusters merged. Never throws — runs on the maintenance cron hot path.
+const E2_TRIVIAL_MIN_CLUSTER = 2;
+const E2_CONTENT_MIN_CLUSTER = 3;
+const E2_CONTENT_COSINE = parseFloat(process.env.E2_CONSOLIDATE_COSINE || '0.60');
+const E2_CONTENT_MAX_IMPORTANCE = parseFloat(process.env.E2_CONSOLIDATE_MAX_IMPORTANCE || '0.5');
+const E2_CONTENT_IMPORTANCE_BUMP = 0.05;
+
+export async function consolidateSemantically(memories) {
+  if (process.env.ENABLE_CONSOLIDATION_SEMANTIC === 'false') return 0;
+  if (!Array.isArray(memories) || memories.length < 2) return 0;
+  // operate on L1/L2 facets that have embeddings + an intent tag (L0 raw + L3 persona excluded)
+  const rows = memories.filter(m =>
+    (m.cone_layer === 1 || m.cone_layer === 2)
+    && m.embedding && m.intent_type
+  );
+  if (rows.length < 2) return 0;
+
+  // group by intent bucket + entity (trivials collapse into one '__trivial__' bucket)
+  const groups = new Map();
+  for (const m of rows) {
+    const bucket = isTrivialIntent(m.intent_type) ? '__trivial__' : m.intent_type;
+    const k = `${bucket}::${m.entity || ''}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(m);
+  }
+
+  const _ts = x => { try { return new Date(String(x?.created_at || '').replace(' ', 'T')).getTime() || 0; } catch { return 0; } };
+  const byOldest = (a, b) => (_ts(a) - _ts(b)) || (String(a.id) < String(b.id) ? -1 : 1);
+
+  let merged = 0;
+  for (const [, group] of groups) {
+    const trivial = isTrivialIntent(group[0].intent_type);
+    group.sort(byOldest);
+
+    if (trivial) {
+      if (group.length < E2_TRIVIAL_MIN_CLUSTER) continue;
+      const anchor = group[0];
+      const extras = group.slice(1).map(m => ({ id: m.id, text: m.text }));
+      // trivials are interchangeable and carry no fact -> merge even if the LLM is disabled/degraded
+      const ok = appendEvolvedContext(anchor.id, extras, { importanceBump: 0 });
+      if (ok) {
+        for (const m of group.slice(1)) updateMemoryStatus(m.id, 'superseded', anchor.id);
+        merged++;
+        LOG_DEBUG && console.log(`[E2] consolidate trivial: folded ${extras.length} facets -> anchor #${anchor.id}`);
+      }
+      continue;
+    }
+
+    // content: connected components over all-pairs cosine >= E2_CONTENT_COSINE (Union-Find)
+    const comps = _e2UnionFind(group, E2_CONTENT_COSINE);
+    for (const cluster of comps) {
+      if (cluster.length < E2_CONTENT_MIN_CLUSTER) continue;
+      // all-pairs non-contradicting (a single contradicting pair disqualifies the whole cluster)
+      let contradict = false;
+      for (let i = 0; i < cluster.length && !contradict; i++)
+        for (let j = i + 1; j < cluster.length; j++)
+          if (detectContradiction(cluster[i].text, cluster[j].text) != null) { contradict = true; break; }
+      if (contradict) { LOG_DEBUG && console.log('[E2] content cluster skipped (contradiction pair)'); continue; }
+      // low-importance only (never silently merge a high-stakes fact)
+      if (cluster.some(m => Number(m.importance ?? 0) >= E2_CONTENT_MAX_IMPORTANCE)) continue;
+      // J3 synth REQUIRED — silent-loss gate: on degraded, NO merge (today's behavior preserved)
+      const synth = await synthesizeConsolidation(cluster).catch(() => ({ degraded: true, text: null, reason: 'throw' }));
+      if (synth.degraded) { LOG_DEBUG && console.log(`[E2] content cluster synth degraded (${synth.reason}) — no merge (silent-loss gate)`); continue; }
+      cluster.sort(byOldest);
+      const anchor = cluster[0];
+      const extras = cluster.slice(1).map(m => ({ id: m.id, text: m.text }));
+      const ok = appendEvolvedContext(anchor.id, extras, { canonical: synth.text, importanceBump: E2_CONTENT_IMPORTANCE_BUMP });
+      if (ok) {
+        for (const m of cluster.slice(1)) updateMemoryStatus(m.id, 'superseded', anchor.id);
+        merged++;
+        LOG_DEBUG && console.log(`[E2] consolidate content: folded ${extras.length} facets -> anchor #${anchor.id} (canonical synthed)`);
+      }
+    }
+  }
+  return merged;
+}
+
+// E2 helper — Union-Find over `items`: union i,j when cosineSimilarity(items[i].embedding,
+// items[j].embedding) >= threshold. Returns connected components as arrays of the original rows,
+// each length >= 1. Embeddings are Float32Array from getActiveWithEmbedding; rows missing one are
+// singletons (never merged). O(n^2) but n is per-(bucket,entity) so small.
+function _e2UnionFind(items, threshold) {
+  const n = items.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = x => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+  for (let i = 0; i < n; i++) {
+    const ei = items[i].embedding;
+    if (!ei) continue;
+    for (let j = i + 1; j < n; j++) {
+      const ej = items[j].embedding;
+      if (!ej) continue;
+      if (cosineSimilarity(ei, ej) >= threshold) union(i, j);
+    }
+  }
+  const buckets = new Map();
+  for (let i = 0; i < n; i++) { const r = find(i); if (!buckets.has(r)) buckets.set(r, []); buckets.get(r).push(items[i]); }
+  return [...buckets.values()];
 }
 
 export function startMaintenanceCron(intervalMs = RUN_INTERVAL_MS) {
