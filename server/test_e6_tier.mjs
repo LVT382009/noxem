@@ -13,7 +13,7 @@
 //
 // Run (WSL Ubuntu-24.04, fresh db): bash run-test-e6.sh
 // Standalone: ENABLE_EMBEDDING=false EMBEDDING_DIM=256 node test_e6_tier.mjs
-import { storeMemory, db, updateMemoryStatus, archiveStaleMemories } from './memory-store.mjs';
+import { storeMemory, db, updateMemoryStatus, archiveStaleMemories, deleteInvalid } from './memory-store.mjs';
 import { isVecReady } from './vector-index.mjs';
 
 let PASS = 0, FAIL = 0;
@@ -97,6 +97,24 @@ if (vecReady) {
     const aliveRow = exists.get(sp_l0); // L0 superseded survived — sanity it has a row
     check('L0 superseded row intact after purge', !!aliveRow);
   } catch (e) { check('L0 row read post-purge', false, e.message); }
+
+  // === SECTION 4: deleteInvalid cardinal guard (E6 residual #1 closure) ===
+  // The strongest cardinal-risk vector the adversarial audit flagged: the maintenance auto-delete
+  // path physically removes status='invalid' rows. Without the cone_layer guard this would DELETE
+  // an L0 raw episode or L3 persona that dedup/contradiction/supersede flipped to 'invalid' — a
+  // direct master-report §6 cardinal violation via a non-purge path. Flip all four tiers to
+  // 'invalid' via the same updateMemoryStatus() enabler, then run the maintenance physical-delete.
+  console.log('\n--- E6 residual#1: deleteInvalid never touches L0/L3 ---');
+  const di_l0 = mk(0, 'invalid L0 must survive deleteInvalid', { statusFlip: 'invalid' });
+  const di_l3 = mk(3, 'invalid L3 must survive deleteInvalid', { statusFlip: 'invalid' });
+  const di_l1 = mk(1, 'invalid L1 should be physically deleted', { statusFlip: 'invalid' });
+  const di_l2 = mk(2, 'invalid L2 should be physically deleted', { statusFlip: 'invalid' });
+  const deletedCount = deleteInvalid();
+  check('L0 invalid survives deleteInvalid', !!exists.get(di_l0), 'L0 invalid row deleted — cardinal violation via maintenance path');
+  check('L3 invalid survives deleteInvalid', !!exists.get(di_l3), 'L3 invalid row deleted — cardinal violation via maintenance path');
+  check('L1 invalid physically deleted by maintenance', !exists.get(di_l1), 'invalid L1 lingered — deleteInvalid skipped L1');
+  check('L2 invalid physically deleted by maintenance', !exists.get(di_l2), 'invalid L2 lingered — deleteInvalid skipped L2');
+  check('deleteInvalid deleted exactly 2 (L1+L2)', deletedCount === 2, `got ${deletedCount}`);
 }
 
 console.log('\n========================================');

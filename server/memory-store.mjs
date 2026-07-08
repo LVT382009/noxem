@@ -423,7 +423,7 @@ const updateType = db.prepare(
 );
 
 const removeById = db.prepare(`DELETE FROM memories WHERE id = ?`);
-const removeByStatus = db.prepare(`DELETE FROM memories WHERE status = 'invalid'`);
+const removeByStatus = db.prepare(`DELETE FROM memories WHERE status = 'invalid' AND cone_layer IN (1,2)`); // E6 cardinal guard — never bulk-delete L0/L3
 // archiveStale bulk UPDATE removed — archiveStaleMemories() now does per-row archive + pruneVectors (E1).
 
 const incrementRecall = db.prepare(
@@ -665,7 +665,13 @@ export function deleteMemory(id) {
 }
 
 export function deleteInvalid() {
-	const invalidRows = db.prepare("SELECT id FROM memories WHERE status = 'invalid'").all();
+	// E6 cardinal guard: NEVER physically delete L0 (raw episode audit/oracle) or L3 (persona).
+	// Only L1 (facet) / L2 (scene) are hard-cap-eligible. This auto-maintenance path is the
+	// strongest cardinal-risk vector — without this guard an L0/L3 that updateMemoryStatus()
+	// flipped to 'invalid' (via dedup/contradiction/supersede) would be physically deleted,
+	// violating the master report §6 cardinal rule. Filtering at the SQL source keeps the
+	// vec-cleanup loop below operating only on rows we actually delete (L1/L2).
+	const invalidRows = db.prepare("SELECT id FROM memories WHERE status = 'invalid' AND cone_layer IN (1,2)").all();
 	const ids = invalidRows.map(r => r.id);
 	// BUG-2 fix: wrap DELETE loop in transaction for atomicity
 	db.transaction(() => { for (const id of ids) removeById.run(id); })();
