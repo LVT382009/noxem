@@ -325,6 +325,12 @@ export async function initEmbeddingEngine() {
   return loadPromise;
 }
 
+// E13: expose the configured embedding model id so callers (memory-store storeMemory, re-embed,
+// search drift filter) can record it per row and detect cross-model cosine (embedding drift).
+export function getEmbeddingModelId() {
+  return MODEL_ID;
+}
+
 export function isEmbeddingReady() {
   return modelReady;
 }

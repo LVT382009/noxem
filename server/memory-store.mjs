@@ -4,6 +4,15 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { initVectorIndex, insertVec, insertVecBatch, isVecReady, knnSearch, knnSearchHybrid, deleteVec, getVectorBackend, addToTurboVec, removeFromTurboVec, pruneVectors, getActiveVectorIds } from './vector-index.mjs';
 
+// E13: current embedding model id, registered once at boot by memory-server after
+// initEmbeddingEngine resolves (so this module never imports transformers.js / embedding-engine).
+// storeMemory + updateMemoryEmbedding stamp it onto rows when they write an embedding; the
+// KNN search path compares it against each hit's stored model id and drops cross-model rows
+// (cosine across different embedding spaces is meaningless — silent recall corruption).
+let _currentEmbeddingModelId = null;
+export function setEmbeddingModelId(id) { _currentEmbeddingModelId = id || null; }
+export function getCurrentEmbeddingModelId() { return _currentEmbeddingModelId; }
+
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 // Fresh installs get CREATE TABLE IF NOT EXISTS (above) + all migrations.
 // Existing DBs run only the migrations they haven't seen yet.
 
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 function addColumn(table, column, def) {
 	if (!/^[a-zA-Z_]\w*$/.test(column)) throw new Error(`Invalid column name: ${column}`);
@@ -296,6 +305,15 @@ const migrations = {
 		db.exec('CREATE INDEX IF NOT EXISTS idx_procedures_name ON procedures(name)');
 		db.exec('CREATE INDEX IF NOT EXISTS idx_procedure_steps_procedure ON procedure_steps(procedure_id)');
 		db.exec('CREATE INDEX IF NOT EXISTS idx_procedure_context_procedure ON procedure_context_points(procedure_id)');
+	},
+	6: () => {
+		// E13: embedding-drift defense. Record the embedding model id used for each row so a
+		// search can detect rows embedded under a DIFFERENT model (e.g. 384->768 swap, or a model
+		// swap) whose cosine distances are NOT comparable to the query vector — returning them as
+		// if valid would silently corrupt recall. Existing rows backfill to NULL == "unknown /
+		// pre-E13" (treated as compatible with the current model so this migration is non-breaking;
+		// only rows embedded AFTER this change carry an explicit model id).
+		addColumn('memories', 'embedding_model_id', 'TEXT');
 	}
 
 };// Run pending migrations
@@ -377,8 +395,8 @@ try { db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')"); } ca
 initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
 
 const insert = db.prepare(
-	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer)
-	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer)`
+	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer, embedding_model_id)
+	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer, @embedding_model_id)`
 );
 
 const insertTx = db.transaction((items) => {
@@ -462,8 +480,10 @@ const getWithoutEmbedding = db.prepare(
   `SELECT id, text, context_prefix FROM memories WHERE embedding IS NULL AND status = 'active' LIMIT ?`
 );
 
+// E13: re-embed stamps the CURRENT model id so a freshly (re-)embedded row is tagged for the
+// drift filter. Rows embedded before E13 carry NULL model id (treated as compatible).
 const updateEmbedding = db.prepare(
-  `UPDATE memories SET embedding = ? WHERE id = ?`
+  `UPDATE memories SET embedding = ?, embedding_model_id = ? WHERE id = ?`
 );
 // Graph edge prepared statements
 const insertEdge = db.prepare('INSERT INTO memory_edges (from_id, to_id, relation, valid_from, valid_until, strength, source_session_id, metadata) VALUES (@from_id, @to_id, @relation, @valid_from, @valid_until, @strength, @source_session_id, @metadata)');
@@ -563,6 +583,9 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
     valid_from: valid_from ?? new Date().toISOString(),
  summary: summary ?? null,
  cone_layer,
+ // E13: stamp the embedding model id only when an embedding is written, so the KNN drift
+ // filter can later drop rows embedded under a different model. NULL when no embedding.
+ embedding_model_id: embedding ? _currentEmbeddingModelId : null,
  });
   // Update vector index if embedding provided
   if (embedding) {
@@ -593,6 +616,7 @@ export function storeMemories(items) {
     valid_from: m.valid_from ?? now,
     summary: m.summary ?? null,
     cone_layer: m.cone_layer ?? 0,
+    embedding_model_id: m.embedding ? _currentEmbeddingModelId : null, // E13 drift stamp
   }));
   const ids = insertTx(prepared);
   // Update vector index for batch
@@ -749,7 +773,11 @@ export function archiveStaleMemories() {
   // E1: archive must prune vectors same-tx too (the old bulk archiveStale UPDATE left archived
   // memories' vectors in memory_vecs → KNN returned dead rows). Per-row so we can pruneVec.
   const tx = db.transaction(() => {
-    const rows = db.prepare(`SELECT id FROM memories WHERE status = 'active' AND recall_count = 0 AND created_at < datetime('now', '-90 days')`).all();
+    // E6: tier-aware archive — only L1/L2 are demotable to 'archived'. cone_layer: 0=L0 raw
+    // episode (oracle/audit), 1=L1 facet, 2=L2 scene, 3=L3 persona. Archiving removes a row
+    // from retrieval (E7) so archiving L0/L3 there would lose oracle/persona rows — cardinal
+    // violation. Gate to cone_layer IN (1,2): L0 + L3 survive archive forever.
+    const rows = db.prepare(`SELECT id FROM memories WHERE status = 'active' AND recall_count = 0 AND created_at < datetime('now', '-90 days') AND cone_layer IN (1,2)`).all();
     if (rows.length === 0) return 0;
     const archiveOne = db.prepare("UPDATE memories SET status = 'archived', updated_at = datetime('now') WHERE id = ?");
     for (const r of rows) { archiveOne.run(r.id); pruneVectors(db, r.id); }
@@ -763,7 +791,7 @@ export function getMemoriesWithoutEmbedding(limit = 100) {
 }
 
 export function updateMemoryEmbedding(id, embedding) {
-  updateEmbedding.run(ensureEmbeddingBuffer(embedding), id);
+  updateEmbedding.run(ensureEmbeddingBuffer(embedding), _currentEmbeddingModelId, id);
 }
 
 export function addVecsToIndex(ids, embeddings) {
@@ -828,6 +856,11 @@ export async function vectorKnnSearchAsync(queryEmbedding, topK = 5) {
     return hits.map(h => {
         const mem = getById.get(h.id);
         if (!mem || mem.status !== 'active') return null;
+        // E13: embedding-drift guard — drop rows whose stored embedding_model_id differs from
+        // the current model. Cosine across different embedding spaces is meaningless; returning
+        // such rows as hits would silently corrupt recall (a 384->768 swap halves it). NULL model
+        // id = pre-E13 legacy row → treated compatible (re-embed cron re-stamps over time).
+        if (mem.embedding_model_id && _currentEmbeddingModelId && mem.embedding_model_id !== _currentEmbeddingModelId) return null;
         return {
             id: mem.id, text: mem.text, type: mem.type,
             session_id: mem.session_id, importance: mem.importance,

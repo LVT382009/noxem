@@ -1,7 +1,7 @@
 import express from 'express';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import cors from 'cors';
-import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, getEmbeddingModelId, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
 let _isShuttingDown = false; // Hoisted: needed by shutdown-aware middleware
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const LOG_QUIET = process.env.LOG_LEVEL === 'quiet';
@@ -12,7 +12,7 @@ import { LLM_URL, LLM_MODEL, baseLlmUrl } from './llm-config.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
-  getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType,
+  getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType, setEmbeddingModelId,
   deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
   getMemoriesByEntityAttr, db,
@@ -182,6 +182,9 @@ async function startup() {
   if (ENABLE_EMBEDDING) {
   initEmbeddingEngine().then(() => {
     if (isEmbeddingReady()) {
+      // E13: register the live embedding model id so new/re-embedded rows are stamped and the
+      // drift filter knows the "current space" to compare against. Read fresh from the engine.
+      setEmbeddingModelId(getEmbeddingModelId());
       embed('warmup').then(() => {
         if (LOG_DEBUG) console.log('Brain-1 warmed up');
         // Backfill memories stored before embedding was ready
@@ -2132,8 +2135,16 @@ app.post('/memory/purge', (req, res) => {
   }
   try {
     const before = getMemoryStats();
+    // E6: tier-aware purge. (a) cone_layer IN (1,2) — NEVER purge L0 raw episode (oracle/audit)
+    // or L3 persona; only demotable L1/L2 facets. (b) Pre-E6 only status='active' rows were
+    // purge-eligible → superseded/archived/invalid rows accumulated forever. Now terminal-status
+    // L1/L2 rows are ALSO purge-eligible once aged past AUTO_PURGE_DAYS, so the store doesn't
+    // grow monotonically with dead facets. Both branches gated to L1/L2 — cardinal rule.
     const purgeStmt = db.prepare(
-      `DELETE FROM memories WHERE importance < 0.3 AND recall_count = 0 AND created_at < datetime('now', '-' || ? || ' days') AND status = 'active'`
+      `DELETE FROM memories WHERE cone_layer IN (1,2) AND created_at < datetime('now', '-' || ? || ' days') AND (
+         (status = 'active' AND importance < 0.3 AND recall_count = 0)
+         OR status IN ('superseded','archived','invalid')
+       )`
     );
     const result = purgeStmt.run(AUTO_PURGE_DAYS);
     const after = getMemoryStats();
