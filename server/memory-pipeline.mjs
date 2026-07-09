@@ -179,8 +179,11 @@ export async function extractL2Scenes() {
       const lastScene = existing[existing.length - 1];
       const daysSinceExtract = (Date.now() - new Date(lastScene.created_at).getTime()) / 86400000;
       if (daysSinceExtract < 7) continue; // skip if recent
-      // Supersede the stale scene and re-extract
-      for (const sc of existing) updateMemoryStatus(sc.id, 'superseded', -1);
+      // Supersede the stale scene and re-extract. null = no specific successor (the new scene is
+      // stored below, so its id isn't known yet). -1 violates the superseded_by FK (memories(id) is
+      // AUTOINCREMENT → -1 never matches) and throws under PRAGMA foreign_keys=ON — aborting the
+      // whole re-extract branch before the LLM call. See extractL3Persona for the matching note.
+      for (const sc of existing) updateMemoryStatus(sc.id, 'superseded', null);
     }
     const sceneText = mems.map(m => `- [${m.type}] ${m.text}`).join('\n');
     try {
@@ -233,18 +236,24 @@ export async function extractL2Scenes() {
  * Only runs when 50+ L1 memories exist.
  */
 export async function extractL3Persona() {
-  const l1Mems = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 1);
+  // Single fetch (BUG-7 pattern; mirrors L2). Prior code scanned getAllActiveMemoriesNoEmbed()
+  // twice — once for L1, once for L3 — while extractL2Scenes had already adopted the single-call
+  // + local-filter fix. Dedupe here too: one scan, filter locally.
+  const allActive = getAllActiveMemoriesNoEmbed();
+  const l1Mems = allActive.filter(m => m.cone_layer === 1);
   if (l1Mems.length < L3_MIN_L1_MEMORIES) return;
 
   // BUG-17 fix: Skip only if persona is recent (< 7 days old)
-  const existingPersona = l1Mems; // reuse already-fetched L1 data for counting
-  const existingP = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 3);
+  const existingP = allActive.filter(m => m.cone_layer === 3);
   if (existingP.length > 0) {
     const lastPersona = existingP[existingP.length - 1];
-    const daysSinceExtract = existingP.length > 0 ? (Date.now() - new Date(lastPersona.created_at).getTime()) / 86400000 : Infinity;
+    const daysSinceExtract = (Date.now() - new Date(lastPersona.created_at).getTime()) / 86400000;
     if (daysSinceExtract < 7) return; // skip if recent
-    // Supersede the stale persona and re-extract
-    for (const p of existingP) updateMemoryStatus(p.id, 'superseded', -1);
+    // Supersede the stale persona and re-extract. null = no specific successor (column is nullable;
+    // the new persona row is stored AFTER this, so its id isn't known yet anyway). -1 would violate
+    // the superseded_by FK (memories(id) is AUTOINCREMENT, -1 never matches) and throw under
+    // PRAGMA foreign_keys=ON — aborting the whole re-extract branch before the LLM call.
+    for (const p of existingP) updateMemoryStatus(p.id, 'superseded', null);
   }
 
   const textBlock = l1Mems.slice(0, 80).map(m => `[${m.type}] ${m.text}`).join('\n');
