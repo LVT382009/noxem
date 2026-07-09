@@ -346,22 +346,42 @@ const migrations = {
 		addColumn('memories', 'intent_type', 'TEXT');
 		db.exec(`CREATE INDEX IF NOT EXISTS idx_intent_cluster ON memories(intent_type, entity, status)`);
 	},
-};// Run pending migrations
-const currentVersion = db.pragma('user_version', { simple: true });
-for (let v = currentVersion + 1; v <= DB_VERSION; v++) {
-	const migrate = db.transaction(() => {
-		if (!migrations[v]) throw new Error(`Unknown migration version: ${v}`);
-		migrations[v]();
-		db.pragma(`user_version = ${v}`);
-	});
-	try {
-		migrate();
-		LOG_DEBUG && console.log(`[Schema] Migration v${v} applied (user_version=${v})`);
-	} catch (err) {
-		console.error(`[Schema] Migration v${v} FAILED: ${err.message}`);
-		break;
-	}
+};// E16: pending-migration runner. HARD-STOP on first failure — a partial-schema DB must NEVER
+// silently serve requests. Previously the loop logged + `break`ed, leaving the server running on
+// a half-migrated schema (silent corruption risk): a v9 that throws would still serve reads on
+// a schema missing v9's column. Now any failure re-throws so the module top-level rejects and the
+// Node process exits non-zero BEFORE the HTTP server boots. The regression test drives this REAL
+// hard-stop logic through makeMigrationRunner against a throwaway DB + poisoned migration map —
+// no production schema is mutated.
+export function makeMigrationRunner(dbArg, migrationsArg, dbVersionArg, opts = {}) {
+	const quiet = !!opts.silent;
+	return function runMigrations() {
+		const currentVersion = dbArg.pragma('user_version', { simple: true });
+		for (let v = currentVersion + 1; v <= dbVersionArg; v++) {
+			const migrate = dbArg.transaction(() => {
+				if (!migrationsArg[v]) throw new Error(`Unknown migration version: ${v}`);
+				migrationsArg[v]();
+				dbArg.pragma(`user_version = ${v}`);
+			});
+			try {
+				migrate();
+				if (!quiet) console.log(`[Schema] Migration v${v} applied (user_version=${v})`);
+			} catch (err) {
+				if (!quiet) {
+					console.error(`[Schema] Migration v${v} FAILED (hard-stop): ${err.message}`);
+					console.error('[Schema] Aborting startup — refusing to serve on a partial schema.');
+				}
+				throw err;
+			}
+		}
+	};
 }
+
+export function runPendingMigrations() {
+	return makeMigrationRunner(db, migrations, DB_VERSION)();
+}
+
+runPendingMigrations();
 
 
 
