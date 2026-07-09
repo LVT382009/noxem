@@ -982,6 +982,14 @@ export function archiveStaleMemories() {
     const insArchive = db.prepare("INSERT OR IGNORE INTO memory_archive_index (archived_id, archived_at, cone_layer, entity, attribute) VALUES (?, datetime('now'), ?, ?, ?)");
     for (const r of rows) {
       archiveOne.run(r.id);
+      // E9: bi-temporal edge cascade — an archived memory leaves active circulation, so its touching
+      // edges must stop being current IN THE SAME TX as the status flip + vector prune (same invariant
+      // updateMemoryStatus honors on its non-active path). Pre-fix this raw archive path bypassed
+      // cascadeInvalidateEdges, leaving edges valid_until IS NULL; traverseGraph JOINs memory_edges
+      // ONLY (not memories.status), so a live edge anchored to an archived mem still surfaced in now +
+      // asOf traversal — the E9 invariant the memory-pipeline.mjs supersede branch relies on was
+      // silently broken here. Cascade now so archived-mem edges die like superseded-mem edges.
+      cascadeInvalidateEdges.run(r.id, r.id);
       pruneVectors(db, r.id);
       // E7: index the archived row so the query path can reactivate an exact reference later
       // instead of letting a re-store create a silent duplicate. L1/L2-only by the SELECT gate.
@@ -1023,6 +1031,11 @@ export function enforceActiveSetBound({ maxActive = null } = {}) {
     let demoted = 0;
     for (const r of rows) {
       archiveOne.run(r.id);
+      // E9: bi-temporal edge cascade — see archiveStaleMemories. The raw UPDATE status='archived'
+      // path must invalidate touching edges same-tx just like updateMemoryStatus's non-active branch,
+      // else a demoted surplus facet keeps live edges that traverseGraph (memory_edges JOIN only, no
+      // memories.status filter) re-surfaces despite the facet leaving the hot retrieval set.
+      cascadeInvalidateEdges.run(r.id, r.id);
       pruneVectors(db, r.id);
       insArchive.run(r.id, r.cone_layer ?? 0, r.entity ?? null, r.attribute ?? null);
       demoted++;
