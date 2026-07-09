@@ -11,7 +11,7 @@ import { llmFetch } from './llm-fetch.mjs';
 import { LLM_URL, LLM_MODEL, baseLlmUrl } from './llm-config.mjs';
 import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
-  getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getMemoriesByType, getSessionMemoryCount, getTypeMemoryCount,
+  getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getSessionMemoriesPage, getMemoriesByTypePage,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType, setEmbeddingModelId, isForeignEmbeddingModel,
   deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
@@ -1327,23 +1327,19 @@ core_blocks: coreBlocks,
   }
 });
 
+// E10: keyset (seek) pagination — cursor param instead of OFFSET; COUNT(*) total dropped
+// (the S-#54 regression). Response: { results, hasMore, nextCursor, total: null }.
 app.get('/memory/session/:sessionId', (req, res) => {
   try {
-    const { limit, offset } = req.query;
-    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
-    const offsetNum = Math.max(parseInt(offset) || 0, 0);
-    const all = getSessionMemories(req.params.sessionId, limitNum + offsetNum);
-    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: getSessionMemoryCount(req.params.sessionId) }); // S-#54
+    const { limit, cursor } = req.query;
+    res.json(getSessionMemoriesPage(req.params.sessionId, { cursor, limit }));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/memory/type/:type', (req, res) => {
   try {
-    const { limit, offset } = req.query;
-    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 500);
-    const offsetNum = Math.max(parseInt(offset) || 0, 0);
-    const all = getMemoriesByType(req.params.type, limitNum + offsetNum);
-    res.json({ results: all.slice(offsetNum, offsetNum + limitNum), total: getTypeMemoryCount(req.params.type) }); // S-#54
+    const { limit, cursor } = req.query;
+    res.json(getMemoriesByTypePage(req.params.type, { cursor, limit }));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

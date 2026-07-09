@@ -84,7 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 // Fresh installs get CREATE TABLE IF NOT EXISTS (above) + all migrations.
 // Existing DBs run only the migrations they haven't seen yet.
 
-const DB_VERSION = 8;
+export const DB_VERSION = 9;
 
 function addColumn(table, column, def) {
 	if (!/^[a-zA-Z_]\w*$/.test(column)) throw new Error(`Invalid column name: ${column}`);
@@ -345,6 +345,14 @@ const migrations = {
 	8: () => {
 		addColumn('memories', 'intent_type', 'TEXT');
 		db.exec(`CREATE INDEX IF NOT EXISTS idx_intent_cluster ON memories(intent_type, entity, status)`);
+	},
+	// v9: E10 keyset (seek) pagination — covering composite indexes so the seek predicate
+	// (session_id/type, status='active', created_at DESC, id DESC) resolves WITHOUT the COUNT(*)
+	// total + the OFFSET/LIMIT slice that the S-#54 regression flagged. Additive (IF NOT EXISTS),
+	// zero data migration — the queries are unchanged, only the seek gets a real index path.
+	9: () => {
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_session_active_time ON memories(session_id, status, created_at DESC, id DESC)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_type_active_time ON memories(type, status, created_at DESC, id DESC)`);
 	},
 };// E16: pending-migration runner. HARD-STOP on first failure — a partial-schema DB must NEVER
 // silently serve requests. Previously the loop logged + `break`ed, leaving the server running on
@@ -839,6 +847,53 @@ export function getSessionMemoryCount(sessionId) {
 
 export function getTypeMemoryCount(type) {
   return countByType.get(type)?.count ?? 0;
+}
+
+// ─── E10 keyset (seek) pagination ─────────────────────────────────────────────
+// Replaces the per-page OFFSET/LIMIT slice + the COUNT(*) total (the S-#54 regression: every page
+// request paid a COUNT(*) over status='active' AND a fetch of limit+offset rows just to discard
+// the first `offset` of them). Ordered (created_at DESC, id DESC) with a composite tiebreak so
+// rows sharing a created_at timestamp are never skipped across pages. Fetches limit+1 to derive a
+// `hasMore` flag; `nextCursor` is base64url(`created_at|id`) of the last row, passed back as the
+// `cursor` query param for the next page. `total` is intentionally NULL — never computed. Backward
+// compatible shape: a client reading `.total` gets null (graceful) and may switch to `hasMore`.
+const KEYSET_LIMIT_CAP = 500;
+const getSessionPageFirst = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND status = 'active' ORDER BY created_at DESC, id DESC LIMIT ?`);
+const getSessionPageSeek = db.prepare(`SELECT * FROM memories WHERE session_id = ? AND status = 'active' AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?`);
+const getTypePageFirst = db.prepare(`SELECT * FROM memories WHERE type = ? AND status = 'active' ORDER BY created_at DESC, id DESC LIMIT ?`);
+const getTypePageSeek = db.prepare(`SELECT * FROM memories WHERE type = ? AND status = 'active' AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?`);
+
+const encodeCursor = (createdAt, id) => Buffer.from(`${createdAt}|${id}`, 'utf8').toString('base64url');
+const decodeCursor = (cursor) => {
+  if (!cursor) return null;
+  try {
+    const parts = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+    const createdAt = parts[0];
+    const id = parseInt(parts[1], 10);
+    if (!createdAt || Number.isNaN(id)) return null;
+    return { createdAt, id };
+  } catch { return null; }
+};
+
+function _keysetPage(firstStmt, seekStmt, keyArg, cursor, limit) {
+  const lim = Math.min(Math.max(parseInt(limit) || 50, 1), KEYSET_LIMIT_CAP);
+  const fetch = lim + 1;
+  const rows = cursor
+    ? seekStmt.all(keyArg, cursor.createdAt, cursor.createdAt, cursor.id, fetch)
+    : firstStmt.all(keyArg, fetch);
+  const hasMore = rows.length > lim;
+  const page = hasMore ? rows.slice(0, lim) : rows;
+  const last = page[page.length - 1];
+  const nextCursor = hasMore && last ? encodeCursor(last.created_at, last.id) : null;
+  return { results: page, hasMore, nextCursor, total: null };
+}
+
+export function getSessionMemoriesPage(sessionId, { cursor, limit } = {}) {
+  return _keysetPage(getSessionPageFirst, getSessionPageSeek, sessionId, decodeCursor(cursor), limit);
+}
+
+export function getMemoriesByTypePage(type, { cursor, limit } = {}) {
+  return _keysetPage(getTypePageFirst, getTypePageSeek, type, decodeCursor(cursor), limit);
 }
 
 export function getSupersededMemories() {
