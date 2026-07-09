@@ -550,6 +550,43 @@ const getEdgesTo = db.prepare('SELECT * FROM memory_edges WHERE to_id = ? AND (v
 const getEdgesByRelation = db.prepare('SELECT * FROM memory_edges WHERE relation = ? AND (valid_until IS NULL OR valid_until > datetime(\'now\')) ORDER BY created_at DESC LIMIT ?');
 const invalidateEdge = db.prepare('UPDATE memory_edges SET valid_until = datetime(\'now\') WHERE id = ? AND valid_until IS NULL');
 const getEdgeById = db.prepare('SELECT * FROM memory_edges WHERE id = ?');
+// E9: when a memory leaves active circulation, cascade-invalidate ALL of its touching edges in the
+// same transaction-flip so the graph's bi-temporal end-validity stays consistent with the memory's.
+// (pre-E9 the edges stayed valid_until IS NULL → a later asOf traversal wrongly re-surfaced them.)
+const cascadeInvalidateEdges = db.prepare('UPDATE memory_edges SET valid_until = datetime(\'now\') WHERE (from_id = ? OR to_id = ?) AND valid_until IS NULL');
+// E9: bi-temporal asOf variants — mirror the now-path edge queries but parameterize the cutoff as
+// datetime(?) (SQLite normalizes the bound ISO8601 → the same "YYYY-MM-DD HH:MM:SS" space-format that
+// valid_until is stored in, so the string comparison stays correct across callers). Deliberately
+// mirrors the now-path's valid_until-ONLY filter (no valid_from predicate): adding valid_from would
+// hit a latent format mismatch — valid_from is stored JS-ISO ("...T..Z") vs valid_until SQLite-space
+// ("YYYY-MM-DD HH:MM:SS") — which is out of E9's narrow scope and is NOT introduced here.
+const getEdgesByRelationAsOf = db.prepare('SELECT * FROM memory_edges WHERE relation = ? AND (valid_until IS NULL OR valid_until > datetime(?)) ORDER BY created_at DESC LIMIT ?');
+const traverseGraphAsOf = db.prepare(`
+  WITH RECURSIVE graph_walk(id, from_id, to_id, relation, strength, depth, path) AS (
+    SELECT e.id, e.from_id, e.to_id, e.relation, e.strength, 1, '|' || e.from_id || '-' || e.relation || '->' || e.to_id || '|'
+    FROM memory_edges e
+    WHERE e.from_id = ? AND (e.valid_until IS NULL OR e.valid_until > datetime(?))
+    UNION ALL
+    SELECT e.id, e.from_id, e.to_id, e.relation, gw.strength * e.strength, gw.depth + 1, gw.path || e.from_id || '-' || e.relation || '->' || e.to_id || '|'
+    FROM memory_edges e
+    JOIN graph_walk gw ON e.from_id = gw.to_id
+    WHERE gw.depth < ? AND (e.valid_until IS NULL OR e.valid_until > datetime(?)) AND gw.path NOT LIKE '%|' || e.to_id || '|%'
+  )
+  SELECT * FROM graph_walk ORDER BY depth, strength DESC LIMIT ?
+`);
+const traverseGraphIncomingAsOf = db.prepare(`
+  WITH RECURSIVE graph_walk(id, from_id, to_id, relation, strength, depth, path) AS (
+    SELECT e.id, e.from_id, e.to_id, e.relation, e.strength, 1, '|' || e.to_id || '-' || e.relation || '->' || e.from_id || '|'
+    FROM memory_edges e
+    WHERE e.to_id = ? AND (e.valid_until IS NULL OR e.valid_until > datetime(?))
+    UNION ALL
+    SELECT e.id, e.from_id, e.to_id, e.relation, gw.strength * e.strength, gw.depth + 1, gw.path || e.to_id || '-' || e.relation || '->' || e.from_id || '|'
+    FROM memory_edges e
+    JOIN graph_walk gw ON e.to_id = gw.from_id
+    WHERE gw.depth < ? AND (e.valid_until IS NULL OR e.valid_until > datetime(?)) AND gw.path NOT LIKE '%|' || e.from_id || '|%'
+  )
+  SELECT * FROM graph_walk ORDER BY depth, strength DESC LIMIT ?
+`);
 
 // Recursive graph traversal: multi-hop from a starting memory
 const traverseGraph = db.prepare(`
@@ -702,6 +739,11 @@ export function updateMemoryStatus(id, status, supersededBy = null) {
   if (status === 'active') { updateStatus.run({ id, status, superseded_by: supersededBy }); return; }
   const tx = db.transaction(() => {
     updateStatus.run({ id, status, superseded_by: supersededBy });
+    // E9: bi-temporal edge cascade — when a memory leaves active circulation (superseded/archived/
+    // invalid) its touching edges stop being current AT THE SAME MOMENT, so a later asOf traversal
+    // can't re-surface edges anchored to a defunct memory. Same tx as the status flip + vector prune
+    // so the graph, the KNN index, and the memory row move atomically.
+    cascadeInvalidateEdges.run(id, id);
     pruneVectors(db, id);
   });
   tx();
@@ -1143,19 +1185,25 @@ export function storeEdge({ from_id, to_id, relation, valid_from = null, valid_u
 
 export function getEdgesFromMemory(memoryId) { return getEdgesFrom.all(memoryId); }
 export function getEdgesToMemory(memoryId) { return getEdgesTo.all(memoryId); }
-export function getEdgesByRel(relation, limit = 50) { return getEdgesByRelation.all(relation, Math.min(limit, 200)); }
+export function getEdgesByRel(relation, limit = 50, asOf = null) {
+  const cap = Math.min(limit, 200);
+  // E9: asOf supplied → time-filter edges live at asOf (valid_until NULL OR > datetime(asOf)).
+  // datetime(?) normalizes the bound ISO to the space-format valid_until is stored in; passing a
+  // non-null non-IS O is the caller's contract (endpoint validates). null → existing "now" query.
+  return asOf ? getEdgesByRelationAsOf.all(relation, asOf, cap) : getEdgesByRelation.all(relation, cap);
+}
 export function invalidateEdgeById(edgeId) { return invalidateEdge.run(edgeId).changes; }
 export function getEdge(edgeId) { return getEdgeById.get(edgeId); }
-export function traverseMemoryGraph(fromId, maxDepth = 3, limit = 20, direction = 'both', relation = '') {
+export function traverseMemoryGraph(fromId, maxDepth = 3, limit = 20, direction = 'both', relation = '', asOf = null) {
   let rows;
   if (direction === 'incoming') {
-    rows = traverseGraphIncoming.all(fromId, maxDepth, limit);
+    rows = asOf ? traverseGraphIncomingAsOf.all(fromId, asOf, maxDepth, asOf, limit) : traverseGraphIncoming.all(fromId, maxDepth, limit);
   } else if (direction === 'outgoing') {
-    rows = traverseGraph.all(fromId, maxDepth, limit);
+    rows = asOf ? traverseGraphAsOf.all(fromId, asOf, maxDepth, asOf, limit) : traverseGraph.all(fromId, maxDepth, limit);
   } else {
     // both: combine outgoing and incoming, dedup by edge id
-    const outRows = traverseGraph.all(fromId, maxDepth, limit);
-    const inRows = traverseGraphIncoming.all(fromId, maxDepth, limit);
+    const outRows = asOf ? traverseGraphAsOf.all(fromId, asOf, maxDepth, asOf, limit) : traverseGraph.all(fromId, maxDepth, limit);
+    const inRows = asOf ? traverseGraphIncomingAsOf.all(fromId, asOf, maxDepth, asOf, limit) : traverseGraphIncoming.all(fromId, maxDepth, limit);
     const seen = new Set();
     rows = [];
     for (const r of [...outRows, ...inRows]) {

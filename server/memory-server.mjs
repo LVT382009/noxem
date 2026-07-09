@@ -1449,7 +1449,17 @@ app.get('/memory/graph/traverse', (req, res) => {
     const direction = req.query.direction || 'both';
     const relation = req.query.relation || '';
     if (!fromId) return res.status(400).json({ error: 'from_id query parameter required' });
-    const steps = traverseMemoryGraph(fromId, maxDepth, limit, direction, relation);
+    // E9: bi-temporal asOf traversal — mirror /memory/at-time. When provided, only edges live at asOf
+    // (valid_until IS NULL OR valid_until > datetime(asOf)) are walked, so a caller can reconstruct
+    // the graph's state at a past timestamp rather than just "now". Combined with the E9 edge cascade
+    // (supersession/archival auto-invalidates touching edges), asOf sees the pre-supersession graph.
+    let asOf = null;
+    if (req.query.asOf) {
+      const t = new Date(req.query.asOf);
+      if (Number.isNaN(t.getTime())) return res.status(400).json({ error: 'asOf must be an ISO 8601 timestamp' });
+      asOf = t.toISOString();
+    }
+    const steps = traverseMemoryGraph(fromId, maxDepth, limit, direction, relation, asOf);
     // Enrich with memory text
     const enriched = steps.map(s => {
       const mem = getMemory(s.to_id);
@@ -1463,7 +1473,7 @@ app.get('/memory/graph/traverse', (req, res) => {
         depth: s.depth,
       };
     });
-    res.json({ ok: true, from_id: fromId, max_depth: maxDepth, steps: enriched });
+    res.json({ ok: true, from_id: fromId, max_depth: maxDepth, asOf, steps: enriched });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1472,15 +1482,24 @@ app.get('/memory/graph/edges', (req, res) => {
 try {
 const { relation, limit } = req.query;
 const limitNum = parseInt(limit) || 50;
+// E9: bi-temporal asOf — when provided, only edges live at asOf are returned (mirrors traverse).
+let asOf = null;
+if (req.query.asOf) {
+  const t = new Date(req.query.asOf);
+  if (Number.isNaN(t.getTime())) return res.status(400).json({ error: 'asOf must be an ISO 8601 timestamp' });
+  asOf = t.toISOString();
+}
 let edges;
 if (relation) {
-edges = getEdgesByRel(relation, limitNum);
+edges = getEdgesByRel(relation, limitNum, asOf);
 } else {
-// No relation filter: return recent edges
-const rows = db.prepare('SELECT id FROM memory_edges ORDER BY created_at DESC LIMIT ?').all(limitNum);
+// No relation filter: return recent edges (asOf-aware for consistency with the relation branch)
+const rows = asOf
+  ? db.prepare('SELECT id FROM memory_edges WHERE (valid_until IS NULL OR valid_until > datetime(?)) ORDER BY created_at DESC LIMIT ?').all(asOf, limitNum)
+  : db.prepare('SELECT id FROM memory_edges ORDER BY created_at DESC LIMIT ?').all(limitNum);
 edges = rows.map(r => getEdge(r.id)).filter(Boolean);
 }
-res.json({ ok: true, edges });
+res.json({ ok: true, asOf, edges });
 } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
