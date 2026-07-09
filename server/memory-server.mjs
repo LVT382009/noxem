@@ -1,7 +1,7 @@
 import express from 'express';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import cors from 'cors';
-import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, getEmbeddingModelId, embed, embedBatch, searchByEmbedding, mmrRerank, categorizeText, classifyIntent, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
+import { initEmbeddingEngine, isEmbeddingReady, getEmbeddingError, getEmbeddingModelId, embed, embedBatch, searchByEmbedding, mmrRerank, diversifyAndMeasure, categorizeText, classifyIntent, estimateImportance, extractEntityAttribute, generateContextPrefix, findDuplicates, cosineSimilarity } from './embedding-engine.mjs';
 let _isShuttingDown = false; // Hoisted: needed by shutdown-aware middleware
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const LOG_QUIET = process.env.LOG_LEVEL === 'quiet';
@@ -13,7 +13,7 @@ import {
   storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getSessionMemoriesPage, getMemoriesByTypePage,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType, setEmbeddingModelId, isForeignEmbeddingModel,
-  deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch,
+  deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch, getEmbeddingsById,
   getMemoriesWithoutEmbedding, updateMemoryEmbedding, addVecsToIndex, close,
   getMemoriesByEntityAttr, db,
   storeEdge, getEdgesFromMemory, getEdgesToMemory, getEdgesByRel, invalidateEdgeById, getEdge, traverseMemoryGraph,
@@ -1002,11 +1002,13 @@ function applyEntitySaturationDecay(results, decayFactor = 0.5) {
 app.get("/memory/search", async (req, res) => {
   let searchResults = [];
   let queryVecForCache = null;
+  let diversityStats = null;  // E15: optional ?stats=true diversity-gain measurement
   try {
     const { q, session_id, limit, method, expand } = req.query;
     if (!q?.trim()) return res.status(400).json({ error: "query required" });
     if (q.length > 1000) return res.status(400).json({ error: "query too long (max 1000 chars)" });
     const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
+    const MEASURE_DIVERSITY = String(req.query.stats || '').toLowerCase() === 'true';
     let searchMethod = "fts";
     const isShortQuery = expand === "true" && q.trim().split(/\s+/).length < 6;
 
@@ -1082,18 +1084,44 @@ app.get("/memory/search", async (req, res) => {
  const allWeights = [];
 
  // Collect embedding variant results
+ const diversityAccum = [];  // E15: per-variant MMR diversity stats (exposed only when ?stats=true)
  for (const vec of queryVecs) {
  let hits = null;
  const knnHits = vectorKnnSearch(vec, limitNum * 3);
- if (knnHits && knnHits.length > 0) { hits = applyRecencyScore(knnHits); }
- else {
- const cands = searchByEmbedding(vec, getAllActiveMemories().filter(m => !isForeignEmbeddingModel(m)), limitNum * 3, intent.intent);
- hits = applyRecencyScore(mmrRerank(vec, cands, limitNum * 2, 0.7));
+ if (knnHits && knnHits.length > 0) {
+   // E15: apply MMR diversity to the native KNN path too (previously JS-fallback-only → backend-
+   // dependent diversity). getEmbeddingsById is a ~topK lookup (NOT a full active-set load) so the
+   // candidate-candidate cosine has real vectors without leaking `.embedding` into the response.
+   const embMap = getEmbeddingsById(knnHits.map(h => h.id));
+   const dm = diversifyAndMeasure(vec, knnHits, limitNum * 2, 0.7, embMap);
+   if (MEASURE_DIVERSITY) diversityAccum.push(dm.stats);
+   hits = applyRecencyScore(dm.results);
+ } else {
+   const activeAll = getAllActiveMemories().filter(m => !isForeignEmbeddingModel(m));
+   const embMap = new Map(activeAll.map(m => [String(m.id), m.embedding]));
+   const cands = searchByEmbedding(vec, activeAll, limitNum * 3, intent.intent);
+   const dm = diversifyAndMeasure(vec, cands, limitNum * 2, 0.7, embMap);
+   if (MEASURE_DIVERSITY) diversityAccum.push(dm.stats);
+   hits = applyRecencyScore(dm.results);
  }
  if (hits && hits.length > 0) {
  allLists.push(hits);
  allWeights.push(intent.vec_weight);
  }
+ }
+
+ // E15: aggregate the per-variant MMR diversity gain into one measurement block.
+ if (MEASURE_DIVERSITY && diversityAccum.length > 0) {
+   const nv = diversityAccum.length;
+   const r4 = (x) => Math.round(x * 10000) / 10000;
+   diversityStats = {
+     variants: nv,
+     lambda: 0.7,
+     rawMeanIntraSim: r4(diversityAccum.reduce((a, s) => a + s.rawMeanIntraSim, 0) / nv),
+     mmrMeanIntraSim: r4(diversityAccum.reduce((a, s) => a + s.mmrMeanIntraSim, 0) / nv),
+     diversityGain: r4(diversityAccum.reduce((a, s) => a + s.diversityGain, 0) / nv),
+     perVariant: diversityAccum,
+   };
  }
 
  if (embeddingResults === null && allLists.length > 0) {
@@ -1224,6 +1252,7 @@ res.json({
   results: searchResults,
   related: associativeResults.length > 0 ? associativeResults : undefined,
   reactivated: reactivatedRows.length > 0 ? reactivatedRows : undefined,
+  diversityStats: diversityStats || undefined,  // E15: present only when ?stats=true
 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

@@ -811,6 +811,21 @@ export function getAllActiveMemories() {
   return getActiveAll.all().map(m => ({ ...m, embedding: bufferToFloat32(m.embedding) }));
 }
 
+// E15: cheap per-id embedding lookup sized to the KNN hit set (≈ topK), so the native-KNN search path
+// can drive REAL MMR diversity (candidate-candidate cosine) WITHOUT loading ALL active embeddings on
+// every /memory/search (the E5/E10/E14 perf goals fight exactly that full-load). Returns a Map keyed
+// by String(id) → decoded JS-array (same shape getAllActiveMemories yields) so cosineSimilarity
+// consumes it unaltered. getById must SELECT * (including the embedding BLOB).
+export function getEmbeddingsById(ids) {
+  const out = new Map();
+  if (!ids || !ids.length) return out;
+  for (const id of ids) {
+    const m = getById.get(id);
+    if (m && m.embedding) out.set(String(m.id), bufferToFloat32(m.embedding));
+  }
+  return out;
+}
+
 
 export function getAllActiveMemoriesNoEmbed() {
   return getActiveAllNoEmbed.all();

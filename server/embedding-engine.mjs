@@ -614,9 +614,20 @@ export function estimateImportance(text, type) {
 
 // Maximal Marginal Relevance: diversify results by penalizing similarity to already-selected items
 // lambda: 0.7 = relevance-heavy, 0.5 = balanced, 0.3 = diversity-heavy
-export function mmrRerank(queryEmbedding, candidates, topK = 5, lambda = 0.7) {
+//
+// E15: `embeddingsById` (optional Map<String, number[]|Float32Array>) lets MMR compute REAL
+// candidate-candidate cosine WITHOUT attaching an `.embedding` field to result objects. Carrying
+// embeddings on the hits would leak multi-hundred-float arrays into every /memory/search JSON response;
+// the side-band map keeps the response clean while finally making MMR diversity EFFECTIVE on every
+// path (pre-E15 neither the native KNN path NOR the JS-cosine fallback attached embeddings, so the
+// maxSim penalty was always 0 and MMR silently collapsed to plain score-order — the ledger E15
+// symptom). A candidate's own `.embedding` wins; otherwise the map is consulted by id. Missing
+// embeddings degrade to score-only order (the prior behavior) rather than throwing, so existing
+// callers passing two/four args stay compatible.
+export function mmrRerank(queryEmbedding, candidates, topK = 5, lambda = 0.7, embeddingsById = null) {
   if (candidates.length <= topK) return candidates;
 
+  const embFor = (c) => (c && c.embedding) ? c.embedding : (embeddingsById ? embeddingsById.get(String(c.id)) : null);
   const selected = [];
   const remaining = [...candidates];
 
@@ -632,10 +643,12 @@ export function mmrRerank(queryEmbedding, candidates, topK = 5, lambda = 0.7) {
       const relevance = lambda * remaining[i].score;
       // Max similarity to any already-selected item
       let maxSim = 0;
-      if (remaining[i].embedding) {
+      const ce = embFor(remaining[i]);
+      if (ce) {
         for (const s of selected) {
-          if (s.embedding) {
-            const sim = cosineSimilarity(remaining[i].embedding, s.embedding);
+          const se = embFor(s);
+          if (se) {
+            const sim = cosineSimilarity(ce, se);
             if (sim > maxSim) maxSim = sim;
           }
         }
@@ -652,6 +665,47 @@ export function mmrRerank(queryEmbedding, candidates, topK = 5, lambda = 0.7) {
   }
 
   return selected;
+}
+
+// E15 instrumentation — quantify how much MMR diversifies a candidate set, so what was an
+// INVISIBLE inconsistency (MMR ran on the JS-cosine fallback path but not on the native KNN path,
+// and on neither path effectively, since cands had no embeddings) is now MEASURABLE + EQUAL across
+// backends. `rawMeanIntraSim` = mean pairwise cosine of the score-ordered top-K (the "no MMR"
+// order); `mmrMeanIntraSim` = same over the MMR-selected set; `diversityGain` = raw - mmr (≥0 ⟹
+// MMR reduced intra-list redundancy). Always computes (cheap — bounded by C(topK,2) cosines),
+// response fields gated by ?stats=true so existing clients are unaffected.
+const _round4 = (x) => { const p = 10000; return Math.round(x * p) / p; };
+export function diversifyAndMeasure(queryEmbedding, candidates, topK = 5, lambda = 0.7, embeddingsById = null) {
+  const results = mmrRerank(queryEmbedding, candidates, topK, lambda, embeddingsById);
+  const embFor = (c) => (c && c.embedding) ? c.embedding : (embeddingsById ? embeddingsById.get(String(c.id)) : null);
+  const meanPairwiseSim = (list) => {
+    const vecs = list.map(embFor).filter(Boolean);
+    if (vecs.length < 2) return 0;
+    let sum = 0, count = 0;
+    for (let i = 0; i < vecs.length; i++) {
+      for (let j = i + 1; j < vecs.length; j++) {
+        sum += cosineSimilarity(vecs[i], vecs[j]);
+        count++;
+      }
+    }
+    return count ? sum / count : 0;
+  };
+  const rawTop = [...candidates].sort((a, b) => b.score - a.score).slice(0, topK);
+  const returned = results.slice(0, topK);
+  const rawMeanIntraSim = meanPairwiseSim(rawTop);
+  const mmrMeanIntraSim = meanPairwiseSim(returned);
+  return {
+    results,
+    stats: {
+      candidateCount: candidates.length,
+      returnedCount: returned.length,
+      topK,
+      lambda,
+      rawMeanIntraSim: _round4(rawMeanIntraSim),
+      mmrMeanIntraSim: _round4(mmrMeanIntraSim),
+      diversityGain: _round4(rawMeanIntraSim - mmrMeanIntraSim),
+    },
+  };
 }
 
 // Extract entity and attribute from text for contradiction detection
