@@ -245,6 +245,11 @@ const migrations = {
 		addColumn('memory_edges', 'from_type', "TEXT NOT NULL DEFAULT 'episode'");
 		addColumn('memory_edges', 'to_type', "TEXT NOT NULL DEFAULT 'episode'");
 		addColumn('memory_edges', 'confidence', 'REAL NOT NULL DEFAULT 1.0');
+		// E9/v2: WHY this edge was invalidated (NULL while live). Lets reactivateMemory distinguish
+		// cascade-archive ('that mem left circulation — reversible if it comes back') from
+		// cascade-supersede / manual ('that mem was permanently replaced / explicitly killed — topology
+		// stays dead forever'). Pre-existing dead rows keep NULL and are NOT reopened by reactivate.
+		addColumn('memory_edges', 'invalidation_reason', 'TEXT');
 		db.exec('CREATE INDEX IF NOT EXISTS idx_edges_from_type ON memory_edges(from_type)');
 		db.exec('CREATE INDEX IF NOT EXISTS idx_edges_to_type ON memory_edges(to_type)');
 	},
@@ -548,12 +553,26 @@ const insertEdge = db.prepare('INSERT INTO memory_edges (from_id, to_id, relatio
 const getEdgesFrom = db.prepare('SELECT * FROM memory_edges WHERE from_id = ? AND (valid_until IS NULL OR valid_until > datetime(\'now\')) ORDER BY strength DESC');
 const getEdgesTo = db.prepare('SELECT * FROM memory_edges WHERE to_id = ? AND (valid_until IS NULL OR valid_until > datetime(\'now\')) ORDER BY strength DESC');
 const getEdgesByRelation = db.prepare('SELECT * FROM memory_edges WHERE relation = ? AND (valid_until IS NULL OR valid_until > datetime(\'now\')) ORDER BY created_at DESC LIMIT ?');
-const invalidateEdge = db.prepare('UPDATE memory_edges SET valid_until = datetime(\'now\') WHERE id = ? AND valid_until IS NULL');
+const invalidateEdge = db.prepare('UPDATE memory_edges SET valid_until = datetime(\'now\'), invalidation_reason = \'manual\' WHERE id = ? AND valid_until IS NULL');
 const getEdgeById = db.prepare('SELECT * FROM memory_edges WHERE id = ?');
 // E9: when a memory leaves active circulation, cascade-invalidate ALL of its touching edges in the
 // same transaction-flip so the graph's bi-temporal end-validity stays consistent with the memory's.
 // (pre-E9 the edges stayed valid_until IS NULL → a later asOf traversal wrongly re-surfaced them.)
-const cascadeInvalidateEdges = db.prepare('UPDATE memory_edges SET valid_until = datetime(\'now\') WHERE (from_id = ? OR to_id = ?) AND valid_until IS NULL');
+// v2: stamp invalidation_reason so reactivateMemory can tell cascade-archive (reversible — the row
+// can return via E7 reactivate) from cascade-supersede (irreversible — the row was permanently
+// replaced). 'cascade-supersede' for updateMemoryStatus's non-active branch, 'cascade-archive' for
+// archiveStaleMemories / enforceActiveSetBound. NULL rows (pre-column deaths, manual edges live/die
+// outside this path) are left as the caller set them.
+const cascadeInvalidateEdges = db.prepare('UPDATE memory_edges SET valid_until = datetime(\'now\'), invalidation_reason = ? WHERE (from_id = ? OR to_id = ?) AND valid_until IS NULL');
+// E9/v2: reactivate reverses the archive — reopen exactly the cascade-archive edges that died WITH
+// the memory, but only toward a partner that is itself active (a reactivated mem must not drag a
+// still-archived partner back into the live graph; that partner's own later reactivate will reopen
+// its side). cascade-supersede / manual / pre-column-NULL dead edges stay dead by design.
+const reopenArchivedEdges = db.prepare(
+  'UPDATE memory_edges SET valid_until = NULL, invalidation_reason = NULL ' +
+  'WHERE invalidation_reason = \'cascade-archive\' AND (from_id = ? OR to_id = ?) ' +
+  'AND EXISTS (SELECT 1 FROM memories m WHERE m.id = (CASE WHEN from_id = ? THEN to_id ELSE from_id END) AND m.status = \'active\')'
+);
 // E9: bi-temporal asOf variants — mirror the now-path edge queries but parameterize the cutoff as
 // datetime(?) (SQLite normalizes the bound ISO8601 → the same "YYYY-MM-DD HH:MM:SS" space-format that
 // valid_until is stored in, so the string comparison stays correct across callers). Deliberately
@@ -743,7 +762,7 @@ export function updateMemoryStatus(id, status, supersededBy = null) {
     // invalid) its touching edges stop being current AT THE SAME MOMENT, so a later asOf traversal
     // can't re-surface edges anchored to a defunct memory. Same tx as the status flip + vector prune
     // so the graph, the KNN index, and the memory row move atomically.
-    cascadeInvalidateEdges.run(id, id);
+    cascadeInvalidateEdges.run('cascade-supersede', id, id);
     pruneVectors(db, id);
   });
   tx();
@@ -989,7 +1008,7 @@ export function archiveStaleMemories() {
       // ONLY (not memories.status), so a live edge anchored to an archived mem still surfaced in now +
       // asOf traversal — the E9 invariant the memory-pipeline.mjs supersede branch relies on was
       // silently broken here. Cascade now so archived-mem edges die like superseded-mem edges.
-      cascadeInvalidateEdges.run(r.id, r.id);
+      cascadeInvalidateEdges.run('cascade-archive', r.id, r.id);
       pruneVectors(db, r.id);
       // E7: index the archived row so the query path can reactivate an exact reference later
       // instead of letting a re-store create a silent duplicate. L1/L2-only by the SELECT gate.
@@ -1035,7 +1054,7 @@ export function enforceActiveSetBound({ maxActive = null } = {}) {
       // path must invalidate touching edges same-tx just like updateMemoryStatus's non-active branch,
       // else a demoted surplus facet keeps live edges that traverseGraph (memory_edges JOIN only, no
       // memories.status filter) re-surfaces despite the facet leaving the hot retrieval set.
-      cascadeInvalidateEdges.run(r.id, r.id);
+      cascadeInvalidateEdges.run('cascade-archive', r.id, r.id);
       pruneVectors(db, r.id);
       insArchive.run(r.id, r.cone_layer ?? 0, r.entity ?? null, r.attribute ?? null);
       demoted++;
@@ -1081,7 +1100,15 @@ export function reactivateMemory(id) {
   try {
     db.transaction(() => {
       const r = reactivateOneStmt.run(id);
-      if (r.changes > 0) deleteArchiveIndexStmt.run(id);
+      if (r.changes > 0) {
+        deleteArchiveIndexStmt.run(id);
+        // E9/v2: reactivate reverses the archive, so reopen the cascade-archive edges that died WITH
+        // this row — topology toward an ACTIVE partner comes back as if the mem never left circulation.
+        // cascade-supersede / manual / pre-column dead edges stay dead (see reopenArchivedEdges guard).
+        // Order: reactivateOneStmt already flipped this row to 'active', so a partner whose own status
+        // we check via the EXISTS subquery is read consistently within the same tx.
+        reopenArchivedEdges.run(id, id, id);
+      }
     })();
   } catch (e) { LOG_DEBUG && console.error('[E7] reactivate tx error:', e.message); return null; }
   const after = getById.get(id);
