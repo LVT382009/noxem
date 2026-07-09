@@ -1,4 +1,4 @@
-import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories } from './memory-store.mjs';
+import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories, enforceActiveSetBound } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity, isTrivialIntent } from './embedding-engine.mjs';
 import { appendEvolvedContext } from './memory-store.mjs';
 import { synthesizeConsolidation } from './advisor-engine.mjs';
@@ -266,6 +266,11 @@ export async function runMaintenance() {
 		const ingestStatus = ingestPipeline.getIngestStatus();
 		if (LOG_DEBUG) results.ingestStatus = ingestStatus;
 	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] Ingest status check failed:', e.message); }
+
+	// 7. E5: bounded active set — final step. See runActiveSetBoundStep (extracted so the regression
+	// test can exercise the REAL maintenance wiring without booting the embedding engine —
+	// runMaintenance early-returns when Brain-1 is not ready, which would otherwise hide it).
+	runActiveSetBoundStep(results);
 
 const elapsed = Date.now() - start;
     LOG_DEBUG && console.log(`[Maintenance] Complete in ${elapsed}ms: ${results.duplicates} dupes, ${results.contradictions} contradictions, ${results.invalid} cleaned`);
@@ -598,6 +603,24 @@ function _e2UnionFind(items, threshold) {
   const buckets = new Map();
   for (let i = 0; i < n; i++) { const r = find(i); if (!buckets.has(r)) buckets.set(r, []); buckets.get(r).push(items[i]); }
   return [...buckets.values()];
+}
+
+// E5 maintenance step — the bounded-active-set enforcement run as runMaintenance's final step.
+// Extracted to a named export so the regression test drives the REAL wiring (the
+// ENABLE_ACTIVE_SET_BOUND gate + the enforceActiveSetBound call) directly, without booting the
+// embedding engine (runMaintenance early-returns when Brain-1 is not ready). NEVER demotes L0/L3
+// (E6 cardinal) — that guard lives in enforceActiveSetBound itself.
+export function runActiveSetBoundStep(results = {}) {
+	if (process.env.ENABLE_ACTIVE_SET_BOUND === 'false') {
+		results.activeSetBound = { gated: false, reason: 'gate disabled (ENABLE_ACTIVE_SET_BOUND=false)' };
+		return results;
+	}
+	try {
+		const bound = enforceActiveSetBound();
+		if (LOG_DEBUG && bound?.gated) console.log(`[Maintenance] E5 bounded active set: demoted ${bound.demoted} (active ${bound.activeCount}, remaining ${bound.remaining ?? 'n/a'})`);
+		if (bound?.gated) results.activeSetBound = bound;
+	} catch (e) { if (LOG_DEBUG) console.error('[Maintenance] E5 bounded active set error:', e.message); }
+	return results;
 }
 
 export function startMaintenanceCron(intervalMs = RUN_INTERVAL_MS) {

@@ -880,6 +880,54 @@ export function archiveStaleMemories() {
   try { return tx(); } catch (e) { LOG_DEBUG && console.error('[Store] archiveStaleMemories error:', e.message); return 0; }
 }
 
+// === E5: bounded active set ===
+// When the active-memory count exceeds ACTIVE_SET_MAX, demote the surplus of LOWEST-value L1/L2
+// facets to 'archived' (mirroring archiveStaleMemories: status flip + vector prune + archive_index
+// insert, so reactivation-on-reference / E7 can revive them on a later reference). Teir-aware — ONLY
+// cone_layer IN (1,2) facets are demotable: L0 raw episodes (oracle/audit) and L3 persona are
+// CARDINAL and survive the bound forever (E6). Value rank: importance ASC, then recall_count ASC,
+// then created_at ASC (oldest first) — the least-recalled, lowest-importance, oldest facets leave
+// the hot retrieval set first. Gate: ENABLE_ACTIVE_SET_BOUND (default on).
+export function enforceActiveSetBound({ maxActive = null } = {}) {
+  const cap = parseInt(maxActive != null ? maxActive : (process.env.ACTIVE_SET_MAX ?? '40000'), 10);
+  if (!cap || cap <= 0) return { gated: false, activeCount: -1, demoted: 0, reason: 'ACTIVE_SET_MAX disabled' };
+  const activeCount = db.prepare("SELECT COUNT(*) AS n FROM memories WHERE status = 'active'").get().n;
+  if (activeCount <= cap) return { gated: false, activeCount, demoted: 0 };
+  // Only L1/L2 are demotable. If the entire surplus is cardinal L0/L3 we report honestly rather than
+  // violate the E6 guard — the bound is a soft target that never overrides cardinality.
+  const surplus = activeCount - cap;
+  const rows = db.prepare(
+    `SELECT id, cone_layer, entity, attribute FROM memories
+     WHERE status = 'active' AND cone_layer IN (1,2)
+     ORDER BY importance ASC, recall_count ASC, created_at ASC
+     LIMIT ?`
+  ).all(surplus);
+  if (!rows.length) {
+    return { gated: true, activeCount, demoted: 0, surplus, reason: 'no demotable L1/L2 — surplus is cardinal L0/L3 (E6 guard)' };
+  }
+  const archiveOne = db.prepare("UPDATE memories SET status = 'archived', updated_at = datetime('now') WHERE id = ?");
+  const insArchive = db.prepare("INSERT OR IGNORE INTO memory_archive_index (archived_id, archived_at, cone_layer, entity, attribute) VALUES (?, datetime('now'), ?, ?, ?)");
+  const tx = db.transaction(() => {
+    let demoted = 0;
+    for (const r of rows) {
+      archiveOne.run(r.id);
+      pruneVectors(db, r.id);
+      insArchive.run(r.id, r.cone_layer ?? 0, r.entity ?? null, r.attribute ?? null);
+      demoted++;
+    }
+    return demoted;
+  });
+  try {
+    const demoted = tx();
+    const remaining = activeCount - demoted;
+    LOG_DEBUG && console.log(`[Store] E5 bounded active set: ${activeCount} active > cap ${cap}; demoted ${demoted} L1/L2 facets (surplus ${surplus}, remaining ${remaining})`);
+    return { gated: true, activeCount, demoted, surplus, remaining, capped: remaining <= cap };
+  } catch (e) {
+    LOG_DEBUG && console.error('[Store] enforceActiveSetBound error:', e.message);
+    return { gated: true, activeCount, demoted: 0, error: e.message };
+  }
+}
+
 // === E7: reactivation-on-reference (archive index hot-set) ===
 // Scan the bounded archive hot set for L1/L2 rows whose stored embedding survives archive
 // (pruneVectors only drops the vec0 row, not the memories.embedding BLOB). Returns rows with

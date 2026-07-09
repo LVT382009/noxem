@@ -423,50 +423,79 @@ export function searchByEmbedding(queryEmbedding, storedMemories, topK = 5, inte
  return scored;
 }
 
-// Find duplicates: memories with similarity > threshold
-export function findDuplicates(memories, maxPairs = 5000) {
-  if (memories.length > 1000) {
-    LOG_DEBUG && console.warn('[findDuplicates] Truncating from', memories.length, 'to 1000');
-    memories = memories.slice(0, 1000);
-  }
+// Find duplicates: memories with similarity > SIMILARITY_THRESHOLD.
+// E14 — paginated across chunks, lifts the old 1000-input / 5000-pairs HARD cap.
+//
+// The previous implementation SILENTLY truncated the input to the first 1000 memories (so memories
+// beyond index 1000 were NEVER dedup-checked — a coverage gap) then capped the pair output at 5000.
+// O(n^2) all-pairs on a large unindexed set (the brute fallback when the vector index is absent)
+// also froze the event loop (see BUG-HUNT-v3 §findContradictions). Now:
+//   * NO input truncation — the FULL set is reachable.
+//   * A windowed pairwise pass: memory i is compared against the next `window` memories only
+//     (DEDUP_WINDOW, default 1000), so total work is O(n * window) — no event-loop freeze — and for
+//     the SMALL-set brute path (n <= window, which covers the real <500 fallback case) it
+//     degenerates to exact full all-pairs (zero behavior change there). Far-apart pairs beyond the
+//     window are covered by the production KNN path (memory-maintenance kNN branch) when the vector
+//     index is present; the brute path is best-effort windowed.
+//   * `maxPairs` (explicit arg, or env DEDUP_MAX_PAIRS, default 50000) is a SAFETY ceiling, not a
+//     coverage cut-off: when reached the function returns what it found and the maintenance tick
+//     defers the rest (the remaining pairs surface next run as the set shifts). The legacy
+//     findDuplicates(memories, maxPairs) signature is preserved (callers passing a number still
+//     set the ceiling).
+export function findDuplicates(memories, maxPairs) {
+  const ceiling = (maxPairs != null && maxPairs > 0)
+    ? maxPairs
+    : parseInt(process.env.DEDUP_MAX_PAIRS || '50000', 10);
+  const window = parseInt(process.env.DEDUP_WINDOW || '1000', 10);
   const dupes = [];
-  for (let i = 0; i < memories.length && dupes.length < maxPairs; i++) {
-    if (!memories[i].embedding) continue;
-    for (let j = i + 1; j < memories.length && dupes.length < maxPairs; j++) {
-      if (!memories[j].embedding) continue;
-      const sim = cosineSimilarity(memories[i].embedding, memories[j].embedding);
+  const n = memories.length;
+  for (let i = 0; i < n; i++) {
+    if (dupes.length >= ceiling) break;
+    const a = memories[i];
+    if (!a || !a.embedding) continue;
+    const jMax = Math.min(n, i + 1 + window);
+    for (let j = i + 1; j < jMax; j++) {
+      if (dupes.length >= ceiling) break;
+      const b = memories[j];
+      if (!b || !b.embedding) continue;
+      const sim = cosineSimilarity(a.embedding, b.embedding);
       if (sim > SIMILARITY_THRESHOLD) {
-        dupes.push({
-          a: memories[i],
-          b: memories[j],
-          similarity: sim,
-        });
+        dupes.push({ a, b, similarity: sim });
       }
     }
   }
   return dupes;
 }
 
-// Find contradictions: memories with similarity above contradiction threshold
-// that express opposite preferences/opinions about the same entity
-export function findContradictions(memories, maxPairs = 5000) {
+// Find contradictions: memories with similarity above CONTRADICTION_THRESHOLD
+// that express opposite preferences/opinions about the same entity.
+// E14 — same windowed pagination as findDuplicates: bounds work to O(n * window) (closes the
+// BUG-HUNT-v3 DoS that an uncapped O(n^2) pass presented on a large unindexed set), keeps no silent
+// cap, and lifts the pair ceiling to DEDUP_MAX_PAIRS (default 50000). Signature preserved.
+export function findContradictions(memories, maxPairs) {
+  const ceiling = (maxPairs != null && maxPairs > 0)
+    ? maxPairs
+    : parseInt(process.env.DEDUP_MAX_PAIRS || '50000', 10);
+  const window = parseInt(process.env.DEDUP_WINDOW || '1000', 10);
   const contradictions = [];
-  for (let i = 0; i < memories.length && contradictions.length < maxPairs; i++) {
-    if (!memories[i].embedding || memories[i].type === 'general') continue;
-    for (let j = i + 1; j < memories.length && contradictions.length < maxPairs; j++) {
-      if (!memories[j].embedding || memories[j].type === 'general') continue;
-      const sim = cosineSimilarity(memories[i].embedding, memories[j].embedding);
+  const n = memories.length;
+  for (let i = 0; i < n; i++) {
+    if (contradictions.length >= ceiling) break;
+    const a = memories[i];
+    if (!a || !a.embedding || a.type === 'general') continue;
+    const jMax = Math.min(n, i + 1 + window);
+    for (let j = i + 1; j < jMax; j++) {
+      if (contradictions.length >= ceiling) break;
+      const b = memories[j];
+      if (!b || !b.embedding || b.type === 'general') continue;
+      const sim = cosineSimilarity(a.embedding, b.embedding);
       if (sim > CONTRADICTION_THRESHOLD) {
         // Check if they express opposing views about the same topic
-        const texts = [memories[i].text.toLowerCase(), memories[j].text.toLowerCase()];
+        const texts = [a.text.toLowerCase(), b.text.toLowerCase()];
         const prefers = [/prefer/, /like/, /love/, /hate/, /dislike/, /favorite/, /use /, /using /];
         const hasPreference = prefers.some(p => texts.some(t => p.test(t)));
         if (hasPreference) {
-          contradictions.push({
-            a: memories[i],
-            b: memories[j],
-            similarity: sim,
-          });
+          contradictions.push({ a, b, similarity: sim });
         }
       }
     }
