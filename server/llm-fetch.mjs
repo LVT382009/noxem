@@ -79,11 +79,22 @@ export function llmFetch(url, opts = {}, rpcOpts = {}) {
     ...opts,
     headers,
     body,
-    signal: signal ?? AbortSignal.timeout(timeoutMs),
-  }, maxRetries, timeoutMs);
+    signal: _mergedSignal(signal, timeoutMs),
+  }, maxRetries, timeoutMs, signal);
 }
 
-async function _fetchWithRetry(url, opts, retriesLeft, timeoutMs) {
+// Merge the caller's AbortSignal with a fresh per-call timeout. AbortSignal is single-use, so a
+// fresh timeout is created on EVERY call (and every retry); AbortSignal.any (Node 20.3+, stable
+// on Node 22) propagates the caller's external abort onto the merged signal. FIX: retries
+// previously rebuilt a bare `AbortSignal.timeout(timeoutMs)`, dropping any caller-supplied
+// signal — a caller that aborted would NOT abort retries. With no caller signal the merge
+// collapses to the bare timeout (same as prior behavior).
+function _mergedSignal(callerSignal, timeoutMs) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
+}
+
+async function _fetchWithRetry(url, opts, retriesLeft, timeoutMs, callerSignal) {
   try {
     const res = await fetch(url, opts);
 
@@ -92,17 +103,18 @@ async function _fetchWithRetry(url, opts, retriesLeft, timeoutMs) {
       LOG_DEBUG && console.warn(`[llm-fetch] ${res.status} — retry (${retriesLeft} left) in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
 
-      // Re-create signal for retry (AbortSignal is single-use per spec)
-      const retryOpts = { ...opts, signal: AbortSignal.timeout(timeoutMs) };
-      return _fetchWithRetry(url, retryOpts, retriesLeft - 1, timeoutMs);
+      // Re-create the merged signal for the retry (per-call timeout is single-use); the caller's
+      // signal threads through `callerSignal` so an external abort still propagates.
+      const retryOpts = { ...opts, signal: _mergedSignal(callerSignal, timeoutMs) };
+      return _fetchWithRetry(url, retryOpts, retriesLeft - 1, timeoutMs, callerSignal);
     }
 
     return res;
   } catch (err) {
     if (retriesLeft > 0 && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
       LOG_DEBUG && console.warn(`[llm-fetch] ${err.name} — retry (${retriesLeft} left)`);
-      const retryOpts = { ...opts, signal: AbortSignal.timeout(timeoutMs) };
-      return _fetchWithRetry(url, retryOpts, retriesLeft - 1, timeoutMs);
+      const retryOpts = { ...opts, signal: _mergedSignal(callerSignal, timeoutMs) };
+      return _fetchWithRetry(url, retryOpts, retriesLeft - 1, timeoutMs, callerSignal);
     }
     throw err;
   }

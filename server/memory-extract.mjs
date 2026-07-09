@@ -84,13 +84,20 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
     if (!arrayStr) return [];
     try {
       const memories = JSON.parse(arrayStr);
-      if (Array.isArray(memories) && memories.length > 0) {
-        return memories.filter(m => m.text && m.type).map(m => ({
-          text: m.text.trim().substring(0, 500),
-          type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
-        }));
-      }
-    } catch {}
+      // FIX (audit Trail): when the LLM returns "[]" (nothing extractable from trivial
+      // turns like "hi"/"thanks") or a non-array, return [] explicitly. Previously this only
+      // returned when length>0, falling through to an implicit `return undefined` on empty
+      // arrays — which then crashed the /memory/extract handler at `!memories.length` (TypeError
+      // → HTTP 500). Semantics now: non-array or empty -> []; unparseable -> [] (catch); valid
+      // -> filtered/mapped memories.
+      if (!Array.isArray(memories)) return [];
+      return memories.filter(m => m.text && m.type).map(m => ({
+        text: m.text.trim().substring(0, 500),
+        type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
+      }));
+    } catch {
+      return [];
+    }
   } catch (err) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') {
       console.error('Extraction timed out (LLM too slow)');
