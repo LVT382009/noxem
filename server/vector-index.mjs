@@ -37,7 +37,10 @@ export async function initVectorIndex(db) {
       let purgeFlag = null;
       try { purgeFlag = db.prepare('SELECT value FROM core_memory WHERE key = ?').get('e1_purge_v1'); } catch { /* core_memory not ready yet — skip until next boot */ }
       if (purgeFlag === undefined || purgeFlag === null) {
-        const dead = db.prepare(`DELETE FROM memory_vecs WHERE rowid NOT IN (SELECT id FROM memories WHERE status = 'active')`).run();
+        // FIX-4 (BEAM bench): keep 'contradicted' vectors too — both halves of a
+        // contradiction need to stay KNN-reachable. Purge only truly-dead (archived/
+        // superseded/invalid) rows. Mirrors getActiveVectorIds' active+contradicted set.
+        const dead = db.prepare(`DELETE FROM memory_vecs WHERE rowid NOT IN (SELECT id FROM memories WHERE status IN ('active', 'contradicted'))`).run();
         try { db.prepare('INSERT OR REPLACE INTO core_memory (key, value) VALUES (?, ?)').run('e1_purge_v1', String(dead.changes)); } catch { /* best-effort flag */ }
         if (LOG_DEBUG) console.log(`[VectorIndex] E1 backlog purge: removed ${dead.changes} stale vectors (one-shot, gated by core_memory.e1_purge_v1)`);
       }
@@ -169,7 +172,10 @@ export function pruneVectors(db, memoryId) {
 export function getActiveVectorIds(db) {
   if (!vecTableReady) return null;
   try {
-    return db.prepare("SELECT id FROM memories WHERE status = 'active'").all().map(r => Number(r.id));
+    // FIX-4 (BEAM bench): include 'contradicted' in the KNN allowlist so both halves of a
+    // contradiction stay reachably ranked by the vector arm. Previously active-only, which
+    // dropped contradicted halves post-KNN (ghost) after their vectors burned topK budget.
+    return db.prepare("SELECT id FROM memories WHERE status IN ('active', 'contradicted')").all().map(r => Number(r.id));
   } catch (err) { LOG_DEBUG && console.error('[VectorIndex] getActiveVectorIds error:', err.message); return null; }
 }
 

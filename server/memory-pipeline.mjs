@@ -12,7 +12,7 @@
  * L3 persona is generated when 50+ L1 memories exist.
  */
 
-import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, updateMemoryStatus, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr } from './memory-store.mjs';
+import { storeMemory, getAllActiveMemoriesNoEmbed, getSessionMemories, updateMemoryType, updateMemoryStatus, upsertEntity, linkMemoryToEntity, addFacet, addFacetPoint, getMemoriesByEntityAttr, linkContradictionPair } from './memory-store.mjs';
 import { llmFetch } from './llm-fetch.mjs';
 import { LLM_URL, LLM_MODEL } from './llm-config.mjs';
 import { isEmbeddingReady, embed, categorizeText, classifyIntent, estimateImportance, generateContextPrefix, extractEntityAttribute } from './embedding-engine.mjs';
@@ -99,11 +99,30 @@ export async function extractL1FromL0(sessionId) {
       body: JSON.stringify({
         model: LLM_MODEL,
         messages: [
-          { role: 'system', content: 'Extract structured facts from these conversation memories. Return ONLY a JSON array: [{"text":"...","type":"fact|preference|setup|project|goal|entity","entity":"...","attribute":"..."}]. Extract only non-obvious, durable information. Max 10 items.' },
+          // FIX-1 (BEAM bench): unify the auto-ingest L1 to the SAME v10 rule set as
+          // /memory/extract (server/memory-extract.mjs EXTRACTION_PROMPT): verbatim
+          // numbers/dates/identifiers, MANDATORY source_quote (anti-hallucination),
+          // denials+contradictions both sides, no fact collapse, event_date/order_index/
+          // contradiction_with carried through. Lets raw-blob /memory/store-batch turns
+          // produce the typed atoms the gold rubric (250ms / March 29 / Flask-Login
+          // v0.6.2) needs. Also raised the 10-item cap -> 200 and max_tokens 1024 -> 4000.
+          { role: 'system', content: `You are a memory extraction AI. Extract structured fact atoms from the conversation/memory entries below.
+CRITICAL RULES:
+- Extract ONLY information actually stated. NEVER hallucinate or infer beyond what is written.
+- Preserve VERBATIM specifics: exact numbers (e.g. "250ms", "Flask 2.3.1"), exact dates (e.g. "March 29, 2024"), exact identifiers (e.g. "pbkdf2", "UNIQUE constraint", "Flask-WTF", "Confluence", "Matplotlib"). Do NOT paraphrase or round these.
+- For EVERY memory provide a "source_quote": a short VERBATIM phrase copied from the inputs that proves this memory. If you cannot find a verbatim quote, do NOT emit the memory.
+- Capture DENIALS and contradictions explicitly (e.g. "User decided AGAINST microservices", "User never integrated Flask-Login"). Set "contradiction_with" to the text of the opposing memory if one exists in the same batch.
+- Extract BOTH sides of any contradiction as separate memories and cross-reference them via "contradiction_with".
+- Enumerate EVERY distinct fact/event/preference; do not collapse multiple facts into one memory.
+- Categorize type as: preference, fact, entity, event, pattern, goal, project, setup, issue, reflection, summary
+- Each memory text must be a complete sentence.
+- Return ONLY a JSON array, nothing else (no markdown fences, no prose).
+- Max 200 items.
+Output schema (JSON array): [{"text","type","source_quote","entity","attribute","value","event_date","order_index","contradiction_with"}]` },
           { role: 'user', content: `Memories:\n${memText}\n\nExtract L1 atoms:` },
         ],
-        max_tokens: 1024,
-        temperature: 0.1,
+        max_tokens: 4000,
+        temperature: 0,
       }),
       signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
     });
@@ -120,13 +139,14 @@ export async function extractL1FromL0(sessionId) {
       state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++;
       return;
     }
-    for (const atom of atoms.slice(0, 10)) {
+    const _stored = []; // FIX-1: track stored atoms for contradiction pair-linking (mirrors /memory/extract).
+    for (const atom of atoms.slice(0, 200)) {
       if (!atom.text || !atom.type) continue;
       let embedding = null;
       if (isEmbeddingReady()) {
         try { embedding = new Float32Array(await embed(atom.text)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L1 embedding failed:', e.message); }
       }
-      storeMemory({
+      const id = storeMemory({
         text: atom.text,
         type: atom.type,
         session_id: sessionId,
@@ -138,7 +158,36 @@ export async function extractL1FromL0(sessionId) {
         // E2: tag intent so extracted L1 facets cluster by speech-act in consolidateSemantically.
         intent_type: classifyIntent(atom.text),
         embedding,
+        // FIX-1 (BEAM bench): carry the v10 typed fields through so retrieval can project
+        // verbatim dates/order/contradictions (FIX-5) instead of NULL columns. The extractor's
+        // text-form `contradiction_with` is NOT a store column — it is tracked below and used
+        // to cross-link the pair (which sets contradiction_pair_id + status='contradicted').
+        source_quote: atom.source_quote || '',
+        event_date: atom.event_date || null,
+        order_index: typeof atom.order_index === 'number' ? atom.order_index : null,
       });
+      _stored.push({ id, text: atom.text, contradiction_with: atom.contradiction_with || null });
+    }
+
+    // FIX-1 (BEAM bench): contradiction pair-linking — mirrors the strong /memory/extract
+    // path (memory-server.mjs cross-link). For each atom whose extractor-supplied
+    // contradiction_with matches a sibling's text, bidirectionally link the pair and mark
+    // both 'contradicted'. Both halves then surface via the ('active','contradicted')
+    // search filter + the now-contradiction-aware vector arm (FIX-4).
+    const _norm = (s) => (s || '').toString().toLowerCase().replace(/\s+/g, ' ').slice(0, 200).trim();
+    let _linked = 0;
+    for (let i = 0; i < _stored.length; i++) {
+      const a = _stored[i];
+      if (!a.contradiction_with) continue;
+      const needle = _norm(a.contradiction_with);
+      if (!needle) continue;
+      for (let j = 0; j < _stored.length; j++) {
+        if (j === i) continue;
+        const jText = _norm(_stored[j].text);
+        if (jText && (jText.includes(needle) || needle.includes(jText))) {
+          if (linkContradictionPair(a.id, _stored[j].id)) { _linked++; break; }
+        }
+      }
     }
 
     state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures = 0;

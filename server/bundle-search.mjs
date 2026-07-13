@@ -95,9 +95,16 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
     if (cost !== undefined && cost < Infinity) {
       rankedEpisodes.push({
         id: hit.id,
-        text: hit.text?.substring(0, 200) || '',
+        // FIX-5 (BEAM bench): drop the 200-char truncation so long budget/code atoms survive
+        // intact, and project the v10 typed fields (verbatim date/order/quote/contradiction)
+        // so the M-Flow episode hits carry the same provenance the direct search arms do.
+        text: hit.text || '',
         type: hit.type,
         entity: hit.entity,
+        event_date: hit.event_date,
+        order_index: hit.order_index,
+        source_quote: hit.source_quote,
+        contradiction_pair_id: hit.contradiction_pair_id,
         cost,
         score: 1 / (1 + cost),
         evidence: buildEvidencePath(String(hit.id), allHits, graph),

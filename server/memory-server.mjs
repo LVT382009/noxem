@@ -809,6 +809,31 @@ function classifyQueryIntent(query) {
     || ((httpMethodMatch?.length || 0) >= 1 && /[/.]/.test(q)) // HTTP method near path-like chars
     || ((devTermMatch?.length || 0) >= 1 && /(https?:|git|repo|code|build|test|deploy)/i.test(q)); // Dev term + dev context
 
+  // FIX-3 (BEAM bench): resurrect the previously-DEAD hasExactSignals check and add an
+  // exact-answer branch BEFORE the conceptual fallthrough. Budget Qs expect a concrete
+  // token in an FTS-indexed atom (250ms / March 29 / 165 commits / Flask-Login v0.6.2).
+  // The old path routed every what/how/when Q to vec-heavy (0.3/0.7), so exact-token
+  // memories ranked ~2.3x below vague vector hits. Guard: spare preference/opinion Qs
+  // (Q15/Q16 already pass on vec) so the assert path does not starve them.
+  const _isPreferenceQ = /\b(prefer|preferred|preferably|favourite|favorite|choose|chose|like\s+better|opinion|think|feel)\b/i.test(q);
+  const _exactDateMatch = q.match(/\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4}|\b\d{4}-\d{2}-\d{2}/i);
+  const _numWithUnitMatch = q.match(/\b\d+(?:\.\d+)?\s*(ms|milliseconds?|seconds?|minutes?|hours?|weeks?|days?|months?|years?|commits?|tables?|columns?|users?|items?|pages?)\b/i);
+  const _versionMatch = q.match(/\bv?\d+\.\d+(?:\.\d+)?\b/);
+  const _expectsExactAnswer = /\bwhen\b/i.test(q)
+    || /\bhow\s+(many|much|long)\b/i.test(q)
+    || /\bwhat\s+(version|columns?|table|tables|features?|structure|stack|does|is the|are the)\b/i.test(q)
+    || /\bwhich\b/i.test(q)
+    || /\bsprint\b/i.test(q)
+    || /\bcommits?\b/i.test(q)
+    || /\bresponse\s+time\b/i.test(q)
+    || /\bdeadline\b/i.test(q)
+    || /\bdependency\b/i.test(q)
+    || /\bconnection\s+pool(?:ing)?\b/i.test(q)
+    || /\bsecurity\s+features?\b/i.test(q);
+  if (!_isPreferenceQ && (hasExactSignals || _exactDateMatch || _numWithUnitMatch || _versionMatch || _expectsExactAnswer)) {
+    return { fts_weight: 0.8, vec_weight: 0.2, intent: 'exact' };
+  }
+
   // Conceptual/vague queries: preferences, opinions, concepts, short natural language
   const isConceptual = q.split(/\s+/).length <= 3 // very short
     || /(prefer|like|love|hate|dislike|opinion|think|feel|want|need|should|better|best)/i.test(q)

@@ -533,7 +533,7 @@ const getByEntityAttr = db.prepare(`SELECT * FROM memories WHERE entity = ? AND 
 const getTopActiveScored = db.prepare(`SELECT id, session_id, type, text, importance, recall_count, created_at FROM memories WHERE status = 'active' ORDER BY importance DESC, recall_count DESC, created_at DESC LIMIT ?`);
 
 const searchFts = db.prepare(`
-SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count, m.summary, f.rank AS score
+SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count, m.summary, m.event_date, m.order_index, m.source_quote, m.contradiction_pair_id, f.rank AS score
   FROM memories_fts f
   JOIN memories m ON m.id = f.rowid
   WHERE memories_fts MATCH @query AND m.status IN ('active', 'contradicted')
@@ -1205,7 +1205,11 @@ export function vectorKnnSearch(queryEmbedding, topK = 5) {
   // Enrich with memory data
   return hits.map(h => {
     const mem = getById.get(h.id);
-    if (!mem || mem.status !== 'active') return null;
+    // FIX-4 (BEAM bench): keep contradicted rows reachable by the vector arm so BOTH
+    // halves of a contradiction (Flask-Login "never used" vs "integrated v0.6.2") get
+    // co-ranked. The old strict `status !== 'active'` dropped the contradicted half after
+    // its vector already consumed topK budget (ghost).
+    if (!mem || (mem.status !== 'active' && mem.status !== 'contradicted')) return null;
     // E13: embedding-drift guard — cosine across DIFFERENT embedding spaces is meaningless.
     // Drop rows whose stored embedding_model_id differs from the current live model. NULL
     // model id (pre-E13 legacy rows) is treated compatible. Mirrors vectorKnnSearchAsync.
@@ -1218,6 +1222,12 @@ export function vectorKnnSearch(queryEmbedding, topK = 5) {
       importance: mem.importance,
       recall_count: mem.recall_count,
       created_at: mem.created_at,
+      // FIX-5 (BEAM bench): project v10 typed fields so verbatim dates/order/quotes reach
+      // the harness and the assert-over-abstain reader prompt can compute/surface them.
+      event_date: mem.event_date,
+      order_index: mem.order_index,
+      source_quote: mem.source_quote,
+      contradiction_pair_id: mem.contradiction_pair_id,
       score: h.score,
     };
   }).filter(Boolean);
@@ -1236,7 +1246,10 @@ export async function vectorKnnSearchAsync(queryEmbedding, topK = 5) {
     if (!hits) return null;
     return hits.map(h => {
         const mem = getById.get(h.id);
-        if (!mem || mem.status !== 'active') return null;
+        // FIX-4 (BEAM bench): keep contradicted rows reachable (mirror vectorKnnSearch) so
+        // both contradiction halves co-rank; the consent also keeps the allowlist (below) and
+        // the post-filter consistent, eliminating the wasteful ghost-vector path.
+        if (!mem || (mem.status !== 'active' && mem.status !== 'contradicted')) return null;
         // E13: embedding-drift guard — drop rows whose stored embedding_model_id differs from
         // the current model. Cosine across different embedding spaces is meaningless; returning
         // such rows as hits would silently corrupt recall (a 384->768 swap halves it). NULL model
@@ -1246,6 +1259,9 @@ export async function vectorKnnSearchAsync(queryEmbedding, topK = 5) {
             id: mem.id, text: mem.text, type: mem.type,
             session_id: mem.session_id, importance: mem.importance,
             recall_count: mem.recall_count, created_at: mem.created_at,
+            // FIX-5 (BEAM bench): project v10 typed fields (verbatim dates/order/quote/contradiction).
+            event_date: mem.event_date, order_index: mem.order_index,
+            source_quote: mem.source_quote, contradiction_pair_id: mem.contradiction_pair_id,
             score: h.score,
         };
     }).filter(Boolean);
