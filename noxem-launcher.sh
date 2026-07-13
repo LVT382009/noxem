@@ -189,7 +189,7 @@ read_noxem_config() {
 if [ -z "${LLM_API_KEY:-}" ]; then
 	_env_file="${HOME}/.hermes/.env"
 	if [ -f "$_env_file" ]; then
-  _resolved_key=$(grep '^LLM_API_KEY=' "$_env_file" 2>/dev/null | head -1 | cut -d= -f2- | sed "s/^['\"]//;s/['\"]$//")
+  _resolved_key=$(grep '^LLM_API_KEY=' "$_env_file" 2>/dev/null | head -1 | cut -d= -f2- | sed "s/^['\"]//;s/['\"]$//" || true)
 		if [ -n "$_resolved_key" ]; then
 			export LLM_API_KEY="$_resolved_key"
 		fi
