@@ -141,6 +141,25 @@ if [ ! -d "$NOXEM_VENV" ]; then
 python3 -m venv "$NOXEM_VENV" 2>/dev/null && echo " Created venv at $NOXEM_VENV" || true
 fi
 
+# Verify the venv actually has pip. On Debian, python3's venv module
+# sometimes creates a pip-less venv (the ensurepip wheel package is
+# missing: python3.12-venv / python3.X-venv not installed), yet exits 0
+# — so $NOXEM_VENV/bin/python exists while $NOXEM_VENV/bin/pip does not.
+# Keeping such a venv is harmful: the launcher picks this interpreter
+# (noxem-launcher.sh: if venv/bin/python exists), but the deps below get
+# installed to the SYSTEM interpreter (since bin/pip is absent), so the
+# sidecar crashes at runtime with "ModuleNotFoundError: No module named
+# 'numpy'" in turbovec_proxy.py. Fix: try ensurepip; if pip still isn't
+# there, nuke the venv so the launcher falls back to the system python3
+# (which has the deps installed into --user below).
+if [ -d "$NOXEM_VENV" ] && [ ! -f "$NOXEM_VENV/bin/pip" ]; then
+"$NOXEM_VENV/bin/python3" -m ensurepip --upgrade 2>/dev/null || true
+fi
+if [ -d "$NOXEM_VENV" ] && [ ! -f "$NOXEM_VENV/bin/pip" ]; then
+echo " venv has no pip (ensurepip unavailable) — using system python3 fallback"
+rm -rf "$NOXEM_VENV"
+fi
+
 # Determine pip command (venv or system)
 if [ -f "$NOXEM_VENV/bin/pip" ]; then
 PIP_CMD="$NOXEM_VENV/bin/pip"
