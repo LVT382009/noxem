@@ -10,7 +10,7 @@ import { isVecReady, checkTurboVecHealth, isTurboVecHealthy, getVectorBackend } 
 import { llmFetch } from './llm-fetch.mjs';
 import { LLM_URL, LLM_MODEL, baseLlmUrl } from './llm-config.mjs';
 import {
-  storeMemory, storeMemories, searchMemories, getMemory, getActiveMemories,
+  storeMemory, storeMemories, linkContradictionPair, searchMemories, getMemory, getActiveMemories,
   getAllActiveMemories, getAllActiveMemoriesNoEmbed, getSessionMemories, getSessionMemoriesPage, getMemoriesByTypePage,
   getActiveWithEmbedding, getMemoryStats, updateMemoryStatus, updateMemoryType, setEmbeddingModelId, isForeignEmbeddingModel,
   deleteMemory, deleteInvalid, incrementRecallCounts, boostUsedMemories, archiveStaleMemories, vectorKnnSearch, getEmbeddingsById,
@@ -2153,16 +2153,54 @@ app.post('/memory/extract', async (req, res) => {
 
     // Store extracted memories
     const ids = [];
+    // BEAM-bench v10: pass the structured provenance/temporal/contradiction fields
+    // emitted by the extractor (memory-extract.mjs) through to the store layer, and
+    // track each stored row + its contradiction_with pointer so we can cross-link
+    // contradiction pairs (A ↔ ¬A) WITHIN this batch after they all have row ids.
+    const stored = [];
     for (const m of memories) {
       let embedding = null;
       if (isEmbeddingReady()) {
         try { embedding = new Float32Array(await embed(m.text)); } catch {}
       }
-      const id = storeMemory({ session_id, type: m.type, text: m.text, embedding, importance: estimateImportance(m.text, m.type) });
+      const id = storeMemory({
+        session_id, type: m.type, text: m.text, embedding,
+        importance: estimateImportance(m.text, m.type),
+        source_quote: m.source_quote ?? null,
+        source_turn_id: m.source_turn_id ?? null,
+        entity: m.entity ?? '',
+        attribute: m.attribute ?? '',
+        event_date: m.event_date ?? null,
+        order_index: m.order_index ?? null,
+        contradiction_pair_id: null,
+      });
       ids.push(id);
+      stored.push({ id, text: m.text, contradiction_with: m.contradiction_with ?? null });
     }
 
-    res.json({ ok: true, extracted: memories.length, stored_ids: ids, memories });
+    // BEAM-bench v10: contradiction pair-linking. For each row whose extractor-supplied
+    // contradiction_with matches a sibling's text (normalized substring), bidirectionally
+    // link the pair and mark both 'contradicted' so neither monopolizes recall alone.
+    // Both sides then surface via the ('active','contradicted') search filter.
+    const norm = (s) => (s || '').toString().toLowerCase().replace(/\s+/g, ' ').slice(0, 200).trim();
+    let linked = 0;
+    for (let i = 0; i < stored.length; i++) {
+      const a = stored[i];
+      if (!a.contradiction_with) continue;
+      const needle = norm(a.contradiction_with);
+      if (!needle) continue;
+      // First sibling row whose text contains the ¬A quote (or vice-versa).
+      for (let j = 0; j < stored.length; j++) {
+        if (j === i) continue;
+        const b = stored[j];
+        const jText = norm(b.text);
+        if (jText && (jText.includes(needle) || needle.includes(jText))) {
+          if (linkContradictionPair(a.id, b.id)) { linked++; break; }
+        }
+      }
+    }
+
+    res.json({ ok: true, extracted: memories.length, stored_ids: ids, contradiction_pairs_linked: linked, memories });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

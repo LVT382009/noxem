@@ -6,25 +6,28 @@ const VALID_TYPES = ['general', 'fact', 'preference', 'profile', 'project', 'goa
 
 const EXTRACTION_PROMPT = `You are a memory extraction AI. Analyze the conversation below and extract factual memories that the AI agent should remember for future conversations.
 
-Rules:
-- Extract ONLY factual, non-obvious information
-- Each memory must be a complete sentence
-- Categorize as: preference, fact, entity, event, pattern, or goal
-- Omit obvious/generic information
-- Return ONLY a JSON array, nothing else
+CRITICAL RULES:
+- Extract ONLY information actually stated in the conversation. NEVER hallucinate or infer beyond what is written.
+- Preserve VERBATIM specifics: exact numbers (e.g. "250ms", "Flask 2.3.1"), exact dates (e.g. "March 29, 2024"), exact identifiers (e.g. "pbkdf2", "UNIQUE constraint", "Flask-WTF", "Confluence", "Matplotlib"). Do NOT paraphrase or round these.
+- For EVERY memory you MUST provide a "source_quote": a short VERBATIM phrase copied from the conversation that proves this memory (anti-hallucination). If you cannot find a verbatim quote, do NOT emit the memory.
+- Capture DENIALS and contradictions explicitly (e.g. "User decided AGAINST microservices for v1.0", "User never wrote Flask routes", "User did not integrate Flask-Login"). Set "contradiction_with" to the text of the opposing memory if one exists in the same batch.
+- Extract BOTH sides of any contradiction as separate memories and cross-reference them via "contradiction_with".
+- Enumerate EVERY distinct fact/event/preference; do not collapse multiple facts into one memory.
+- Categorize type as: preference, fact, entity, event, pattern, goal, project, setup, issue, reflection, summary
+- Each memory text must be a complete sentence
+- Return ONLY a JSON array, nothing else (no markdown fences, no prose)
 
 Example output:
 [
-{"text": "User prefers Python over JavaScript for backend development.", "type": "preference"},
-{"text": "User is building a Hermes Agent memory system with local AI.", "type": "project"},
-{"text": "User's name is Tam.", "type": "entity"}
+{"text": "User prefers simple, minimal-dependency architectures to keep the app lightweight.", "type": "preference", "source_quote": "keep it lightweight, minimal deps", "entity": "user", "attribute": "architecture_preference", "value": "minimal dependencies", "event_date": null, "order_index": 1, "contradiction_with": null},
+{"text": "Sprint 1 ends March 29, 2024, focusing on user registration and login.", "type": "event", "source_quote": "first sprint ends March 29", "entity": "sprint_1", "attribute": "end_date", "value": "2024-03-29", "event_date": "2024-03-29", "order_index": 5, "contradiction_with": null}
 ]
 
 Conversation:
 USER: {{userMessage}}
 ASSISTANT: {{assistantResponse}}
 
-Memories:`;
+Memories (JSON array; each item: text, type, source_quote, entity, attribute, value, event_date, order_index, contradiction_with):`;
 
 // Extract a balanced JSON array from LLM output (handles nested brackets)
 function extractBalancedArray(text) {
@@ -54,14 +57,18 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
   const model = llmModel || LLM_MODEL;
 
   const prompt = EXTRACTION_PROMPT
-    .split('{{userMessage}}').join((userMessage || '').substring(0, 2000))
-    .split('{{assistantResponse}}').join((assistantResponse || '').substring(0, 4000));
+    // FIX (BEAM bench): 2000→24000 chars. Was dropping ~93% of long-conversation
+    // specifics (128K-token BEAM corpus). Assistant side 4000→24000 for symmetry.
+    .split('{{userMessage}}').join((userMessage || '').substring(0, 24000))
+    .split('{{assistantResponse}}').join((assistantResponse || '').substring(0, 24000));
 
   const body = JSON.stringify({
     model,
     messages: [{ role: 'user', content: prompt }],
-    max_tokens: 512,
-    temperature: 0.1,
+    // FIX (BEAM bench): 512→2500 (5x) so enumerations not truncated; temp 0.1→0
+    // for deterministic verbatim preservation; timeout already 60s via EXTRACT_TIMEOUT_MS.
+    max_tokens: 2500,
+    temperature: 0,
   });
 
   try {
@@ -91,9 +98,22 @@ export async function extractMemories({ userMessage, assistantResponse, llmUrl, 
       // → HTTP 500). Semantics now: non-array or empty -> []; unparseable -> [] (catch); valid
       // -> filtered/mapped memories.
       if (!Array.isArray(memories)) return [];
-      return memories.filter(m => m.text && m.type).map(m => ({
+      // FIX (BEAM bench): emit the structured fields the prompt now asks for
+      // (entity/attribute/value/event_date/order_index/contradiction_with) plus the
+      // REQUIRED source_quote (anti-hallucination). The store layer maps these onto
+      // the new schema columns (see memory-store.mjs). order_index falls back to array
+      // position so ordering is always present.
+      return memories.filter(m => m.text && m.type).map((m, i) => ({
         text: m.text.trim().substring(0, 500),
         type: VALID_TYPES.includes(m.type) ? m.type.substring(0, 50) : 'fact',
+        source_quote: (m.source_quote || '').toString().trim().substring(0, 500),
+        source_turn_id: m.source_turn_id ? String(m.source_turn_id).substring(0, 100) : null,
+        entity: m.entity ? String(m.entity).substring(0, 200) : null,
+        attribute: m.attribute ? String(m.attribute).substring(0, 200) : null,
+        value: m.value != null ? String(m.value).substring(0, 500) : null,
+        event_date: m.event_date ? String(m.event_date).substring(0, 40) : null,
+        order_index: Number.isFinite(Number(m.order_index)) ? Number(m.order_index) : i,
+        contradiction_with: m.contradiction_with ? String(m.contradiction_with).substring(0, 200) : null,
       }));
     } catch {
       return [];

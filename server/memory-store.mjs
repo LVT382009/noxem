@@ -84,7 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 // Fresh installs get CREATE TABLE IF NOT EXISTS (above) + all migrations.
 // Existing DBs run only the migrations they haven't seen yet.
 
-export const DB_VERSION = 9;
+export const DB_VERSION = 10;
 
 function addColumn(table, column, def) {
 	if (!/^[a-zA-Z_]\w*$/.test(column)) throw new Error(`Invalid column name: ${column}`);
@@ -359,6 +359,23 @@ const migrations = {
 		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_session_active_time ON memories(session_id, status, created_at DESC, id DESC)`);
 		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_type_active_time ON memories(type, status, created_at DESC, id DESC)`);
 	},
+	10: () => {
+		// BEAM-bench (chat1): provenance + temporal + contradiction columns.
+		// source_quote        — VERBATIM proof excerpt (anti-hallucination; extractor REQUIRED)
+		// source_turn_id      — which conversation turn sourced it
+		// event_date          — normalized date for temporal reasoning queries
+		// order_index          — narrative ordering (extractor emits; map falls back to array pos)
+		// contradiction_pair_id — linked row id of the opposing (¬A) memory; STATUS stays 'contradicted'
+		// All nullable: existing rows keep NULL. Idempotent via addColumn() (ADD COLUMN ignores duplicates).
+		addColumn('memories', 'source_quote', "TEXT");
+		addColumn('memories', 'source_turn_id', "TEXT");
+		addColumn('memories', 'event_date', "TEXT");
+		addColumn('memories', 'order_index', "INTEGER");
+		addColumn('memories', 'contradiction_pair_id', "INTEGER REFERENCES memories(id)");
+		// Indexes: temporal retrieval (event_date) + contradiction pair lookup.
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_event_date ON memories(event_date)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_contradiction_pair ON memories(contradiction_pair_id)`);
+	},
 };// E16: pending-migration runner. HARD-STOP on first failure — a partial-schema DB must NEVER
 // silently serve requests. Previously the loop logged + `break`ed, leaving the server running on
 // a half-migrated schema (silent corruption risk): a v9 that throws would still serve reads on
@@ -458,8 +475,8 @@ try { db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')"); } ca
 initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
 
 const insert = db.prepare(
-	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer, embedding_model_id, intent_type)
-	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer, @embedding_model_id, @intent_type)`
+	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer, embedding_model_id, intent_type, source_quote, source_turn_id, event_date, order_index, contradiction_pair_id)
+	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer, @embedding_model_id, @intent_type, @source_quote, @source_turn_id, @event_date, @order_index, @contradiction_pair_id)`
 );
 
 const insertTx = db.transaction((items) => {
@@ -519,20 +536,20 @@ const searchFts = db.prepare(`
 SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count, m.summary, f.rank AS score
   FROM memories_fts f
   JOIN memories m ON m.id = f.rowid
-  WHERE memories_fts MATCH @query AND m.status = 'active'
+  WHERE memories_fts MATCH @query AND m.status IN ('active', 'contradicted')
   ORDER BY rank
   LIMIT @limit
 `);
 
 const searchRecent = db.prepare(`
 SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count, summary FROM memories
-  WHERE status = 'active' AND text LIKE @query ESCAPE '\'
+  WHERE status IN ('active', 'contradicted') AND text LIKE @query ESCAPE '\'
   ORDER BY created_at DESC
   LIMIT @limit
 `);
 
 const getActiveWithEmbeddings = db.prepare(
-  `SELECT id, session_id, type, text, embedding, metadata, context_prefix, entity, attribute, valid_until, cone_layer, intent_type, embedding_model_id, created_at, importance, recall_count, status FROM memories WHERE status = 'active' AND embedding IS NOT NULL`
+  `SELECT id, session_id, type, text, embedding, metadata, context_prefix, entity, attribute, valid_until, cone_layer, intent_type, embedding_model_id, created_at, importance, recall_count, status FROM memories WHERE status IN ('active', 'contradicted') AND embedding IS NOT NULL`
 );
 
 const getAllWithEmbeddings = db.prepare(
@@ -682,7 +699,20 @@ function ensureEmbeddingBuffer(embedding) {
   return null;
 }
 
-export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null, cone_layer = 0, intent_type = null }) {
+// BEAM-bench v10: cross-link a contradiction pair (A ↔ ¬A) and mark both rows
+// status='contradicted' so neither masquerades as the single trusted fact. The
+// hybrid search (searchFts / searchRecent / getActiveWithEmbeddings) now includes
+// 'contradicted' rows, so BOTH sides surface for downstream contradiction reasoning.
+// Idempotent + safe: no-op if ids missing/equal.
+const _linkPairStmt = db.prepare(`UPDATE memories SET contradiction_pair_id = ?, status = 'contradicted', updated_at = datetime('now') WHERE id = ?`);
+export function linkContradictionPair(idA, idB) {
+  if (!idA || !idB || Number(idA) === Number(idB)) return false;
+  _linkPairStmt.run(idB, idA);
+  _linkPairStmt.run(idA, idB);
+  return true;
+}
+
+export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null, cone_layer = 0, intent_type = null, source_quote = null, source_turn_id = null, event_date = null, order_index = null, contradiction_pair_id = null }) {
   embedding = ensureEmbeddingBuffer(embedding);
   const result = insert.run({
     session_id: session_id || '',
@@ -701,6 +731,12 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
  // E13: stamp the embedding model id only when an embedding is written, so the KNN drift
  // filter can later drop rows embedded under a different model. NULL when no embedding.
  embedding_model_id: embedding ? _currentEmbeddingModelId : null,
+ // BEAM-bench v10: provenance + temporal + contradiction columns (nullable).
+ source_quote: source_quote ?? null,
+ source_turn_id: source_turn_id ?? null,
+ event_date: event_date ?? null,
+ order_index: Number.isFinite(Number(order_index)) ? Number(order_index) : null,
+ contradiction_pair_id: contradiction_pair_id ?? null,
  });
   // Update vector index if embedding provided
   if (embedding) {
@@ -733,6 +769,12 @@ export function storeMemories(items) {
     cone_layer: m.cone_layer ?? 0,
     intent_type: m.intent_type ?? null,
     embedding_model_id: m.embedding ? _currentEmbeddingModelId : null, // E13 drift stamp
+    // BEAM-bench v10: provenance + temporal + contradiction columns (nullable).
+    source_quote: m.source_quote ?? null,
+    source_turn_id: m.source_turn_id ?? null,
+    event_date: m.event_date ?? null,
+    order_index: Number.isFinite(Number(m.order_index)) ? Number(m.order_index) : null,
+    contradiction_pair_id: m.contradiction_pair_id ?? null,
   }));
   const ids = insertTx(prepared);
   // Update vector index for batch
