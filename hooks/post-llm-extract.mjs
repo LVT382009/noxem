@@ -17,8 +17,15 @@ async function main() {
   }
 
   const extra = input.extra || {};
-  const userMessage = (extra.user_message || '').substring(0, 2000);
-  const assistantResponse = (extra.assistant_response || '').substring(0, 4000);
+  // Forward the FULL message text — do NOT cap at 2000/4000 chars here. The
+  // /memory/sync route chunks long input into ~1500-char rows (1 row = 1 vector)
+  // sized for the embeddinggemma-300m 2048-token context (see memory-server.mjs
+  // _SYNC_CHUNK_MAX). Capping upstream silently drops the corpus tail/mid: every
+  // gold fact past char 2000 (165 commits, RBAC, Redis, pbkdf2, Flask-WTF, the
+  // real Jan 15/Mar 15 sprint dates) never reaches the store → BEAM recall 2-5/20.
+  // abortSignal(20000) below is the only guard; large pastes parse fine.
+  const userMessage = extra.user_message || '';
+  const assistantResponse = extra.assistant_response || '';
   const sessionId = extra.session_id || input.session_id || '';
 
   if (!userMessage.trim() && !assistantResponse.trim()) {
