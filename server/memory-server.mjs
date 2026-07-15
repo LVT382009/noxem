@@ -40,7 +40,7 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN ? (process.env.CORS_ORIGIN === '*' ? true : process.env.CORS_ORIGIN) : (process.env.NODE_ENV === 'production' ? false : true),
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 // Reject new requests during graceful shutdown (BUG-21: prevent DB ops after close())
 app.use((req, res, next) => {
   if (_isShuttingDown) return res.status(503).json({ error: 'Server is shutting down' });
@@ -212,7 +212,7 @@ startup().catch(err => {
 // ─── Background Embedding Queue ────────────────────────────────────
 // Queues memories for async embedding — store/sync return instantly
 const _embedQueue = [];
-const EMBED_QUEUE_MAX = 1000;
+const EMBED_QUEUE_MAX = 5000;
 let _embedLock = Promise.resolve(); // C-1: promise-chain mutex replaces boolean flag
 
 function processEmbedQueue() {
@@ -2001,22 +2001,73 @@ app.post('/memory/sync', async (req, res) => {
     // flag (embedding-engine.mjs:372), so a chunk > 2048 tokens silently blows the
     // context — either ONNX errors (row gets no vector → unreachable in vector
     // search) or silent head-truncation (gold facts in the tail lost). Either way
-    // recall dies. Keep chunks ~1500 chars: worst-case Vietnamese + code is ~2
-    // char/token → 1500 char ≈ 750 tokens, solidly under 2048 with headroom for
-    // the context prefix. Split on newline boundaries; each chunk = own memory row
-    // (1 row = 1 vector). The embed queue drains in order while the agent keeps
-    // streaming new messages in behind it. 565KB corpus → ~380 rows; more rows is
-    // BETTER for probing-QA recall — each gold fact nested in its own retrievable
-    // vector instead of buried mid-truncation. No hard cap on ingest.
-    const _SYNC_CHUNK_MAX = 1500;
+    // recall dies. Each chunk = own memory row (1 row = 1 vector); the embed queue
+    // drains in order while the agent keeps streaming new messages in behind it.
+    //
+    // Chunking strategy (so gold facts never land on a mid-sentence/mid-word cut):
+    //   1. Split into paragraphs on newlines.
+    //   2. Accumulate small paragraphs into a running buffer up to the CEILING.
+    //   3. A paragraph longer than the FLOOR is split on sentence boundaries via
+    //      Intl.Segmenter (multilingual, CJK-aware — handles "Mr. Smith" and
+    //      Chinese/Japanese text that has no ASCII ./?/!). Sentences accumulate up
+    //      to the CEILING: the 1500-char target is RAISED until a sentence-ender is
+    //      found, so the last sentence is never orphaned across a chunk boundary.
+    //   4. A no-punctuation blob (long code/URL/base64/hash) hits the CEILING with
+    //      no sentence boundary → cut at the last SPACE so no token is split mid-word.
+    //
+    // _SYNC_CHUNK_FLOOR   = 1500 char (~750 token worst-case VN/code) — compact target.
+    // _SYNC_CHUNK_CEILING  = 3000 char (~1500 token worst-case) — hard guard so a chunk
+    //   never reaches the 2048-token embed limit even with the context prefix.
+    const _SYNC_CHUNK_FLOOR = 1500;
+    const _SYNC_CHUNK_CEILING = 3000;
+    let _sentenceSeg = null;
+    try { _sentenceSeg = new Intl.Segmenter(undefined, { granularity: 'sentence' }); } catch {}
+    // Last space within the window; if none (single huge token), hard cut at ceiling.
+    const _wordCutIndex = (blob, ceiling) => {
+      const cut = blob.lastIndexOf(' ', ceiling);
+      return cut > 0 ? cut : ceiling;
+    };
     const _chunkText = (s) => {
       const out = []; let cur = '';
       for (const p of String(s).split(/\n/)) {
-        if ((cur + '\n' + p).length > _SYNC_CHUNK_MAX && cur) { out.push(cur); cur = p; }
+        if (!p) { cur = cur ? cur + '\n' : cur; continue; }
+        // Paragraph longer than the floor → split on sentence boundaries (raises the
+        // 1500 target until a sentence-ender is found, up to the ceiling).
+        if (p.length > _SYNC_CHUNK_FLOOR && _sentenceSeg) {
+          const sents = [..._sentenceSeg.segment(p)].map(seg => seg.segment).filter(x => x.trim());
+          if (sents.length > 1) {
+            if (cur) { out.push(cur); cur = ''; }
+            let c = '';
+            for (const sent of sents) {
+              if (c && (c.length + sent.length) > _SYNC_CHUNK_CEILING) { out.push(c); c = ''; }
+              c += sent;
+            }
+            if (c) out.push(c);
+            continue;
+          }
+          // single huge "sentence" with no punctuation → fall through to word-cut
+        }
+        // Accumulate paragraphs; flush the buffer when it would exceed the ceiling.
+        if (cur && (cur + '\n' + p).length > _SYNC_CHUNK_CEILING) { out.push(cur); cur = p; }
         else cur = cur ? cur + '\n' + p : p;
-        if (cur.length > _SYNC_CHUNK_MAX) { for (let i = 0; i < cur.length; i += _SYNC_CHUNK_MAX) out.push(cur.slice(i, i + _SYNC_CHUNK_MAX)); cur = ''; }
       }
       if (cur) out.push(cur);
+      // Any residual chunk past the ceiling had no sentence boundary → word-cut it.
+      for (let i = 0; i < out.length; i++) {
+        if (out[i].length > _SYNC_CHUNK_CEILING) {
+          const rest = out[i];
+          const chunks = [];
+          let pos = 0;
+          while (pos < rest.length) {
+            if (rest.length - pos <= _SYNC_CHUNK_CEILING) { chunks.push(rest.slice(pos)); break; }
+            const cut = pos + _wordCutIndex(rest.slice(pos), _SYNC_CHUNK_CEILING);
+            chunks.push(rest.slice(pos, cut));
+            pos = cut + (rest[cut] === ' ' ? 1 : 0);
+          }
+          out.splice(i, 1, ...chunks);
+          i += chunks.length - 1;
+        }
+      }
       return out.length ? out : [String(s)];
     };
 
