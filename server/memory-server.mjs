@@ -1996,21 +1996,44 @@ app.post('/memory/sync', async (req, res) => {
     const memories = [];
     const now = new Date().toISOString();
 
+    // Chunk long messages so the embedding model's 8K-token context never truncates
+    // gold facts mid-text. No hard character cap — text is split on newline boundaries
+    // into ~8K-char chunks; each chunk becomes its own memory row (1 row = 1 vector),
+    // so every part of the corpus gets its own embedding. The embed queue drains them
+    // in order while the agent keeps streaming new messages in behind it.
+    const _SYNC_CHUNK_MAX = 8000;
+    const _chunkText = (s) => {
+      const out = []; let cur = '';
+      for (const p of String(s).split(/\n/)) {
+        if ((cur + '\n' + p).length > _SYNC_CHUNK_MAX && cur) { out.push(cur); cur = p; }
+        else cur = cur ? cur + '\n' + p : p;
+        if (cur.length > _SYNC_CHUNK_MAX) { for (let i = 0; i < cur.length; i += _SYNC_CHUNK_MAX) out.push(cur.slice(i, i + _SYNC_CHUNK_MAX)); cur = ''; }
+      }
+      if (cur) out.push(cur);
+      return out.length ? out : [String(s)];
+    };
+
     // Store user message — skip trivial/greeting messages
     if (user_message?.trim() && !shouldSkipMessage(user_message)) {
-      const type = categorizeText(user_message);
-      const userText = user_message.trim().substring(0, 2000);
-      const { entity: userEntity, attribute: userAttr } = extractEntityAttribute(userText);
-      const userPrefix = generateContextPrefix(userText, type, session_id);
-    memories.push({ session_id, type, text: userText, embedding: null, metadata: { source: "user", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr, summary: ruleBasedCompress(userText, 2) });
+      const uChunks = _chunkText(user_message.trim());
+      for (let i = 0; i < uChunks.length; i++) {
+        const userText = uChunks[i];
+        const type = categorizeText(userText);
+        const { entity: userEntity, attribute: userAttr } = extractEntityAttribute(userText);
+        const userPrefix = generateContextPrefix(userText, type, session_id);
+        memories.push({ session_id, type, text: userText, embedding: null, metadata: { source: "user", extraction_method: "sync_chunked", chunk_index: i, total_chunks: uChunks.length, origin_session_id: session_id, timestamp: now }, importance: estimateImportance(userText, type), context_prefix: userPrefix, entity: userEntity, attribute: userAttr, summary: ruleBasedCompress(userText, 2) });
+      }
   }
 
   // Store assistant response — skip very short responses
   if (assistant_response?.trim() && !shouldSkipMessage(assistant_response)) {
-    const asstText = assistant_response.trim().substring(0, 4000);
-    const { entity: asstEntity, attribute: asstAttr } = extractEntityAttribute(asstText);
-    const asstPrefix = generateContextPrefix(asstText, "fact", session_id);
-    memories.push({ session_id, type: "fact", text: asstText, embedding: null, metadata: { source: "assistant", extraction_method: "sync", origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr, summary: ruleBasedCompress(asstText, 2) });
+    const aChunks = _chunkText(assistant_response.trim());
+    for (let i = 0; i < aChunks.length; i++) {
+        const asstText = aChunks[i];
+        const { entity: asstEntity, attribute: asstAttr } = extractEntityAttribute(asstText);
+        const asstPrefix = generateContextPrefix(asstText, "fact", session_id);
+        memories.push({ session_id, type: "fact", text: asstText, embedding: null, metadata: { source: "assistant", extraction_method: "sync_chunked", chunk_index: i, total_chunks: aChunks.length, origin_session_id: session_id, timestamp: now }, importance: estimateImportance(asstText, "fact"), context_prefix: asstPrefix, entity: asstEntity, attribute: asstAttr, summary: ruleBasedCompress(asstText, 2) });
+    }
   }
 
   const ids = memories.length > 0 ? storeMemories(memories) : [];
