@@ -63,7 +63,11 @@ const WAKEUP_L0_TOKEN_BUDGET = 50;
 const WAKEUP_L1_FACT_COUNT = 5;
 const WAKEUP_L1_ENTITY_COUNT = 3;
 const WAKEUP_L1_PREF_COUNT = 5;
-const STORAGE_DEDUP_COSINE_THRESHOLD = 0.90;
+// BEAM corpus ingest fix: corpus messages in one project domain share heavy
+// vocabulary ("Flask/security/password/commit") so cosine 0.90 + Jaccard 0.75
+// falsely merge DISTINCT fact messages into one row (silent drop, recall killed,
+// BEAM bench 4/20). Raise to near-exact so only true duplicates merge.
+const STORAGE_DEDUP_COSINE_THRESHOLD = 0.97;
 const STORAGE_DEDUP_FTS_LIMIT = 5;
 const TUNNEL_MIN_ENTITY_PAIRS = 2;
 const TUNNEL_MIN_SHARED_ATTRIBUTES = 2;
@@ -375,9 +379,10 @@ export function checkStorageTimeDuplicate(text, entity, attribute = '') {
       const intersection = [...wordsA].filter(w => wordsB.has(w)).length;
       const union = new Set([...wordsA, ...wordsB]).size;
       const jaccard = union === 0 ? 0 : intersection / union;
-      if (jaccard > 0.75) {
-        // High word overlap — likely duplicate
-        const sim = 0.80 + jaccard * 0.15; // Map Jaccard 0.75-1.0 to 0.91-0.95
+      if (jaccard > 0.97) {
+        // Near-exact word overlap — almost certainly the same message.
+        // (Was 0.75: merged distinct project-domain corpus messages.)
+        const sim = 0.80 + jaccard * 0.15; // Map near-exact Jaccard to ~0.95
         if (sim > maxSim) {
           maxSim = sim;
           duplicateId = m.id;
