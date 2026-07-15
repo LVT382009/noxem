@@ -1996,12 +1996,19 @@ app.post('/memory/sync', async (req, res) => {
     const memories = [];
     const now = new Date().toISOString();
 
-    // Chunk long messages so the embedding model's 8K-token context never truncates
-    // gold facts mid-text. No hard character cap — text is split on newline boundaries
-    // into ~8K-char chunks; each chunk becomes its own memory row (1 row = 1 vector),
-    // so every part of the corpus gets its own embedding. The embed queue drains them
-    // in order while the agent keeps streaming new messages in behind it.
-    const _SYNC_CHUNK_MAX = 8000;
+    // Chunk long messages so a chunk never exceeds the embedding model's context
+    // window (embeddinggemma-300m = 2048 tokens). Tokenizer call has no truncation
+    // flag (embedding-engine.mjs:372), so a chunk > 2048 tokens silently blows the
+    // context — either ONNX errors (row gets no vector → unreachable in vector
+    // search) or silent head-truncation (gold facts in the tail lost). Either way
+    // recall dies. Keep chunks ~1500 chars: worst-case Vietnamese + code is ~2
+    // char/token → 1500 char ≈ 750 tokens, solidly under 2048 with headroom for
+    // the context prefix. Split on newline boundaries; each chunk = own memory row
+    // (1 row = 1 vector). The embed queue drains in order while the agent keeps
+    // streaming new messages in behind it. 565KB corpus → ~380 rows; more rows is
+    // BETTER for probing-QA recall — each gold fact nested in its own retrievable
+    // vector instead of buried mid-truncation. No hard cap on ingest.
+    const _SYNC_CHUNK_MAX = 1500;
     const _chunkText = (s) => {
       const out = []; let cur = '';
       for (const p of String(s).split(/\n/)) {
