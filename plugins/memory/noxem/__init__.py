@@ -934,9 +934,17 @@ class NoxemMemoryProvider:
                 pass  # Prevent daemon thread exception during interpreter shutdown
 
         def _sync_impl(session_id, user_content, assistant_content):
+            # Forward the FULL turn text — do NOT cap here. The noxem /memory/sync
+            # route chunks long input into ~1500-3000-char rows (1 row = 1 vector)
+            # via its sentence-aware _chunkText (ceiling 3000) sized to the
+            # embeddinggemma-300m 2048-token context so each row is independently
+            # retrievable. Pre-capping to 2000/4000 silently dropped everything
+            # past the head: a pasted ~160KB corpus produced exactly ONE 2000-char
+            # row, losing every tail/mid fact (BEAM recall 2-5/20; gold facts past
+            # char 2000 never reached the store). Let the server chunk it. #BEAM2000
             data = {
-                "user_message": (user_content or "")[:2000],
-                "assistant_response": (assistant_content or "")[:4000],
+                "user_message": user_content or "",
+                "assistant_response": assistant_content or "",
                 "session_id": session_id,
             }
             # Try once
