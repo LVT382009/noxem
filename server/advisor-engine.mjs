@@ -35,16 +35,24 @@ function callLLM(messages, maxTokens = 1024, temperature = 0.3) {
  * E2 J3 consolidate-synth — synthesize ONE canonical facet text for a near-duplicate cluster,
  * REPLACING the literal `texts.join(' | ')` the old consolidateMemories used.
  *
- * High-stakes: this runs inside the maintenance cron's content-merge path. The caller
- * (consolidateSemantically) REQUIRES a clean (degraded===false) synth before it will merge a
- * CONTENT cluster — on any miss (LLM off / qwenproxy WAF / timeout / bad shape) it returns
- * degraded:true and the caller performs NO merge (today's behavior preserved = zero data loss).
- * Trivial-intent clusters are merged by the caller even when degraded (interchangeable greetings).
+ * High-stakes: this runs inside the maintenance cron's content-merge path (called by BOTH
+ * consolidateMemories AND consolidateSemantically). The caller REQUIRES a clean (degraded===false)
+ * synth before it will merge a CONTENT cluster — on any miss (LLM off / qwenproxy WAF / timeout /
+ * bad shape) it returns degraded:true and the caller performs NO merge (today's behavior preserved
+ * = zero data loss). Trivial-intent clusters are merged by the caller even when degraded
+ * (interchangeable greetings).
+ *
+ * Since Option C (LLM-at-cleanup-only) this gate is the SOLE content-fold authority. STEP 1 now
+ * judges merge-safety first and emits exactly DEGRADED for a cluster of DISTINCT facts (different
+ * attributes/entities) — a cross-attribute guard detectContradiction (same-attribute only) cannot
+ * make. The caller skips the merge on degraded (reason 'distinct'), so distinct facts are never
+ * folded into one (the silent-loss vector closed at the CRON).
  *
  * Never throws (cron hot path). Returns {text, degraded, reason}.
  *   - text   : canonical sentence (string|null)
- *   - degraded: true when no LLM or LLM failed → caller must NOT merge content clusters
- *   - reason  : short diagnostic for logs
+ *   - degraded: true when no LLM, LLM failed, OR the cluster is distinct facts → caller must NOT
+ *     merge content clusters
+ *   - reason  : short diagnostic for logs (too-few / http / empty / bad-shape / distinct / timeout)
  */
 export async function synthesizeConsolidation(cluster, { temperature = 0.4, timeoutMs = 40_000, maxTokens = 256 } = {}) {
   try {
@@ -53,7 +61,7 @@ export async function synthesizeConsolidation(cluster, { temperature = 0.4, time
     const messages = [
       {
         role: 'system',
-        content: 'synthesize (E2 J3 consolidate-synth): condense the N near-duplicate memories below into ONE canonical facet sentence. Preserve every distinct fact; drop pure duplicates; NEVER invent information not present. Output ONLY the single sentence — no quotes, no JSON, no preamble, no numbering.',
+        content: 'consolidate-synth gate (E2 J3): STEP 1 - judge whether the N memories below are NEAR-DUPLICATES (the same single fact restated/rephrased) or DISTINCT facts (different attributes, entities, or topics). If they are DISTINCT facts (NOT near-duplicates), output exactly DEGRADED and nothing else. STEP 2 - only if they are near-duplicates, condense them into ONE canonical facet sentence preserving every distinct fact, dropping pure duplicates, inventing nothing not present. Output ONLY the single sentence - no quotes, no JSON, no preamble, no numbering.',
       },
       { role: 'user', content: texts.map((t, i) => `${i + 1}. ${t}`).join('\n') },
     ];
@@ -68,6 +76,12 @@ export async function synthesizeConsolidation(cluster, { temperature = 0.4, time
     if (!content) return { text: null, degraded: true, reason: 'empty' };
     // strip surrounding quotes/backticks a model may add
     const text = content.replace(/^["'`]+|["'`.,;\s]+$/g, '').trim();
+    // Merge-safety gate (Risk 1 closure): the model judged the cluster DISTINCT facts (different
+    // attributes), not near-duplicates -> do NOT merge. detectContradiction (memory-maintenance:353)
+    // only checks SAME-attribute contradictions; this gate catches the cross-attribute distinct-fact
+    // case it misses, which would otherwise be a silent loss (distinct facts folded into one). The
+    // caller skips the merge on degraded, same as a too-few/http-fail/empty/bad-shape miss.
+    if (text.toUpperCase() === 'DEGRADED') return { text: null, degraded: true, reason: 'distinct' };
     if (!text || text.length < 3 || text.length > 2000) return { text: null, degraded: true, reason: 'bad-shape' };
     return { text, degraded: false };
   } catch (e) {

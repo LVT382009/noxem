@@ -29,6 +29,7 @@ import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, getRLMStatus, shut
 import { searchWeb, formatSearchResults } from './ddg-search.mjs';
 import { checkServoFetchLiveness, crawlDomain } from './web-fetch.mjs';
 import { triggerResearch, getRecentResearch, getResearchStatus } from './research-engine.mjs';
+import { runAugment, getAugmentStatus } from './brain2-agent.mjs';
 import { runMaintenance, startMaintenanceCron, stopMaintenanceCron } from './memory-maintenance.mjs';
 import { onMemoryStored, runPipeline, getPipelineStatus } from './memory-pipeline.mjs';
 import { bundleSearch } from './bundle-search.mjs';
@@ -135,6 +136,11 @@ const ENABLE_EMBEDDING = process.env.ENABLE_EMBEDDING !== 'false';
 const ENABLE_ADVISOR = process.env.ENABLE_ADVISOR !== 'false' && process.env.BRAIN2_ENABLED !== '0';
 const ENABLE_MAINTENANCE = process.env.ENABLE_MAINTENANCE !== 'false';
 const ENABLE_RESEARCH = process.env.ENABLE_RESEARCH !== 'false' && process.env.BRAIN2_ENABLED !== '0';
+// Phase C-4: Brain 2 augment hook. After /memory/sync stores Brain 1's chunked facts, Brain 2 re-reads
+// the FULL session at qwenproxy's 1M context and tool-calls the noxem-internal soft-mutate suite
+// (brain2-tools.mjs) to verify + supplement them. Independent flag so augment survives an advisor-off
+// toggle (the LLM is still reachable); disabled by ENABLE_AUGMENT=false or BRAIN2_ENABLED=0.
+const ENABLE_AUGMENT = process.env.ENABLE_AUGMENT !== 'false' && process.env.BRAIN2_ENABLED !== '0';
 const DECAY_HALF_LIFE_DAYS = parseFloat(process.env.MEMORY_DECAY_HALF_LIFE || '30');
 
 // Weibull decay: w = exp(-(age/eta)^k) — steeper initial drop then long tail
@@ -242,41 +248,51 @@ function processEmbedQueue() {
           try {
             const vec = new Float32Array(embeddings[i]);
             updateMemoryEmbedding(batch[i].id, vec);
-            // E8: cross-archived dedup. The fresh store is now embedded and still 'active', so the
+            // E8: cross-archived dedup. The fresh store is embedded and still 'active', so the
             // inherited J2 contradiction gate treats it as the newest row of any shared
-            // entity/attribute. On a clean near-dup (>=0.92) archived L1/L2 fact it reactivates that
-            // fact and we supersede THIS fresh row (audit kept, vec pruned) instead of leaving a
-            // visible duplicate. Gated by ENABLE_REACTIVATION. Never blocks the vec insert on error.
-            let e8SupersedeId = null;
+            // entity/attribute. Option C: on a clean near-dup (>=0.92) archived L1/L2 fact it
+            // REACTIVATES that fact (flips active, vec re-inserted) but does NOT supersede the fresh
+            // row for content - the caller addVecsToIndex-keeps both (CRON merges later). Trivial
+            // intents still supersede the fresh as-audit (no fact lost). Sync - no Brain 2 call on
+            // the store path. Gated by ENABLE_REACTIVATION. Never blocks the vec insert on error.
+            let e8 = null;
             if (process.env.ENABLE_REACTIVATION !== 'false') {
               try {
-                const e8 = tryCrossArchivedDedup(vec);
-                if (e8) e8SupersedeId = e8.id;
+                e8 = tryCrossArchivedDedup(vec, {
+                  id: batch[i].id, text: batch[i].text,
+                  intentType: batch[i].intentType, entity: batch[i].entity,
+                });
               } catch (e) { LOG_DEBUG && console.error('[E8] store dedup error:', e.message); }
             }
-            if (e8SupersedeId) {
-              updateMemoryStatus(batch[i].id, 'superseded', e8SupersedeId);
+            if (e8) {
+              // Option C: e8 is truthy ONLY for a trivial re-reference - tryCrossArchivedDedup
+              // reactivated the archived anchor and superseded this fresh row as-audit (vec pruned,
+              // audit kept). No content fold ever happens at store time (content returns null ->
+              // keep both for CRON), so there is no LLM synthesis on this path. Skip addVecsToIndex:
+              // the fresh vec was pruned by the supersede-as-audit.
             } else {
-              // E2 A-MEM active agree-evolve: when E8 (archived reactivation) found nothing, fold
-              // THIS fresh row into an existing *active* anchor that AGREES with it (same intent
-              // bucket + entity; trivials no cosine bar, content >= E2_EVOLVE_THRESHOLD + non-
-              // contradicting) instead of leaving a retrieval near-dup. The fresh row becomes a
-              // superseded-as-audit (kept, vec pruned); the surviving anchor grows in place. Runs
-              // in the async embed worker, never on the store hot path. Gated by ENABLE_AEVOLVE
-              // (default on). On any error we fall through to a normal addVecsToIndex (safe store).
-              let e2AnchorId = null;
+              // E2 A-MEM active trivial fold: when E8 found nothing, fold THIS fresh row into an
+              // existing *active* trivial anchor of the same entity (oldest = lineage root, NO
+              // cosine bar) instead of leaving a trivial near-dup. Option C: content intents return
+              // null here (no store-time fold - CRON does it) so only trivials fold. NO LLM. Sync -
+              // runs in the embed worker, never on the store hot path. On any error /
+              // ENABLE_AEVOLVE=false it resolves null and we addVecsToIndex (safe store - fresh row
+              // stays active + searchable).
+              let e2 = null;
               if (process.env.ENABLE_AEVOLVE !== 'false') {
                 try {
-                  const e2 = tryActiveEvolveDedup(vec, {
+                  e2 = tryActiveEvolveDedup(vec, {
                     id: batch[i].id, text: batch[i].text,
                     intentType: batch[i].intentType, entity: batch[i].entity,
                   });
-                  if (e2) e2AnchorId = e2.id;
                 } catch (e) { LOG_DEBUG && console.error('[E2] active-evolve hook error:', e.message); }
               }
-              if (e2AnchorId) {
-                updateMemoryStatus(batch[i].id, 'superseded', e2AnchorId);
-              } else {
+              if (!e2) {
+                // Option C default: no trivial fold -> normal store keeps the fresh row searchable in
+                // the KNN index. This is where ALL content memories land now (no store-time content
+                // fold): the fresh row stays active + searchable, and the CRON merges any near-dup
+                // cluster later under a Brain 2 gate. The reactivated archived anchor (if E8 hit) is
+                // already active + indexed too, so both surface independently.
                 addVecsToIndex([batch[i].id], [embeddings[i]]);
               }
             }
@@ -2109,6 +2125,20 @@ app.post('/memory/sync', async (req, res) => {
   // Respond AFTER enqueue but BEFORE async edge extraction completes
   res.json({ ok: true, stored: ids.length, ids });
 
+  // Phase C-4: Brain 2 augment — fire-and-forget re-read of the FULL session at 1M context, where
+  // Brain 2 tool-calls the noxem-internal soft-mutate suite (memory_edit / _store / _annotate /
+  // _flag_superseded / _set_importance) to verify + supplement Brain 1's chunked facts. Never blocks
+  // the response (runAugment is an un-awaited promise + single-flight inside). Gated by ENABLE_AUGMENT
+  // + a non-empty exchange + at least one stored fact. The recoverability invariant (no prune / delete /
+  // status-flip reachable from any tool) is enforced inside brain2-tools.mjs by construction.
+  if (ENABLE_AUGMENT && ids.length > 0 && (user_message?.trim() || assistant_response?.trim())) {
+    const storedMemories = memories.map((m, i) => ({
+      id: ids[i], text: m.text, type: m.type, entity: m.entity, attribute: m.attribute, importance: m.importance,
+    }));
+    runAugment({ sessionId: session_id || '', userMessage: user_message || '', assistantResponse: assistant_response || '', storedMemories })
+      .catch(e => LOG_DEBUG && console.error('[Brain2] augment dispatch error:', e.message));
+  }
+
  // Trigger background research pipeline (non-blocking, async)
  if (ENABLE_ADVISOR && user_message?.trim()) {
    triggerResearch({
@@ -2159,6 +2189,28 @@ app.post('/memory/advisor/advice', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Phase C-4: Brain 2 augment visibility + manual trigger. The /memory/sync hook auto-fires runAugment
+// (fire-and-forget). GET /memory/augment/status surfaces the last run for ops/observability; POST
+// /memory/augment fires a manual run (no need to re-paste a conversation) — it re-reads the session's
+// stored memories itself, so the body needs only session_id + the optional full exchange text.
+app.get('/memory/augment/status', (req, res) => {
+  res.json({ ok: true, enabled: ENABLE_AUGMENT, status: getAugmentStatus() });
+});
+app.post('/memory/augment', async (req, res) => {
+  if (!ENABLE_AUGMENT) return res.json({ ok: false, reason: 'augment disabled (ENABLE_AUGMENT=false or BRAIN2_ENABLED=0)' });
+  const { session_id, user_message, assistant_response } = req.body || {};
+  try {
+    const sessionId = session_id || '';
+    const rows = (getSessionMemories(sessionId, 50) || []).map(m => ({
+      id: Number(m.id), text: m.text, type: m.type, entity: m.entity, attribute: m.attribute, importance: Number(m.importance) || 0,
+    }));
+    // Fire-and-forget: the loop is long-running (multi-turn tool calls). Return immediately.
+    runAugment({ sessionId, userMessage: user_message || '', assistantResponse: assistant_response || '', storedMemories: rows })
+      .catch(e => LOG_DEBUG && console.error('[Brain2] manual augment error:', e.message));
+    return res.json({ ok: true, fired: true, sessionId, memoryCount: rows.length, status: getAugmentStatus() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/memory/session/end', async (req, res) => {

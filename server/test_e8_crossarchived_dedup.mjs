@@ -3,9 +3,17 @@
 // Master report §3 scenario B line 107: the store path must scan BOTH active AND archived (via the
 // E7 archive index) before inserting; on a clean match it REACTIVATES (E7) the archived row instead
 // of leaving a duplicate. This test drives the REAL E8 engine (tryCrossArchivedDedup, which reuses
-// E7's tryReactivateCandidates with a STRICT 0.92 dedup threshold + maxReactivate=1) and the REAL
-// store-path side-effect the memory-server embed worker applies on a hit (updateMemoryStatus(...,
-// 'superseded', reactivatedId) to keep the dup out of retrieval).
+// E7's tryReactivateCandidates with a STRICT 0.92 dedup threshold + maxReactivate=1).
+//
+// Option C (Phase A): store-time NO LONGER supersedes a content re-reference on a cosine hit alone
+// (the 4000-line paste that killed 134 distinct rows). E8 still REACTIVATES the archived anchor
+// (preserve + recall++ + vec reinsert + un-index) as a side effect of tryReactivateCandidates, but
+// RETURNS null for content so the worker addVecsToIndex-KEEPS the fresh row active + searchable; the
+// Brain-2-gated CRON merges both later (not the store hot path). The only store-time fold Option C
+// keeps is the TRIVIAL re-reference (greetings carry no fact): E8 reactivates the anchor, supersedes-
+// as-audit the fresh trivial, returns {id}. S1/S3b assert content->null + fresh stays active; the new
+// S6 asserts the trivial fold. S2 (stale-skip) / S3a (below-threshold) / S4 (foreign) / S5 (cardinal)
+// return null via no reactivated anchor, unchanged.
 //
 // Why the fresh store stays 'active' at E8 time is load-bearing: E8 hooks after async embed and
 // BEFORE the worker adds the vec / supersedes, so the J2 contradiction gate inherited from E7 sees
@@ -16,7 +24,7 @@
 //
 // Run (WSL Ubuntu-24.04, fresh db): bash run-test-e8.sh
 // Standalone: ENABLE_EMBEDDING=false EMBEDDING_DIM=256 node test_e8_crossarchived_dedup.mjs
-import { storeMemory, db, updateMemoryStatus, archiveStaleMemories, setEmbeddingModelId, isForeignEmbeddingModel } from './memory-store.mjs';
+import { storeMemory, db, archiveStaleMemories, setEmbeddingModelId, isForeignEmbeddingModel } from './memory-store.mjs';
 import { tryCrossArchivedDedup } from './reactivation-engine.mjs';
 import { isVecReady } from './vector-index.mjs';
 
@@ -70,6 +78,7 @@ if (vecReady) {
   const a_greenA = mkArchived(1, 'I prefer green', { dim: 10, entity: 'color_a', attribute: 'preference' });   // S3a strict-low (0.90)
   const a_greenB = mkArchived(1, 'I prefer green', { dim: 11, entity: 'color_b', attribute: 'preference' });    // S3b strict-high (0.95)
   const a_red = mkArchived(1, 'I like red', { dim: 30, entity: 'color_c', attribute: 'preference' });          // S4 foreign-model
+  const a_hi = mkArchived(1, 'hi', { dim: 60, entity: 'trivial_d', attribute: 'greeting' });   // S6 trivial fold
   const l0card = freshActive(0, 'raw episode audit row', { dim: 40 });
   const l3card = freshActive(3, 'persona core row', { dim: 41 });
 
@@ -81,24 +90,28 @@ if (vecReady) {
   check('L0 cardinal NOT archived', getRow.get(l0card)?.status === 'active');
   check('L3 cardinal NOT archived', getRow.get(l3card)?.status === 'active');
 
-  // === SECTION 1: clean re-reference -> reactivate archived + supersede the fresh store ===
-  console.log('\n--- E8 clean dedup: agreeing re-reference reactivates archived, supersede fresh ---');
+  // === SECTION 1: clean CONTENT re-reference -> archived REACTIVATED (side effect), E8 returns NULL
+  // (content deferred to CRON under Option C), fresh STAYS active ===
+  // Option C reversed fix-b: store-time no longer supersedes a content re-reference on a cosine hit
+  // alone (the 4000-line paste that killed 134 distinct rows). E8 still REACTIVATES the archived anchor
+  // via tryReactivateCandidates (preserve + recall++ + vec reinsert + un-index) as a side effect, but
+  // RETURNS null so the worker addVecsToIndex-KEEPS the fresh row active + searchable; the Brain-2-
+  // gated CRON merges both later (not the store hot path). Both rows survive retrieval.
+  console.log('\n--- E8 content re-ref: archived reactivated, e8 null, fresh stays active (Option C) ---');
   const l0_vim = freshActive(0, 'I prefer vim', { dim: 20, entity: 'tool_a', attribute: 'editor' });
   const before = getRow.get(a_vim);
   check('a_vim pre-E8 recall 0', before?.recall_count === 0, `recall=${before?.recall_count}`);
-  const e8_1 = tryCrossArchivedDedup(basisVec(20));
-  check('E8 returned the reactivated archived row', e8_1?.id === a_vim, `got id=${e8_1?.id}`);
+  const e8_1 = tryCrossArchivedDedup(basisVec(20), { id: String(l0_vim), text: 'I prefer vim', intentType: 'preference', entity: 'tool_a' });
+  check('E8 returned null (content deferred to CRON under Option C)', e8_1 === null, `got id=${e8_1?.id}`);
   const after = getRow.get(a_vim);
-  check('a_vim flipped active', after?.status === 'active', `status=${after?.status}`);
+  check('a_vim flipped active (reactivation side effect)', after?.status === 'active', `status=${after?.status}`);
   check('a_vim recall_count incremented to 1', after?.recall_count === 1, `recall=${after?.recall_count}`);
   check('a_vim vec re-inserted', !!inVec.get(BigInt(a_vim)), 'vec not re-inserted');
   check('a_vim removed from archive_index', !inIndex.get(BigInt(a_vim)), 'still indexed');
-  // store-path side-effect the worker applies on a hit: supersede the fresh dup (audit kept, vec pruned)
-  updateMemoryStatus(l0_vim, 'superseded', e8_1.id);
+  // Option C: the fresh content re-reference is NOT superseded at store time (fold deferred to CRON).
   const l0row = getRow.get(l0_vim);
-  check('fresh L0 re-mention superseded (kept as audit, not active)', l0row?.status === 'superseded', `status=${l0row?.status}`);
-  check('fresh L0 superseded_by = reactivated archived id', Number(l0row?.superseded_by) === a_vim, `sb=${l0row?.superseded_by}`);
-  check('fresh L0 vec pruned (out of retrieval, no duplicate)', !inVec.get(BigInt(l0_vim)), 'vec not pruned on supersede');
+  check('fresh L0 re-mention STAYS active (Option C — CRON merges later)', l0row?.status === 'active', `status=${l0row?.status}`);
+  check('fresh L0 vec NOT pruned (stays in retrieval, both rows survive)', !!inVec.get(BigInt(l0_vim)), 'vec wrongly pruned');
 
   // === SECTION 2: contradicting re-reference -> J2 stale skip, archived stays archived ===
   // Fresh store negates the archived emacs preference. It is 'active' at E8 time, so the J2 gate sees
@@ -117,21 +130,22 @@ if (vecReady) {
   check('fresh negate row stays active (stored as the new truth)', getRow.get(l0_emacs)?.status === 'active', `status=${getRow.get(l0_emacs)?.status}`);
 
   // === SECTION 3: strict 0.92 threshold boundary (dedup, not fuzzy 0.85 reference) ===
-  console.log('\n--- E8 strictness: 0.90 below threshold skip, 0.95 above reactivate ---');
+  // Below 0.92: no reactivation -> null. At 0.95: anchor reactivated (side effect) but content returns
+  // null under Option C (fresh stays active; CRON merges), NOT the old supersede-on-cosine.
+  console.log('\n--- E8 strictness: 0.90 below threshold skip, 0.95 above reactivate (content still null under Option C) ---');
   const l0_greenLow = freshActive(0, 'I prefer green', { entity: 'color_a', attribute: 'preference' });
-  const e8_3a = tryCrossArchivedDedup(offAxis(10, 0.90));
+  const e8_3a = tryCrossArchivedDedup(offAxis(10, 0.90), { id: String(l0_greenLow), text: 'I prefer green', intentType: 'preference', entity: 'color_a' });
   check('E8 returned null at cosine 0.90 (below 0.92 dedup)', e8_3a === null, `got id=${e8_3a?.id}`);
   check('a_greenA STAYS archived (strict threshold blocked)', getRow.get(a_greenA)?.status === 'archived', `status=${getRow.get(a_greenA)?.status}`);
   check('fresh 0.90 row stays active (insert proceeds)', getRow.get(l0_greenLow)?.status === 'active', `status=${getRow.get(l0_greenLow)?.status}`);
   // 0.95 on a DIFFERENT archived candidate's own axis — isolated section
   const l0_greenHigh = freshActive(0, 'I prefer green', { entity: 'color_b', attribute: 'preference' });
-  const e8_3b = tryCrossArchivedDedup(offAxis(11, 0.95));
-  check('E8 returned the reactivated row at cosine 0.95 (>=0.92)', e8_3b?.id === a_greenB, `got id=${e8_3b?.id}`);
-  check('a_greenB flipped active', getRow.get(a_greenB)?.status === 'active', `status=${getRow.get(a_greenB)?.status}`);
+  const e8_3b = tryCrossArchivedDedup(offAxis(11, 0.95), { id: String(l0_greenHigh), text: 'I prefer green', intentType: 'preference', entity: 'color_b' });
+  check('E8 returned null at cosine 0.95 (content deferred to CRON; archived still reactivated)', e8_3b === null, `got id=${e8_3b?.id}`);
+  check('a_greenB flipped active (reactivation side effect)', getRow.get(a_greenB)?.status === 'active', `status=${getRow.get(a_greenB)?.status}`);
   const greenBrow = getRow.get(a_greenB);
   check('a_greenB recall_count incremented', greenBrow?.recall_count === 1, `recall=${greenBrow?.recall_count}`);
-  updateMemoryStatus(l0_greenHigh, 'superseded', e8_3b.id);
-  check('fresh 0.95 row superseded (clean dedup)', getRow.get(l0_greenHigh)?.status === 'superseded');
+  check('fresh 0.95 row STAYS active (Option C — not superseded; CRON merges)', getRow.get(l0_greenHigh)?.status === 'active', `status=${getRow.get(l0_greenHigh)?.status}`);
 
   // === SECTION 4: E13 foreign-model archived candidate filtered before dedup ===
   console.log('\n--- E8 E13 link: foreign-model archived row filtered, no reactivation ---');
@@ -152,6 +166,20 @@ if (vecReady) {
   const e8_5b = tryCrossArchivedDedup(basisVec(41)); // L3 cardinal axis
   check('E8 null for L3 cardinal axis (never archived)', e8_5b === null, `got id=${e8_5b?.id}`);
   check('L3 cardinal still active', getRow.get(l3card)?.status === 'active');
+
+  // === SECTION 6: TRIVIAL re-reference -> archived reactivated + fresh superseded-as-audit (Option C KEPT) ===
+  // Option C keeps the store-time TRIVIAL fold (greetings carry no fact -> no silent-loss risk). An
+  // archived greeting anchor + a fresh trivial re-reference (same entity, intentType='greeting') -> E8
+  // reactivates the anchor AND returns {id}; the engine supersedes-as-audit the fresh trivial (vec
+  // pruned). This is the ONE path that still folds + returns non-null at store time.
+  console.log('\n--- E8 trivial: greeting re-ref reactivates archived, supersede fresh (Option-C-kept) ---');
+  const l0_hi = freshActive(0, 'hi', { dim: 60, entity: 'trivial_d', attribute: 'greeting' });
+  const e8_6 = tryCrossArchivedDedup(basisVec(60), { id: String(l0_hi), text: 'hi', intentType: 'greeting', entity: 'trivial_d' });
+  check('E8 returned the reactivated archived trivial anchor', Number(e8_6?.id) === a_hi, `got id=${e8_6?.id} want ${a_hi}`);
+  check('a_hi flipped active', getRow.get(a_hi)?.status === 'active', `status=${getRow.get(a_hi)?.status}`);
+  check('a_hi removed from archive_index', !inIndex.get(BigInt(a_hi)), 'still indexed');
+  check('fresh trivial row superseded-as-audit (Option-C trivial fold)', getRow.get(l0_hi)?.status === 'superseded', `status=${getRow.get(l0_hi)?.status}`);
+  check('fresh trivial vec pruned (fold)', !inVec.get(BigInt(l0_hi)), 'vec not pruned on trivial fold');
 }
 
 console.log('\n========================================');

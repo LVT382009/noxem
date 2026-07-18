@@ -839,6 +839,118 @@ export function appendEvolvedContext(anchorId, extras, { canonical = null, impor
   return true;
 }
 
+// ── Phase C: Brain 2 soft-mutate primitives (Option C recoverability invariant) ──
+// These back the noxem-INTERNAL Brain 2 tool suite (brain2-tools.mjs). They give Brain 2 control over
+// stored memory WITHOUT ever removing a row from retrieval on its judgment: NO pruneVectors, NO
+// hard-delete, status STAYS 'active' (the E1 prune-on-status-flip path in updateMemoryStatus is
+// forbidden here). The 4000-line paste that superseded 134 distinct facts was precisely "an LLM gate
+// removing a row it judged duplicate" — these primitives make that removal impossible by
+// construction. Edit / rank / flag / annotate mutate only text, importance, or metadata; the row +
+// its vec + its audit lineage stay retrievable. If Brain 2 wrong-judges a distinct fact, the worst it
+// can do is footnote + downrank — never deletion. A later Brain-2-gated reconcile CRON can revisit.
+//
+// Why separate from updateMemoryStatus (pruning path) + deleteMemory: those serve the CRON
+// store/dedup flow with the recoverability-via-archive_index guarantee; Brain 2 tool calls run on the
+// augment hot path where a softer touch suits a reasoning model that may err. updateMemoryStatus's
+// status flip is intentionally NOT exposed to Brain 2 — no tool maps to it.
+
+// C-edit-1: replace a memory's text (Brain 2 verified a Brain 1 chunked extraction was incomplete or
+// wrong). Stale KNN vec0 is dropped (old embedding no longer matches new text — keeping it would return
+// wrong hits); the embedding BLOB stands until the caller re-embeds new text (brain2-tools memory_edit
+// handler does embed() + updateMemoryEmbedding + addVecsToIndex). Status stays 'active' (NOT touched).
+// metadata.brain2_edit audits {reason, prev_text_preview, at} so the edit is traceable + reversible.
+// Returns {ok, id} or {ok:false, reason}.
+export function editMemoryText(id, newText, { reason = null, contextPrefix = null } = {}) {
+  if (!id || !newText || typeof newText !== 'string') return { ok: false, reason: 'bad-args' };
+  const row = getById.get(id);
+  if (!row) return { ok: false, reason: 'not-found' };
+  const prevText = typeof row.text === 'string' ? row.text : '';
+  let meta = {};
+  try { meta = row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : {}; } catch { meta = {}; }
+  const editAudit = Array.isArray(meta.brain2_edit) ? meta.brain2_edit : [];
+  editAudit.push({ reason: reason || 'brain2_edit', at: new Date().toISOString(), prev_text_preview: prevText.slice(0, 200) });
+  meta.brain2_edit = editAudit;
+  meta.updated_at = new Date().toISOString();
+  try {
+    db.prepare('UPDATE memories SET text = ?, metadata = ?, updated_at = datetime(\'now\') WHERE id = ?')
+      .run(String(newText), JSON.stringify(meta), id);
+    // Drop the now-stale KNN vec (old embedding -> wrong semantics); BLOB survives until re-embed.
+    // Status is NOT touched (stays 'active'); row stays in FTS + by-id retrieval while vec is rebuilt.
+    try {
+      const tb = getVectorBackend();
+      if (tb === 'turbovec' || tb === 'hybrid') removeFromTurboVec(id).catch(() => {});
+      deleteVec(db, id);
+    } catch (e) { LOG_DEBUG && console.error('[Brain2] editMemoryText vec-clear error:', e.message); }
+    if (contextPrefix != null) {
+      try { db.prepare('UPDATE memories SET context_prefix = ? WHERE id = ?').run(String(contextPrefix), id); } catch {}
+    }
+    return { ok: true, id: Number(id) };
+  } catch (e) {
+    LOG_DEBUG && console.error('[Brain2] editMemoryText error:', e.message);
+    return { ok: false, reason: 'db-error', message: e.message };
+  }
+}
+
+// C-rank-2: adjust a memory's importance (Brain 2 deems the fact more/less central). Pure ranking — no
+// status, no vec, no edit. metadata.brain2_importance audits {from, to, reason, at}. Recoverability
+// preserved trivially (row never leaves retrieval; importance is a rerank weight, clamped [0,1]).
+export function setImportance(id, importance, { reason = null } = {}) {
+  if (!id || !Number.isFinite(Number(importance))) return { ok: false, reason: 'bad-args' };
+  const row = getById.get(id);
+  if (!row) return { ok: false, reason: 'not-found' };
+  const imp = Math.min(1.0, Math.max(0, Number(importance)));
+  let meta = {};
+  try { meta = row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : {}; } catch { meta = {}; }
+  const audit = Array.isArray(meta.brain2_importance) ? meta.brain2_importance : [];
+  audit.push({ from: Number(row.importance) || 0, to: imp, reason: reason || 'brain2_importance', at: new Date().toISOString() });
+  meta.brain2_importance = audit;
+  try {
+    db.prepare('UPDATE memories SET importance = ?, metadata = ? WHERE id = ?').run(imp, JSON.stringify(meta), id);
+    return { ok: true, id: Number(id), importance: imp };
+  } catch (e) { LOG_DEBUG && console.error('[Brain2] setImportance error:', e.message); return { ok: false, reason: 'db-error', message: e.message }; }
+}
+
+// C-flag-3: SOFT "this fact is stale/incorrect; superseded by <byId>" annotation. Does NOT call
+// updateMemoryStatus (which prunes vec + drops the row from retrieval) — that was the 134-row vector.
+// Instead: downrank importance (floor 0) + record metadata.brain2_flagged_superseded_by / _reason /
+// _at so the dispute is visible. Row STAYS 'active' + searchable; a later Brain-2-gated reconcile CRON
+// can revisit. This is the recoverability guardrail against Brain 2 wrong-judging a distinct fact: it
+// can footnote the row, it cannot delete it.
+export function flagSupersededBy(id, byId, { reason = null } = {}) {
+  if (!id || !byId || Number(id) === Number(byId)) return { ok: false, reason: 'bad-args' };
+  const row = getById.get(id);
+  if (!row) return { ok: false, reason: 'not-found' };
+  let meta = {};
+  try { meta = row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : {}; } catch { meta = {}; }
+  meta.brain2_flagged_superseded_by = Number(byId);
+  meta.brain2_flagged_reason = reason || 'brain2_flag_superseded';
+  meta.brain2_flagged_at = new Date().toISOString();
+  const imp = Math.max(0, (Number(row.importance) || 0) - 0.2); // downrank, never below 0, never remove
+  meta.updated_at = new Date().toISOString();
+  try {
+    db.prepare('UPDATE memories SET importance = ?, metadata = ? WHERE id = ?').run(imp, JSON.stringify(meta), id);
+    return { ok: true, id: Number(id), flagged_by: Number(byId), importance: imp };
+  } catch (e) { LOG_DEBUG && console.error('[Brain2] flagSupersededBy error:', e.message); return { ok: false, reason: 'db-error', message: e.message }; }
+}
+
+// C-note-4: append a free-form note/tag (nuance, uncertainty, provenance) to a memory. metadata.notes[]
+// only — no text / vec / status / importance change. Recoverability preserved trivially (pure metadata
+// append, like appendEvolvedContext but in a separate notes namespace, no canonical synth intent).
+export function appendAnnotation(id, note, { tag = 'brain2' } = {}) {
+  if (!id || !note || typeof note !== 'string') return { ok: false, reason: 'bad-args' };
+  const row = getById.get(id);
+  if (!row) return { ok: false, reason: 'not-found' };
+  let meta = {};
+  try { meta = row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : {}; } catch { meta = {}; }
+  if (!Array.isArray(meta.notes)) meta.notes = [];
+  meta.notes.push({ note, tag, at: new Date().toISOString() });
+  meta.updated_at = new Date().toISOString();
+  try {
+    db.prepare('UPDATE memories SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), id);
+    return { ok: true, id: Number(id) };
+  } catch (e) { LOG_DEBUG && console.error('[Brain2] appendAnnotation error:', e.message); return { ok: false, reason: 'db-error', message: e.message }; }
+}
+
 export function updateMemoryType(id, type) {
   updateType.run({ id, type });
 }

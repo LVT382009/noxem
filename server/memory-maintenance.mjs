@@ -431,8 +431,15 @@ async function consolidateMemories(memories) {
         const db2 = b.created_at ? new Date(b.created_at.replace(' ', 'T')).getTime() : 0;
         return (da || 0) - (db2 || 0);
       });
-        const texts = cluster.map(m => m.text);
-        const summaryText = texts.join(' | ');
+        // J3 synth REQUIRED — silent-loss gate: on degraded, NO merge (keep all originals active). Mirrors
+        // consolidateSemantically (memory-maintenance.mjs:568-570). Old Path-3 folded same-entity clusters
+        // with texts.join(' | ') and no Brain 2 judgment; a distinct-attribute cluster (budget vs recipe,
+        // same entity) was folded on cosine alone and the distinct facts were lost from active retrieval
+        // with no error. On degraded skip the cluster entirely — no consolidation row, no supersede — so
+        // both originals stay active. On clean synth, synth.text replaces the ' | '-joined string.
+        const synth = await synthesizeConsolidation(cluster, { maxTokens: 256 }).catch(() => ({ degraded: true, text: null, reason: 'throw' }));
+        if (synth.degraded) { LOG_DEBUG && console.log(`[Maintenance] Consolidate cluster about "${entity}" synth degraded (${synth.reason}) — no merge (silent-loss gate)`); continue; }
+        const summaryText = synth.text;
 
         const typePriority = ['profile', 'preference', 'setup', 'project', 'goal', 'pattern', 'entity', 'learning', 'issue', 'fact', 'event', 'request'];
         const typePriorityMap = new Map(typePriority.map((t, i) => [t, i]));

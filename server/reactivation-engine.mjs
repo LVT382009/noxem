@@ -87,8 +87,8 @@ export function tryReactivateCandidates(queryEmbedding, {
 // gate treat the fresh store as the newest row of any shared entity/attribute: an incoming
 // re-reference that AGREES with the archived candidate reactivates it (preserve + recall++), while
 // one that CONTRADICTS (detectContradiction != null) is caught as stale -> skip, the new memory is
-// stored as normal (it is the new truth). This is the E7 gate reused; E8 only widens the caller
-// (the store worker superseding the fresh dup after a hit) and TIGHTENS the threshold.
+// stored as normal (it is the new truth). This is the E7 gate reused; E8 reuses it to RESURRECT a
+// referenced archived fact, then (trivial only) supersedes the fresh as-audit - else keeps both for CRON.
 //
 // Threshold: strict 0.92 (cross-archived DEDUP), not E7's fuzzy 0.85 (query reference). Archived
 // candidates are L1/L2 facets; the fresh store is usually L0 — cross-layer cosine is naturally a
@@ -97,19 +97,51 @@ export function tryReactivateCandidates(queryEmbedding, {
 // dedup wants the single best match, not a fuzzy handful. E13 foreign-model archived rows are
 // filtered before ranking (inherited). Enabled alongside E7 by ENABLE_REACTIVATION (default on).
 //
-// Returns the single reactivated row (already flipped active + recalled + vec re-inserted by the
-// E7 machinery) for the caller to supersede the fresh store against, or null if nothing eligible.
+// Option C (ADR-001 fix-b REVERSED): store-time does NO content fold. A content re-reference
+// reactivates the archived anchor (E7 machinery: flipped active + recalled + vec re-inserted,
+// J2-gated) but does NOT supersede the fresh row - the caller addVecsToIndex-keeps BOTH active +
+// searchable, and the CRON (consolidateMemories / consolidateSemantically, Brain-2-gated) merges
+// them later. This removes the silent-loss vector: distinct-attribute facts were killed on a pure
+// cosine gate (the 4000-line paste that superseded 134 rows). Trivial intents stay exempt - folded
+// by reactivate + supersede-as-audit alone, NO LLM, NO cosine bar (greetings carry no fact). Sync
+// - no Brain 2 call on the store hot path. Returns {id} for a trivial fold (fresh superseded as
+// audit) or null for content (caller addVecsToIndex keeps fresh) / no eligible archived match.
 // Never throws to the store hot path.
-export function tryCrossArchivedDedup(queryEmbedding, {
+export function tryCrossArchivedDedup(queryEmbedding, freshCtx, {
   threshold = parseFloat(process.env.E8_DEDUP_THRESHOLD || '0.92'),
   maxReactivate = 1,
   coneLayers = [1, 2],
 } = {}) {
   if (!queryEmbedding) return null;
   if (process.env.ENABLE_REACTIVATION === 'false') return null;
+  const freshId = freshCtx?.id != null ? String(freshCtx.id) : null;
+  const freshText = (freshCtx?.text ?? '').toString();
+  const freshTrivial = isTrivialIntent(freshCtx?.intentType);
   try {
     const rows = tryReactivateCandidates(queryEmbedding, { threshold, maxReactivate, coneLayers });
-    return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    const anchor = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+    if (!anchor) return null;
+    const anchorIdStr = String(anchor.id);
+    // No fresh-store ctx to fold against -> skip the fold; the caller addVecsToIndex-keeps the fresh
+    // row searchable. (The embed worker always passes freshCtx; this guards stub callers.)
+    if (!freshId || !freshText) return null;
+    // Trivial exemption (ADR-001): trivials carry no fact -> fold by reactivate+supersede alone,
+    // NO LLM call. Anchor stays active with its original text; fresh row superseded as audit.
+    if (freshTrivial) {
+      updateMemoryStatus(freshId, 'superseded', anchorIdStr);
+      if (LOG_DEBUG) console.log(`[E8] cross-archived dedup: folded mem #${freshId} -> anchor #${anchorIdStr} (trivial)`);
+      return { id: anchorIdStr };
+    }
+    // Content path: Option C - ALL content fold deferred to the CRON (consolidateMemories /
+    // consolidateSemantically, Brain-2-gated). At store time we do NOT fold on a cosine hit alone:
+    // that was the silent-loss vector (distinct-attribute facts superseded-as-audit on a green
+    // cosine gate - the 4000-line paste that killed 134 rows). The archived anchor was already
+    // reactivated by tryReactivateCandidates above (flipped active, recall++, vec re-inserted,
+    // J2 contradiction-gated) so it surfaces as referenced-not-dropped; we keep the fresh row
+    // active too (caller addVecsToIndex) and let CRON merge them under a Brain 2 gate. No
+    // synthesizeConsolidation call at store time, no supersede - nothing leaves retrieval.
+    if (LOG_DEBUG) console.log(`[E8] cross-archived dedup: content re-reference deferred to CRON (#${freshId} <-> #${anchorIdStr})`);
+    return null;
   } catch (e) {
     if (LOG_DEBUG) console.error('[E8] cross-archived dedup error:', e.message);
     return null;
@@ -138,6 +170,18 @@ export function tryCrossArchivedDedup(queryEmbedding, {
 // precedence; only when no archived dup exists do we check active agree-evolution. Never throws to
 // the store worker. Returns { id } of the anchor folded into (caller SUPERSEDEs-as-audit the fresh
 // row by it — shape mirrors tryCrossArchivedDedup) or null = normal store (addVecsToIndex).
+//
+// Option C (ADR-001 fix-b REVERSED): store-time does NO content fold. A content-agree cluster is
+// left in place - the caller addVecsToIndex-keeps the fresh row active + searchable and the CRON
+// (consolidateMemories / consolidateSemantically, Brain-2-gated) merges it later. This removes the
+// silent-loss vector: a fresh distinct-attribute fact was superseded-as-audit on a green cosine +
+// detectContradiction==null gate (the 4000-line paste that killed 134 rows). Trivial-intent
+// clusters stay exempt (cosine-bar-free oldest-anchor fold, NO LLM, NO content gate) - greetings
+// carry no fact, so folding carries no silent-loss risk. E13 foreign-model filter, cone_layer in
+// {0,1,2} (L3 never a candidate), and ENABLE_AEVOLVE are preserved. threshold/detectContradiction
+// are no longer exercised (content short-circuits before them). Sync - no Brain 2 call on the store
+// hot path. Returns {id} for a trivial fold or null (caller addVecsToIndex keeps fresh) for content
+// / no eligible active trivial. Never throws to the store worker.
 export function tryActiveEvolveDedup(queryEmbedding, freshCtx, {
   threshold = parseFloat(process.env.E2_EVOLVE_THRESHOLD || '0.85'),
 } = {}) {
@@ -151,37 +195,35 @@ export function tryActiveEvolveDedup(queryEmbedding, freshCtx, {
   const freshText = (freshCtx?.text ?? '').toString();
   const _ts = x => { try { return new Date(String(x?.created_at || '').replace(' ', 'T')).getTime() || 0; } catch { return 0; } };
   try {
+    // Content intents: Option C - ALL content fold deferred to the CRON (consolidateMemories /
+    // consolidateSemantically, Brain-2-gated). At store time we do NOT fold an active-agree
+    // cluster on cosine + detectContradiction alone: that was the silent-loss vector (a fresh
+    // distinct-attribute fact superseded-as-audit on a green cosine gate - the 4000-line paste
+    // that killed 134 rows). Store the fresh row as normal (caller addVecsToIndex keeps it
+    // active + searchable); CRON merges the agree-cluster under a Brain 2 gate. Short-circuit
+    // before the candidate scan / rank / contradiction check - all moot once we never fold content.
+    if (!freshTrivial) return null;
     const all = getActiveWithEmbedding();
     const cand = all.filter(m =>
       (m.cone_layer === 0 || m.cone_layer === 1 || m.cone_layer === 2)
       && !isForeignEmbeddingModel(m)
       && String(m.id) !== freshId
-      && (freshTrivial ? isTrivialIntent(m.intent_type) : m.intent_type === freshIntent)
+      && isTrivialIntent(m.intent_type)
       && ((m.entity ?? '') === freshEntity)
     );
     if (cand.length === 0) return null;
-    let anchor = null;
-    if (freshTrivial) {
-      anchor = cand.slice().sort((a, b) =>
-        (_ts(a) - _ts(b)) || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0)
-      )[0];
-    } else {
-      const ranked = searchByEmbedding(queryEmbedding, cand, 10, 'mixed') || [];
-      const hit = ranked.find(h => (h.score ?? 0) >= threshold);
-      if (!hit) return null;
-      const full = cand.find(c => String(c.id) === String(hit.id));
-      if (!full) return null;
-      if (freshText && detectContradiction(full.text, freshText) != null) return null; // contradict -> store fresh (new truth)
-      anchor = full;
-    }
+    // Trivial fold (ADR-001 exempt): trivials carry no fact -> oldest anchor = lineage root, NO
+    // cosine bar, NO LLM call. Raw-append evolved_context; importance NOT bumped (still 0). Fresh
+    // row superseded-as-audit (vec pruned, audit row kept) - no silent-loss risk on a greeting.
+    const anchor = cand.slice().sort((a, b) =>
+      (_ts(a) - _ts(b)) || (String(a.id) < String(b.id) ? -1 : String(a.id) > String(b.id) ? 1 : 0)
+    )[0];
     const ok = appendEvolvedContext(anchor.id, [{ id: freshId, text: freshText }], {
-      importanceBump: freshTrivial ? 0 : 0.05,
+      importanceBump: 0,
     });
     if (!ok) return null;
-    // Caller already declined to addVecsToIndex for the fresh id; mark the fresh row superseded-as-audit
-    // against the anchor (E1 prunes its vec, audit row kept) so it is out of retrieval but not deleted.
     updateMemoryStatus(freshId, 'superseded', anchor.id);
-    if (LOG_DEBUG) console.log(`[E2] active-evolve: folded mem #${freshId} -> anchor #${anchor.id} (trivial=${freshTrivial})`);
+    if (LOG_DEBUG) console.log(`[E2] active-evolve: folded mem #${freshId} -> anchor #${anchor.id} (trivial)`);
     return { id: anchor.id };
   } catch (e) {
     if (LOG_DEBUG) console.error('[E2] active-evolve error:', e.message);
