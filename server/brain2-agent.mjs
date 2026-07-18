@@ -119,11 +119,16 @@ function parseToolCalls(content) {
  * @returns {Promise<{ok, text, turns, toolCalls}>} ok=true with a final text answer, or
  *   {ok:false, reason} (llm-failed / max-turns / bad-args). Never throws to the caller.
  */
-export async function runBrain2Agent({ systemPrompt, messages, maxTurns = B2_MAX_TURNS, maxTokens = B2_MAX_TOKENS, temperature = 0.2 } = {}) {
+export async function runBrain2Agent({ systemPrompt, messages, maxTurns = B2_MAX_TURNS, maxTokens = B2_MAX_TOKENS, temperature = 0.2, dispatch } = {}) {
   if (!systemPrompt || !Array.isArray(messages) || messages.length === 0) {
     return { ok: false, reason: 'bad-args', turns: 0, toolCalls: 0 };
   }
   const convo = [{ role: 'system', content: systemPrompt }, ...messages];
+  // Optional dispatch override: runAugment injects the augment session_id into memory_store
+  // calls (Brain 2's store tool doesn't expose session_id, so brand-new augment-stored facts
+  // would otherwise carry session_id="" and vanish from per-session scans). Falls back to the
+  // shared dispatchTool when no override is passed (standalone agent use).
+  const d = dispatch || dispatchTool;
   let totalToolCalls = 0;
   for (let turn = 0; turn < maxTurns; turn++) {
     let content;
@@ -146,7 +151,7 @@ export async function runBrain2Agent({ systemPrompt, messages, maxTurns = B2_MAX
         convo.push({ role: 'user', content: `Tool Response (malformed): ${JSON.stringify({ ok: false, error: 'malformed antml tool_call block: ' + c.error, raw_preview: String(c.raw).slice(0, 160) })}` });
         continue;
       }
-      const result = await dispatchTool(c.name, c.arguments);
+      const result = await d(c.name, c.arguments);
       let body;
       try { body = JSON.stringify(result); } catch { body = JSON.stringify({ ok: false, error: 'result-not-serializable' }); }
       convo.push({ role: 'user', content: `Tool Response (${c.name || 'unknown'}): ${body}` });
@@ -193,7 +198,14 @@ export async function runAugment({ sessionId, userMessage, assistantResponse, st
         ).join('\n')
       : '(Brain 1 stored no facts from this exchange.)';
     const userMsg = `SESSION: ${sessionId || '(none)'}\n\n=== FULL CONVERSATION (you see this at full context; Brain 1 had to chunk it) ===\nUSER:\n${userMessage || ''}\n\nASSISTANT:\n${assistantResponse || ''}\n\n=== FACTS BRAIN 1 ALREADY STORED FROM THIS EXCHANGE ===\n${storedBlock}\n\nYour task: verify each stored fact against the full conversation, EDIT incomplete/wrong ones in place, STORE any fact Brain 1 missed, ANNOTATE nuance, and (softly) FLAG any a newer fact supersedes. Respect the recoverability rule — never delete. Begin by listing the session's stored memories, then act. End with a one-line summary.`;
-    const result = await runBrain2Agent({ systemPrompt, messages: [{ role: 'user', content: userMsg }] });
+    // Inject the augment session_id into memory_store calls so Brain-2-stored facts attach to the
+    // session (global search + per-session scans both surface them). Other tools keep their args;
+    // memory_edit/annotate operate on existing rows whose session_id is already set.
+    const dispatch = (name, args) => {
+      const a = (name === 'memory_store' && args && !args.session_id) ? { ...args, session_id: sessionId || '' } : args;
+      return dispatchTool(name, a);
+    };
+    const result = await runBrain2Agent({ systemPrompt, messages: [{ role: 'user', content: userMsg }], dispatch });
     _augmentState.lastFinishedAt = new Date().toISOString();
     _augmentState.lastTurns = result.turns || 0;
     _augmentState.lastToolCalls = result.toolCalls || 0;
