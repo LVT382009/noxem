@@ -383,17 +383,34 @@ const CONSOLIDATION_MIN_CLUSTER = 3;
 const CONSOLIDATION_SIM_THRESHOLD = 0.75;
 const CONSOLIDATION_MAX_IMPORTANCE = 0.5;
 
-async function consolidateMemories(memories) {
-  if (!isEmbeddingReady() || memories.length < CONSOLIDATION_MIN_CLUSTER) return 0;
+export async function consolidateMemories(memories) {
+  // isEmbeddingReady() is gated UPSTREAM by runMaintenance (which skips the whole maintenance pass while
+  // Brain-1 is loading). The inner check was redundant on the prod path AND blocked direct unit tests
+  // (ENABLE_EMBEDDING=false flipped it false → body never exercised → guards coincidentally passed on
+  // the early 0-return). Keeping only the size check lets tests drive the body with pre-seeded embeddings;
+  // production behavior is unchanged because runMaintenance never reaches here before Brain-1 is ready.
+  if (memories.length < CONSOLIDATION_MIN_CLUSTER) return 0;
 
   const byEntity = new Map();
+  let personaSkipped = 0;
   for (const m of memories) {
     if (m.importance >= CONSOLIDATION_MAX_IMPORTANCE) continue;
     if (!m.entity || !m.embedding) continue;
+    // Cone-layer guard (HARDCODED — NOT a Brain 2 tool): an L3 persona core is terminal/foundational
+    // (E6 never auto-archived) and must NEVER be folded by CRON consolidation, in either direction. A
+    // raw L0 episode folding into a persona bakes transient episode noise into the long-lived identity
+    // record; a persona absorbing an episode rewrites the canonical persona and supersedes the
+    // originals off active retrieval (silent-shape identity leak). consolidateSemantically (E2) already
+    // restricts to cone_layer {1,2}; mirror that discipline here for the persona sentinel ONLY — do NOT
+    // blanket-filter cone_layer=0 (schema DEFAULT 0; non-pipeline memories legitimately land at 0 and
+    // still deserve consolidation). cone_layer=3 is an explicit-only value set by the L3 pipeline, so
+    // the filter is precise, with no false positives on default-0 rows.
+    if (Number(m.cone_layer) === 3) { personaSkipped++; continue; }
     const key = m.entity;
     if (!byEntity.has(key)) byEntity.set(key, []);
     byEntity.get(key).push(m);
   }
+  if (personaSkipped > 0) LOG_DEBUG && console.log(`[Maintenance] consolidateMemories: skipped ${personaSkipped} L3 persona row(s) (cone_layer guard)`);
 
   let consolidatedCount = 0;
 

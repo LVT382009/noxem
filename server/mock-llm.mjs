@@ -1,8 +1,12 @@
 /**
  * Mock LLM Server — returns canned responses for pipeline/learn/advisor tests.
- * Listens on port 8000, mimics OpenAI chat completions API.
+ * Listens on port 8000 (override via MOCK_LLM_PORT) — mimics OpenAI chat completions API.
  */
 import express from 'express';
+
+// MOCK_LLM_PORT lets deterministic tests pick a free port that does NOT clash with a live qwenproxy
+// adapter already on 8000. Default 8000 preserves existing run-test-*.sh wrappers untouched.
+const PORT = parseInt(process.env.MOCK_LLM_PORT || '8000', 10);
 
 const app = express();
 app.use(express.json());
@@ -50,11 +54,14 @@ app.post('/v1/chat/completions', (req, res) => {
       hints: ['Check the auth middleware', 'Review the session token handling'],
     });
   } else if (sysMsg.includes('consolidate-synth')) {
-    // E2 J3 consolidate-synth: return ONE canonical sentence OR empty. An empty completion makes
-    // synthesizeConsolidation fall to { degraded: true, reason: 'empty' }, which the test uses to
-    // prove the SILENT-LOSS gate (content cluster left untouched on degraded). The "FORCE_DEGRADE"
-    // marker anywhere in the user content (the numbered texts) requests the empty reply.
-    if (lastMsg.includes('FORCE_DEGRADE')) content = '';
+    // J3 consolidate-synth gate. Three deterministic routes (marker anywhere in the joined texts):
+    //   FORCE_DISTINCT -> reply exactly "DEGRADED" -> advisor STEP-1 returns { degraded:true, reason:
+    //     'distinct' } (cross-attribute distinct-fact cluster; caller SKIPS the merge — the silent-loss
+    //     gate closed in Phase B). Exercises the distinct path FORCE_DEGRADE never reached.
+    //   FORCE_DEGRADE  -> empty reply             -> { degraded:true, reason:'empty' } (original path).
+    //   (neither)     -> canonical sentence      -> { degraded:false, text } (clean J3 merge).
+    if (lastMsg.includes('FORCE_DISTINCT')) content = 'DEGRADED';
+    else if (lastMsg.includes('FORCE_DEGRADE')) content = '';
     else content = 'User prefers neural networks for deep learning tasks.';
   } else {
     content = 'Mock LLM response for: ' + lastMsg.substring(0, 50);
@@ -76,6 +83,6 @@ app.get('/v1/models', (req, res) => {
   res.json({ data: [{ id: 'mock-model', object: 'model' }] });
 });
 
-app.listen(8000, () => {
-  console.log('[MockLLM] Running on http://127.0.0.1:8000');
+app.listen(PORT, () => {
+  console.log(`[MockLLM] Running on http://127.0.0.1:${PORT}`);
 });
