@@ -1,10 +1,11 @@
-import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories, enforceActiveSetBound, linkContradictionPair, hardDeleteMemory, editMemoryText, getMemory } from './memory-store.mjs';
+import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories, enforceActiveSetBound, linkContradictionPair, linkSimilarPair, flagSupersededBy, pairRecentlyResolvedSameContent, hardDeleteMemory, editMemoryText, getMemory } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity, isTrivialIntent } from './embedding-engine.mjs';
 import { appendEvolvedContext } from './memory-store.mjs';
 import { isVecReady } from './vector-index.mjs';
 import { synthesizeConsolidation } from './advisor-engine.mjs';
 import { deltaProcessor, graphPruner, ambientInjector, ingestPipeline, strategyDistiller, capsuleBuilder, lessonVault, compactionCoordinator, multiSourceRouter } from './module-registry.mjs';
 import { llmFetch } from './llm-fetch.mjs';
+import { enqueueReconcileJob, drainB2Queue } from './brain2-agent.mjs'; // E23: cron flag→ping-Brain2 seam (Brain1 owns NO verdict)
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 
 
@@ -12,6 +13,97 @@ let maintenanceInterval = null;
 let initialTimeout = null;
 let maintenanceRunning = false;
 const RUN_INTERVAL_MS = parseInt(process.env.MAINTENANCE_INTERVAL || '300000'); // 5 min default
+
+// E23 dual-mode dedup decision logic, factored out of runMaintenance so it can be exercised by unit
+// tests WITHOUT the `isEmbeddingReady()` gate that wraps runMaintenance (the gate is a startup guard
+// for the whole cron pass, orthogonal to the dedup decision; test_e19 calls runContradictionPass for the
+// same reason). runMaintenance calls THIS function — production behavior is byte-identical, including
+// the `results.duplicates` accumulation (passed by reference). brain2On mirrors the cron's read of
+// BRAIN2_ENABLED per call (rollback lives-flips on the next tick), re-derivable by tests via the option.
+export function runDedupPass(memories, { brain2On = process.env.BRAIN2_ENABLED !== '0', results = { duplicates: 0 } } = {}) {
+  let dupes = [];
+  try {
+    const withEmbedding = memories.filter(m => m.embedding);
+    const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
+    const SAME_SESSION_NEARIDENT = parseFloat(process.env.E23_SAME_SESSION_NEARIDENT || '0.99'); // §2 #1 deterministic-reversible band
+    // §2 #2 dated-fact bi-temporal bypass: cross-session pair whose texts carry DIFFERENT date literals
+    const _markValidUntilStmt = db.prepare("UPDATE memories SET valid_until = ?, updated_at = datetime('now') WHERE id = ?");
+
+    if (withEmbedding.length < 500 || !vectorKnnSearch) {
+      // Brute-force for small sets
+      dupes = findDuplicates(memories);
+    } else {
+      // KNN-based dedup: for each memory, find top-K nearest via index
+      // Only compute cosine for candidates near the threshold
+      const seen = new Set();
+      for (const m of withEmbedding) {
+        if (seen.has(m.id)) continue;
+        const neighbors = vectorKnnSearch(m.embedding, 20);
+        if (!neighbors) { dupes.push(...findDuplicates(withEmbedding.filter(m => !seen.has(m.id)))); break; } // BUG-8 fix: use filtered list, preserve progress
+        for (const n of neighbors) {
+          if (n.id === m.id || seen.has(n.id)) continue;
+          if (n.score > DUP_THRESHOLD) {
+            const [older, newer] = m.id < n.id ? [m, n] : [n, m];
+            dupes.push({ a: older, b: newer, similarity: n.score });
+            seen.add(older.id);
+          }
+        }
+      }
+    }
+
+    const alreadySuperseded = new Set(); // S-#28
+    for (const d of dupes) {
+      const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
+      if (alreadySuperseded.has(older.id)) continue;
+      if (alreadySuperseded.has(newer.id)) continue;
+      const sim = Number(d.similarity);
+      if (brain2On) {
+        // E23 watermark + cool-down: a pair verdicted within E23_COOLDOWN_MS with UNCHANGED content_hash was
+        // already judged by Brain2 — re-flagging it every tick busy-loops the cron. Skip now (re-eligible
+        // past the cooldown OR if either row's text mutated). Applies before the same-session/dated bands
+        // below so the short-circuit catches `distinct` verdicts too, not just supersede/merge.
+        if (pairRecentlyResolvedSameContent(older.id, newer.id, older.text, newer.text)) {
+          alreadySuperseded.add(older.id); alreadySuperseded.add(newer.id);
+          results.duplicates++;
+          if (LOG_DEBUG) console.log(`[Maintenance] E23 watermark: skip re-flag #${older.id}+#${newer.id} (recently verdicted, same content)`);
+          continue;
+        }
+        const sameSession = !!older.session_id && String(older.session_id) === String(newer.session_id);
+        // §2 #2 dated-fact bypass (the canonical 22/7-vs-23/7 killer): a cross-session pair whose texts
+        // carry DIFFERENT date literals is NOT a merge candidate — Brain2 would rationally collapse the
+        // two distinct temporal windows into one false "duplicate". Both rows survive as bi-temporal: the
+        // older is annotated valid_until = the newer's event date; the newer stays open. NO queue/merge/supersede.
+        if (!sameSession) {
+          const dv = detectDatedDivergence(older.text, newer.text);
+          if (dv) {
+            const cutoff = String(newer.event_date || newer.created_at || '').replace(' ', 'T') || null;
+            if (cutoff) { try { _markValidUntilStmt.run(cutoff, older.id); } catch (e) { LOG_DEBUG && console.error('[E23] dated-bypass valid_until set failed:', e.message); } }
+            alreadySuperseded.add(older.id); alreadySuperseded.add(newer.id);
+            results.duplicates++;
+            if (LOG_DEBUG) console.log(`[Maintenance] E23 dated-bypass: kept both #${older.id}+#${newer.id} (cross-session distinct dates — older valid_until=${cutoff})`);
+            continue;
+          }
+        }
+        // §2 #1 same-session sim≥0.99 ⇒ deterministic reversible supersede (flagSupersededBy — downrank,
+        // kept active+searchable, is_newer_version_of chain, NO delete; recoverable unlike the legacy path).
+        if (sameSession && sim >= SAME_SESSION_NEARIDENT) {
+          flagSupersededBy(older.id, newer.id, { reason: `e23-dedup-nearidentical-samesession (${sim.toFixed(4)})` });
+        } else {
+          // 0.92≤sim<0.99 band AND every ≥0.92 cross-session pair (incl. ≥0.99 non-dated) ⇒ flag to Brain2.
+          linkSimilarPair(older.id, newer.id, sim);
+        }
+      } else {
+        updateMemoryStatus(older.id, 'superseded', newer.id);
+      }
+      alreadySuperseded.add(older.id); alreadySuperseded.add(newer.id); // BUG-14 fix: prevent newer from being superseded in another pair
+      results.duplicates++;
+    }
+    if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] ${brain2On ? 'Flagged' : 'Marked'} ${dupes.length} ${brain2On ? 'near-duplicates for Brain2 verdict' : 'duplicates as superseded'}`);
+  } catch (err) {
+    LOG_DEBUG && console.error('[Maintenance] Dedup error:', err.message);
+  }
+  return { dupes, results };
+}
 
 export async function runMaintenance() {
   if (maintenanceRunning) {
@@ -29,6 +121,11 @@ export async function runMaintenance() {
     LOG_DEBUG && console.log('[Maintenance] Starting memory maintenance...');
     const start = Date.now();
     const results = { duplicates: 0, contradictions: 0, invalid: 0, categorized: 0 };
+    // E23 flag-then-ping-brain2: dual-mode on a single cron. Brain2-on ⇒ the cron DETECTS + FLAGS only —
+    // similar pairs are linked (linkSimilarPair) / reversible-flagged (flagSupersededBy) / bi-temporally
+    // bypassed (dated cross-session pairs), NEVER superseded/hard-deleted; Brain2 owns every verdict.
+    // Brain2-off ⇒ legacy deterministic cron verbatim (BY MANDATE — backward compat; rollback flips 1 env).
+    const BRAIN2_ON = process.env.BRAIN2_ENABLED !== '0';
 
     const memories = getActiveWithEmbedding();
 
@@ -38,49 +135,9 @@ export async function runMaintenance() {
       return results;
     }
 
-    // 1. Deduplication
-    // For small sets (<500): brute-force O(n²) pairwise cosine
-    // For large sets (>=500): KNN-based — find nearest neighbors per memory via index
-    try {
-      const withEmbedding = memories.filter(m => m.embedding);
-      const DUP_THRESHOLD = parseFloat(process.env.DUP_THRESHOLD || '0.92');
-      let dupes = [];
-
-      if (withEmbedding.length < 500 || !vectorKnnSearch) {
-        // Brute-force for small sets
-        dupes = findDuplicates(memories);
-      } else {
-        // KNN-based dedup: for each memory, find top-K nearest via index
-        // Only compute cosine for candidates near the threshold
-        const seen = new Set();
-        for (const m of withEmbedding) {
-          if (seen.has(m.id)) continue;
-          const neighbors = vectorKnnSearch(m.embedding, 20);
-          if (!neighbors) { dupes.push(...findDuplicates(withEmbedding.filter(m => !seen.has(m.id)))); break; } // BUG-8 fix: use filtered list, preserve progress
-          for (const n of neighbors) {
-            if (n.id === m.id || seen.has(n.id)) continue;
-            if (n.score > DUP_THRESHOLD) {
-              const [older, newer] = m.id < n.id ? [m, n] : [n, m];
-              dupes.push({ a: older, b: newer, similarity: n.score });
-              seen.add(older.id);
-            }
-          }
-        }
-      }
-
-      const alreadySuperseded = new Set(); // S-#28
-    for (const d of dupes) {
-        const [older, newer] = d.a.id < d.b.id ? [d.a, d.b] : [d.b, d.a];
-        if (alreadySuperseded.has(older.id)) continue;
-        if (alreadySuperseded.has(newer.id)) continue;
-        updateMemoryStatus(older.id, 'superseded', newer.id);
-        alreadySuperseded.add(older.id); alreadySuperseded.add(newer.id); // BUG-14 fix: prevent newer from being superseded in another pair
-        results.duplicates++;
-      }
-      if (dupes.length > 0) LOG_DEBUG && console.log(`[Maintenance] Marked ${dupes.length} duplicates as superseded`);
-    } catch (err) {
-      LOG_DEBUG && console.error('[Maintenance] Dedup error:', err.message);
-    }
+    // 1. Deduplication (E23 dual-mode decision logic lives in runDedupPass — factored out so tests
+    // can exercise it without the embedding-ready gate that wraps runMaintenance).
+    runDedupPass(memories, { brain2On: BRAIN2_ON, results });
 
     // 2. Contradiction detection (entity-attribute matching - directional)
     // Handles: preference changes, negation flips, temporal updates, state changes. Pure + exportable
@@ -302,6 +359,7 @@ const elapsed = Date.now() - start;
 export function enrichStaleIntoRelated(memories) {
   const ENRICH_MIN_COSINE = parseFloat(process.env.ENRICH_MIN_COSINE || '0.80');
   const STALE_DAYS = parseInt(process.env.ENRICH_STALE_DAYS || process.env.ARCHIVE_STALE_DAYS || '90');
+  const BRAIN2_ON = process.env.BRAIN2_ENABLED !== '0'; // E23 dual-mode (read per-call; rollback live-flips on the next tick)
   if (!Array.isArray(memories)) return { enriched: 0, skipped: 0 };
   const stale = memories
     .filter(m => Number(m.cone_layer) === 1 || Number(m.cone_layer) === 2)
@@ -330,15 +388,24 @@ export function enrichStaleIntoRelated(memories) {
     const relText = String(related.text || '').trim();
     const joiner = /\.$/.test(relText) ? '' : '.';
     const enrichedText = `${relText}${joiner} (also recorded earlier: "${staleText}")`;
-    const editRes = editMemoryText(related.id, enrichedText, { reason: `CRON enrich-merge absorbed #${s.id} into #${related.id}` });
-    if (!editRes?.ok) { if (LOG_DEBUG) console.error('[Maint enrich] editMemoryText failed on #' + related.id + ':', editRes && editRes.reason); skipped++; continue; }
-    const delRes = hardDeleteMemory(s.id);
-    if (!delRes?.ok) {
-      if (LOG_DEBUG) console.error('[Maint enrich] hardDeleteMemory failed on stale #' + s.id + ' (related #' + related.id + ' already enriched — manual reconcile needed):', delRes && delRes.reason);
-      skipped++; continue;
+    if (BRAIN2_ON) {
+      // E23 flag-then-ping-brain2: cron detects + flags only. Concat (editMemoryText) AND hard-delete are
+      // BOTH loss — flag the (stale, related) pair as 'similar' so Brain2 verdicts; both halves stay active
+      // + searchable until then. Brain1-only keeps the legacy concat+hard-delete verbatim.
+      linkSimilarPair(s.id, related.id, Number(relatedScore));
+      enriched++;
+      if (LOG_DEBUG) console.log(`[Maint enrich] E23 flagged stale #${s.id} ~ related #${related.id} (cosine ${relatedScore.toFixed(2)}) for Brain2 verdict`);
+    } else {
+      const editRes = editMemoryText(related.id, enrichedText, { reason: `CRON enrich-merge absorbed #${s.id} into #${related.id}` });
+      if (!editRes?.ok) { if (LOG_DEBUG) console.error('[Maint enrich] editMemoryText failed on #' + related.id + ':', editRes && editRes.reason); skipped++; continue; }
+      const delRes = hardDeleteMemory(s.id);
+      if (!delRes?.ok) {
+        if (LOG_DEBUG) console.error('[Maint enrich] hardDeleteMemory failed on stale #' + s.id + ' (related #' + related.id + ' already enriched — manual reconcile needed):', delRes && delRes.reason);
+        skipped++; continue;
+      }
+      enriched++;
+      if (LOG_DEBUG) console.log(`[Maint enrich] Absorbed stale #${s.id} into related #${related.id} (cosine ${relatedScore.toFixed(2)})`);
     }
-    enriched++;
-    if (LOG_DEBUG) console.log(`[Maint enrich] Absorbed stale #${s.id} into related #${related.id} (cosine ${relatedScore.toFixed(2)})`);
   }
   return { enriched, skipped };
 }
@@ -353,6 +420,10 @@ export function enrichStaleIntoRelated(memories) {
 // durable, but ONLY after the window — never the instant it's raised. No embeddings required (pure status
 // + superseded_by bookkeeping), so this is fully deterministic + exported for direct testing.
 export function hardenReviewPendingMerges(maxAgeHours = 24) {
+  // E23 flag-then-ping-brain2: in Brain2-on mode the cron NEVER finalizes a merge verdict — a flagged
+  // review-pending merge is routed to Brain2's reconcile queue (memory_resolve_similar) instead of being
+  // hard-deleted after HARDEN_REVIEW_HOURS. Brain1-only keeps the legacy window-based finalization.
+  if (process.env.BRAIN2_ENABLED !== '0') return { hardened: 0, skipped: 0, reason: 'brain2-on-deferred' };
   const rows = db.prepare("SELECT id, metadata, created_at FROM memories WHERE status = 'active' AND metadata LIKE '%\"brain2_review_pending\":true%'").all();
   if (!rows.length) return { hardened: 0, skipped: 0 };
   const cutoffMs = Math.max(0, Number(maxAgeHours) || 0) * 3600 * 1000;
@@ -483,6 +554,25 @@ export function runContradictionPass(memories) {
 
 // Detect contradiction between two memories about the same entity+attribute
 // Returns the contradiction type or null if no contradiction
+// E23 (§2 #2) dated-fact literal detector — the canonical data-loss defense. A near-duplicate pair whose
+// texts carry DIFFERENT date literals (e.g. "budget tracked since 22/7/2026" vs "...since 23/7/2026",
+// same entity + attribute, different session) is NOT a "duplicate" — it's two distinct temporal windows.
+// Brain2 would rationally collapse them into one; the cron must instead leave BOTH active and annotate
+// bi-temporal valid_until boundaries so neither fact is lost. Tokenizer covers ISO + slash + month-name
+// date formats. Best-effort (regex, no LLM) — a NON-match simply falls through to the normal §2 #1 bands.
+const _E23_DATE_PAT = /\b(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{2,4}|\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?),?\s*\d{2,4})\b/gi;
+export function detectDatedDivergence(textA, textB) {
+  const mA = String(textA || '').match(_E23_DATE_PAT);
+  const mB = String(textB || '').match(_E23_DATE_PAT);
+  if (!mA || !mB || !mA.length || !mB.length) return null;
+  const norm = s => s.toLowerCase().replace(/[.,]/g, '').trim();
+  const setA = new Set(mA.map(norm));
+  const setB = new Set(mB.map(norm));
+  for (const a of setA) if (!setB.has(a)) return { aToken: a, bToken: null };
+  for (const b of setB) if (!setA.has(b)) return { aToken: null, bToken: b };
+  return null;
+}
+
 export function detectContradiction(olderText, newerText) {
   const olderVal = extractValue(olderText);
   const newerVal = extractValue(newerText);
@@ -523,6 +613,7 @@ export async function consolidateMemories(memories) {
   // the early 0-return). Keeping only the size check lets tests drive the body with pre-seeded embeddings;
   // production behavior is unchanged because runMaintenance never reaches here before Brain-1 is ready.
   if (memories.length < CONSOLIDATION_MIN_CLUSTER) return 0;
+  const BRAIN2_ON = process.env.BRAIN2_ENABLED !== '0'; // E23 dual-mode: defer originals' supersede to Brain2 when on
 
   const byEntity = new Map();
   let personaSkipped = 0;
@@ -625,6 +716,10 @@ export async function consolidateMemories(memories) {
             origin_session_id: cluster[0].session_id || '',
             consolidated_from: clusterIds,
             stored_at: new Date().toISOString(),
+            // E23: in Brain2-on mode flag the summary review-pending so it surfaces in getAuditReport
+            // (review_pending_merges) for a Brain2 verdict; the originals' supersede is DEFERRED (below),
+            // NOT auto-applied by Brain1.
+            ...(BRAIN2_ON ? { brain2_review_pending: true, brain2_review_kind: 'merge_pending' } : {}),
           },
           importance: newImportance,
           context_prefix: `Consolidated ${cluster.length} memories about ${entity}:`,
@@ -635,6 +730,7 @@ export async function consolidateMemories(memories) {
         updateSourceIds.run(JSON.stringify(clusterIds), newId);
 
         for (const m of cluster) {
+          if (BRAIN2_ON) continue; // E23: defer the supersede to a SECOND Brain2 pass — originals stay active until the verdict
           updateMemoryStatus(m.id, 'superseded', newId); // E1: prunes vectors (both backends) same-tx
           setValidUntil.run(new Date().toISOString(), m.id);
         }
@@ -672,6 +768,7 @@ const E2_CONTENT_IMPORTANCE_BUMP = 0.05;
 export async function consolidateSemantically(memories) {
   if (process.env.ENABLE_CONSOLIDATION_SEMANTIC === 'false') return 0;
   if (!Array.isArray(memories) || memories.length < 2) return 0;
+  const BRAIN2_ON = process.env.BRAIN2_ENABLED !== '0'; // E23 dual-mode: defer supersede to Brain2 when on
   // operate on L1/L2 facets that have embeddings + an intent tag (L0 raw + L3 persona excluded)
   const rows = memories.filter(m =>
     (m.cone_layer === 1 || m.cone_layer === 2)
@@ -703,7 +800,7 @@ export async function consolidateSemantically(memories) {
       // trivials are interchangeable and carry no fact -> merge even if the LLM is disabled/degraded
       const ok = appendEvolvedContext(anchor.id, extras, { importanceBump: 0 });
       if (ok) {
-        for (const m of group.slice(1)) updateMemoryStatus(m.id, 'superseded', anchor.id);
+        if (!BRAIN2_ON) { for (const m of group.slice(1)) updateMemoryStatus(m.id, 'superseded', anchor.id); } // E23: defer supersede to Brain2 (originals stay active)
         merged++;
         LOG_DEBUG && console.log(`[E2] consolidate trivial: folded ${extras.length} facets -> anchor #${anchor.id}`);
       }
@@ -730,7 +827,7 @@ export async function consolidateSemantically(memories) {
       const extras = cluster.slice(1).map(m => ({ id: m.id, text: m.text }));
       const ok = appendEvolvedContext(anchor.id, extras, { canonical: synth.text, importanceBump: E2_CONTENT_IMPORTANCE_BUMP });
       if (ok) {
-        for (const m of cluster.slice(1)) updateMemoryStatus(m.id, 'superseded', anchor.id);
+        if (!BRAIN2_ON) { for (const m of cluster.slice(1)) updateMemoryStatus(m.id, 'superseded', anchor.id); } // E23: defer supersede to Brain2 (originals stay active until verdict)
         merged++;
         LOG_DEBUG && console.log(`[E2] consolidate content: folded ${extras.length} facets -> anchor #${anchor.id} (canonical synthed)`);
       }
@@ -780,18 +877,38 @@ export function runActiveSetBoundStep(results = {}) {
 	return results;
 }
 
+// E23 flag-then-ping-Brain2 tick wrap. runMaintenance DETECTS + FLAGS similar pairs (Brain1 owns NO
+// verdict — "the cron only flag then ping brain 2 to resolve, brain 1 cannot think"); this wrapper pings
+// Brain2 to drain its verdict queue right after. BRAIN2_ENABLED=0 (legacy) skips the ping entirely —
+// runMaintenance already did the deterministic supersede in that branch. Always kick the drain (cheap:
+// 'busy' = a drain is mid-flight, 'idle' = no work) so a requeued job from a prior failed tick is not
+// stranded; only ENQUEUE a fresh reconcile job when THIS tick flagged new pairs (depth-bound, else reject +
+// the pairs stay in open_similar_pairs for the next re-scan).
+async function runMaintenanceTick() {
+  let res;
+  try { res = await runMaintenance(); }
+  catch (err) { LOG_DEBUG && console.error('[Maintenance] Cron run error:', err.message); return; }
+  if (process.env.BRAIN2_ENABLED !== '0') {
+    try {
+      const flaggedCt = (res && typeof res.duplicates === 'number') ? res.duplicates : 0;
+      if (flaggedCt > 0) {
+        const enq = enqueueReconcileJob();
+        if (enq && enq.ok && LOG_DEBUG) console.log(`[Maintenance] Brain2 ping: reconcile enqueued #${enq.id} (${enq.queued}/${enq.depth}) — ${flaggedCt} pair(s) flagged this tick`);
+        else if (enq && LOG_DEBUG) console.log(`[Maintenance] Brain2 ping: queue full (${enq.queued || 0}/${enq.depth}) — flagged pairs stay in open_similar_pairs, re-scan next tick`);
+      }
+      drainB2Queue().catch(e => LOG_DEBUG && console.error('[Maintenance] Brain2 drain kick failed:', e.message));
+    } catch (e) { LOG_DEBUG && console.error('[Maintenance] Brain2 ping error:', e.message); }
+  }
+}
+
 export function startMaintenanceCron(intervalMs = RUN_INTERVAL_MS) {
   if (maintenanceInterval) clearInterval(maintenanceInterval);
   if (initialTimeout) clearTimeout(initialTimeout);
 
   // Run first maintenance after 30s (give server time to load)
-  initialTimeout = setTimeout(() => {
-    runMaintenance().catch(err => LOG_DEBUG && console.error('[Maintenance] Initial run error:', err.message));
-  }, 30000);
+  initialTimeout = setTimeout(() => { runMaintenanceTick(); }, 30000);
 
-  maintenanceInterval = setInterval(() => {
-    runMaintenance().catch(err => LOG_DEBUG && console.error('[Maintenance] Cron run error:', err.message));
-  }, intervalMs);
+  maintenanceInterval = setInterval(() => { runMaintenanceTick(); }, intervalMs);
 
   LOG_DEBUG && console.log(`[Maintenance] Cron started: every ${Math.round(intervalMs / 1000)}s`);
 }

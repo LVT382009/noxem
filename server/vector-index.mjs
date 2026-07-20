@@ -40,7 +40,7 @@ export async function initVectorIndex(db) {
         // FIX-4 (BEAM bench): keep 'contradicted' vectors too — both halves of a
         // contradiction need to stay KNN-reachable. Purge only truly-dead (archived/
         // superseded/invalid) rows. Mirrors getActiveVectorIds' active+contradicted set.
-        const dead = db.prepare(`DELETE FROM memory_vecs WHERE rowid NOT IN (SELECT id FROM memories WHERE status IN ('active', 'contradicted'))`).run();
+        const dead = db.prepare(`DELETE FROM memory_vecs WHERE rowid NOT IN (SELECT id FROM memories WHERE status IN ('active', 'contradicted', 'similar_pending'))`).run(); // E23 flag-then-ping-brain2: keep similar-pair halves vector-reachable (flag-not-suppress)
         try { db.prepare('INSERT OR REPLACE INTO core_memory (key, value) VALUES (?, ?)').run('e1_purge_v1', String(dead.changes)); } catch { /* best-effort flag */ }
         if (LOG_DEBUG) console.log(`[VectorIndex] E1 backlog purge: removed ${dead.changes} stale vectors (one-shot, gated by core_memory.e1_purge_v1)`);
       }
@@ -175,7 +175,7 @@ export function getActiveVectorIds(db) {
     // FIX-4 (BEAM bench): include 'contradicted' in the KNN allowlist so both halves of a
     // contradiction stay reachably ranked by the vector arm. Previously active-only, which
     // dropped contradicted halves post-KNN (ghost) after their vectors burned topK budget.
-    return db.prepare("SELECT id FROM memories WHERE status IN ('active', 'contradicted')").all().map(r => Number(r.id));
+    return db.prepare("SELECT id FROM memories WHERE status IN ('active', 'contradicted', 'similar_pending')").all().map(r => Number(r.id)); // E23: allowlist similar-pair halves in the TurboVec/hybrid native SIMD filter
   } catch (err) { LOG_DEBUG && console.error('[VectorIndex] getActiveVectorIds error:', err.message); return null; }
 }
 

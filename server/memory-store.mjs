@@ -84,7 +84,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 // Fresh installs get CREATE TABLE IF NOT EXISTS (above) + all migrations.
 // Existing DBs run only the migrations they haven't seen yet.
 
-export const DB_VERSION = 10;
+export const DB_VERSION = 12;
 
 function addColumn(table, column, def) {
 	if (!/^[a-zA-Z_]\w*$/.test(column)) throw new Error(`Invalid column name: ${column}`);
@@ -376,6 +376,48 @@ const migrations = {
 		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_event_date ON memories(event_date)`);
 		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_contradiction_pair ON memories(contradiction_pair_id)`);
 	},
+	11: () => {
+		// E23 (flag-then-ping-brain2): similar-pair detection column, mirrors contradiction_pair_id.
+		// similar_pair_id — linked row id of the SIMILAR (not contradictory) pair member; rows are set
+		// status='similar_pending' so BOTH survive until a Brain2 verdict {distinct|supersede|merge}.
+		// Never a silent winner — this is the column that ends the 22/7-vs-23/7 silent-wipe class.
+		// Nullable; existing rows keep NULL. Idempotent via addColumn() (ADD COLUMN ignores duplicates).
+		addColumn('memories', 'similar_pair_id', "INTEGER REFERENCES memories(id)");
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_similar_pair ON memories(similar_pair_id)`);
+	},
+	12: () => {
+		// E23 (flag-then-ping-brain2): durable SQLite-backed verdict QUEUE + per-pair watermark/cool-down —
+		// the cron NEVER drops a Brain2 request (the DROP at brain2-agent.mjs:203 is gone, replaced by this
+		// table; counter-C FM2: in-process JS would lose ALL queued verdicts on a segfault, SQLite is atomic).
+		// pending_verdicts     — augment + reconcile-verdict jobs; sequential-drained (concurrency=1, NIM).
+		// pending_verdicts_dlq — permanent LLM-error jobs ONLY (Temporal `ApplicationFailure` non-retryable).
+		// processed_pairs      — watermark so the dedup→resolve→re-link loop short-circuits: a pair verdicted
+		//   'distinct' within E23_COOLDOWN_MS with an UNCHANGED content_hash is NOT re-flagged next tick.
+		// NEW tables (no existing column changes); idempotent CREATE IF NOT EXISTS — harmless on fresh DBs.
+		db.exec(`CREATE TABLE IF NOT EXISTS pending_verdicts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			kind TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			content_hash TEXT,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'queued',
+			enqueued_at TEXT NOT NULL DEFAULT (datetime('now')),
+			started_at TEXT
+		)`);
+		db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_verdicts_status ON pending_verdicts(status)`);
+		db.exec(`CREATE TABLE IF NOT EXISTS pending_verdicts_dlq (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			kind TEXT NOT NULL, payload_json TEXT NOT NULL, content_hash TEXT,
+			attempts INTEGER NOT NULL, reason TEXT NOT NULL,
+			enqueued_at TEXT, dlq_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`);
+		db.exec(`CREATE TABLE IF NOT EXISTS processed_pairs (
+			relation TEXT NOT NULL, min_id INTEGER NOT NULL, max_id INTEGER NOT NULL,
+			content_hash TEXT,
+			resolved_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`);
+		db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_processed_pairs_unique ON processed_pairs(min_id, max_id, relation)`);
+	},
 };// E16: pending-migration runner. HARD-STOP on first failure — a partial-schema DB must NEVER
 // silently serve requests. Previously the loop logged + `break`ed, leaving the server running on
 // a half-migrated schema (silent corruption risk): a v9 that throws would still serve reads on
@@ -475,8 +517,8 @@ try { db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')"); } ca
 initVectorIndex(db).catch(e => { LOG_DEBUG && console.error('[Schema] sqlite-vec init failed:', e.message); });
 
 const insert = db.prepare(
-	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer, embedding_model_id, intent_type, source_quote, source_turn_id, event_date, order_index, contradiction_pair_id)
-	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer, @embedding_model_id, @intent_type, @source_quote, @source_turn_id, @event_date, @order_index, @contradiction_pair_id)`
+	`INSERT INTO memories (session_id, type, text, embedding, metadata, importance, context_prefix, entity, attribute, valid_from, summary, cone_layer, embedding_model_id, intent_type, source_quote, source_turn_id, event_date, order_index, contradiction_pair_id, similar_pair_id)
+	 VALUES (@session_id, @type, @text, @embedding, @metadata, @importance, @context_prefix, @entity, @attribute, @valid_from, @summary, @cone_layer, @embedding_model_id, @intent_type, @source_quote, @source_turn_id, @event_date, @order_index, @contradiction_pair_id, @similar_pair_id)`
 );
 
 const insertTx = db.transaction((items) => {
@@ -533,23 +575,23 @@ const getByEntityAttr = db.prepare(`SELECT * FROM memories WHERE entity = ? AND 
 const getTopActiveScored = db.prepare(`SELECT id, session_id, type, text, importance, recall_count, created_at FROM memories WHERE status = 'active' ORDER BY importance DESC, recall_count DESC, created_at DESC LIMIT ?`);
 
 const searchFts = db.prepare(`
-SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count, m.summary, m.event_date, m.order_index, m.source_quote, m.contradiction_pair_id, f.rank AS score
+SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m.importance, m.recall_count, m.summary, m.event_date, m.order_index, m.source_quote, m.contradiction_pair_id, m.similar_pair_id, f.rank AS score
   FROM memories_fts f
   JOIN memories m ON m.id = f.rowid
-  WHERE memories_fts MATCH @query AND m.status IN ('active', 'contradicted')
+  WHERE memories_fts MATCH @query AND m.status IN ('active', 'contradicted', 'similar_pending')
   ORDER BY rank
   LIMIT @limit
 `);
 
 const searchRecent = db.prepare(`
 SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count, summary FROM memories
-  WHERE status IN ('active', 'contradicted') AND text LIKE @query ESCAPE '\'
+  WHERE status IN ('active', 'contradicted', 'similar_pending') AND text LIKE @query ESCAPE '\'
   ORDER BY created_at DESC
   LIMIT @limit
 `);
 
 const getActiveWithEmbeddings = db.prepare(
-  `SELECT id, session_id, type, text, embedding, metadata, context_prefix, entity, attribute, valid_until, cone_layer, intent_type, embedding_model_id, created_at, importance, recall_count, status FROM memories WHERE status IN ('active', 'contradicted') AND embedding IS NOT NULL`
+  `SELECT id, session_id, type, text, embedding, metadata, context_prefix, entity, attribute, valid_until, cone_layer, intent_type, embedding_model_id, created_at, importance, recall_count, status FROM memories WHERE status IN ('active', 'contradicted', 'similar_pending') AND embedding IS NOT NULL`
 );
 
 const getAllWithEmbeddings = db.prepare(
@@ -738,7 +780,132 @@ export function resolveContradictionPair(idA, idB, { winnerId = null, reason = n
   return { ok: true, resolved: [Number(idA), Number(idB)], upheld: winnerId != null ? Number(winnerId) : null, flagged };
 }
 
-export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null, cone_layer = 0, intent_type = null, source_quote = null, source_turn_id = null, event_date = null, order_index = null, contradiction_pair_id = null }) {
+// E23 (flag-then-ping-brain2, 2026-07-20): the SIMILAR-pair counterparts of the D1 contradiction
+// primitives above. Cron runMaintenance now FLAGS near-duplicate pairs (two-tier band: sim>=0.99 +
+// same-session → deterministic reversible flagSupersededBy; 0.92<=sim<0.99 → flag) instead of silently
+// superseding/hard-deleting one (the 22/7-vs-23/7 killer). Both rows → status='similar_pending' +
+// bidirectional similar_pair_id, surfaced by getAuditReport (open_similar_pairs) for a Brain2 verdict
+// (memory_resolve_similar). The resolver NEVER hard-deletes: distinct → unlink (both active), supersede
+// → reversible flagSupersededBy (loser downranked, kept active+searchable, is_newer_version_of chain),
+// merge → append a Brain2-authored summary row + flagSupersededBy both originals by the summary
+// (lossless). Mirrors linkContradictionPair/resolveContradictionPair shape exactly; reuses
+// memory_edges(relation='similar') for the audit-visible link, so NO new edge table (inherits
+// _delEdgesHD + cascadeInvalidateEdges on hard-delete).
+const _linkSimStmt = db.prepare(`UPDATE memories SET similar_pair_id = ?, status = 'similar_pending', updated_at = datetime('now') WHERE id = ?`);
+export function linkSimilarPair(idA, idB, simPct) {
+  if (!idA || !idB || Number(idA) === Number(idB)) return { ok: false, reason: 'bad-args' };
+  _linkSimStmt.run(idB, idA);
+  _linkSimStmt.run(idA, idB);
+  let edgeId = null;
+  try {
+    // storeEdge returns the new edge id (Number) and rejects self-ref. metadata.sim + kind carry the
+    // detection cosine + the verdict slot Brain2 fills at resolve time. Best-effort: never fails the flag.
+    edgeId = storeEdge({ from_id: idA, to_id: idB, relation: 'similar', strength: Math.max(0, Math.min(1, Number(simPct) || 0)), source_session_id: '', metadata: { sim: Number.isFinite(Number(simPct)) ? Number(simPct) : null, kind: 'similar' } });
+  } catch (e) { LOG_DEBUG && console.error('[E23] linkSimilarPair edge failed:', e.message); }
+  return { ok: true, edgeId };
+}
+
+// D1 resolve counterpart: clears similar_pair_id on BOTH members + restores status='active' so they
+// leave the open-pairs audit queue, then applies the verdict. distinct → nothing else. supersede →
+// flagSupersededBy(loser,winner) (reversible, lossless, status stays active). merge → append a
+// Brain2-authored summary row then flagSupersededBy(both originals, summary). NO hardDeleteMemory, NO
+// direct DELETE (verify-2 residual #2: a merge verdict that persists by concat+delete would relocate
+// decider #2's original bug). Idempotent + cardinal-safe: clearing a flag never destroys L0/L3.
+const _clearSimPairStmt = db.prepare("UPDATE memories SET similar_pair_id = NULL, status = 'active', updated_at = datetime('now') WHERE id = ?");
+const _stampSimVerdictEdge = db.prepare(`UPDATE memory_edges SET metadata = ?, valid_until = datetime('now') WHERE relation = 'similar' AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))`);
+export function resolveSimilarPair(idA, idB, { mode = 'distinct', winnerId = null, mergeText = null, reason = null, session_id = '' } = {}) {
+  if (!idA || !idB || Number(idA) === Number(idB)) return { ok: false, reason: 'bad-args' };
+  if (!getById.get(Number(idA)) || !getById.get(Number(idB))) return { ok: false, reason: 'not-found' };
+  if (!['distinct', 'supersede', 'merge'].includes(mode)) return { ok: false, reason: 'bad-mode' };
+
+  let summaryId = null;
+  if (mode === 'merge') {
+    if (!mergeText || !String(mergeText).trim()) return { ok: false, reason: 'merge-text-required' };
+    const rowA = getById.get(Number(idA)) || {};
+    const rowB = getById.get(Number(idB)) || {};
+    const imp = Math.max(Number(rowA.importance) || 0.5, Number(rowB.importance) || 0.5);
+    // storeMemory returns the new row id (Number). embedding=null → stored without a vector (a later
+    // pipeline pass re-embeds); provenance rides metadata.merged_from + brain2_review_kind so getAuditReport
+    // (review_pending_merges) + lineage can trace the originals.
+    const newId = storeMemory({
+      text: String(mergeText).trim(),
+      type: rowA.type || rowB.type || 'merged',
+      importance: imp,
+      embedding: null,
+      session_id: session_id || '',
+      metadata: { merged_from: [Number(idA), Number(idB)], brain2_merge: true, brain2_review_kind: 'merge_pending' },
+    });
+    summaryId = Number(newId);
+    if (!Number.isFinite(summaryId) || summaryId <= 0) return { ok: false, reason: 'merge-store-failed' };
+    winnerId = summaryId;
+  }
+
+  // Clear the open-pair flag on both members in ONE transaction so they leave the audit queue atomically.
+  const tx = db.transaction(() => { _clearSimPairStmt.run(Number(idA)); _clearSimPairStmt.run(Number(idB)); });
+  tx();
+  // Stamp the verdict on the 'similar' edge + set valid_until so reapResolvedEdges can reap it after cool-down.
+  try {
+    _stampSimVerdictEdge.run(JSON.stringify({ verdict: mode, reason: reason || null, winner_id: winnerId != null ? Number(winnerId) : null, resolved_at: new Date().toISOString() }), Number(idA), Number(idB), Number(idB), Number(idA));
+  } catch (e) { LOG_DEBUG && console.error('[E23] resolveSimilarPair verdict-edge stamp failed:', e.message); }
+
+  // E23 watermark + cool-down: stamp processed_pairs(relation='similar',min,max,content_hash of both
+  // PRE-verdict texts) so the next dedup pass short-circuits re-flagging an already-judged-identical pair.
+  try {
+    const _wa = getById.get(Number(idA)), _wb = getById.get(Number(idB));
+    markPairResolvedWatermark(Number(idA), Number(idB), hashDiscrimPairText(_wa && _wa.text, _wb && _wb.text));
+  } catch (e) { LOG_DEBUG && console.error('[E23] resolveSimilarPair watermark stamp failed:', e.message); }
+
+  // Post-resolve side effects (supersede/merge only): reversible soft-flag, never hard-delete.
+  const flagged = [];
+  if (winnerId != null && mode !== 'distinct') {
+    const win = Number(winnerId);
+    let losers;
+    if (mode === 'merge') {
+      losers = [Number(idA), Number(idB)]; // both originals soft-flagged by the new summary
+    } else {
+      const loser = (win === Number(idA)) ? Number(idB) : (win === Number(idB)) ? Number(idA) : null;
+      if (loser == null) return { ok: false, reason: 'winner-not-in-pair' };
+      losers = [loser];
+    }
+    for (const lId of losers) {
+      try { flagged.push(flagSupersededBy(lId, win, { reason })); } catch (e) { LOG_DEBUG && console.error('[E23] resolveSimilarPair flagSupersededBy failed:', e.message); }
+    }
+  }
+  return { ok: true, mode, resolved: [Number(idA), Number(idB)], upheld: (mode === 'distinct') ? null : Number(winnerId), summary_id: summaryId, flagged };
+}
+
+// E23 watermark + cool-down (counter-B mitigation #3) — the dedup→resolve→re-link loop breaker. After any
+// verdict, markPairResolvedWatermark stamps processed_pairs(relation='similar',min,max,content_hash). On the
+// next dedup pass pairRecentlyResolvedSameContent is consulted: if the pair was resolved within E23_COOLDOWN_MS
+// (default 5 min) AND the content_hash is UNCHANGED, the cron skips re-flagging it — Brain2 already judged
+// `distinct`, so re-submitting the same pair every tick is busywork, not progress. Past the cooldown, OR if
+// either row's text mutated (new content hash), the pair is re-eligible. Order-independent hash (min|max).
+const _e23Hash = s => { let h = 5381; for (let i = 0; i < String(s || '').length; i++) h = (((h << 5) + h) ^ String(s || '').charCodeAt(i)) >>> 0; return ('00000000' + h.toString(16)).slice(-8); };
+export function hashDiscrimPairText(textA, textB) { const lo = String(textA || ''), hi = String(textB || ''); return _e23Hash(lo < hi ? lo + '|' + hi : hi + '|' + lo); }
+const _ppGetResolved = db.prepare("SELECT resolved_at, content_hash FROM processed_pairs WHERE relation='similar' AND min_id=? AND max_id=?");
+const _ppUpsertResolved = db.prepare("INSERT INTO processed_pairs (relation, min_id, max_id, content_hash, resolved_at) VALUES ('similar', ?, ?, ?, datetime('now')) ON CONFLICT(min_id, max_id, relation) DO UPDATE SET content_hash=excluded.content_hash, resolved_at=datetime('now')");
+export function markPairResolvedWatermark(idA, idB, contentHash) {
+  const lo = Math.min(Number(idA), Number(idB)), hi = Math.max(Number(idA), Number(idB));
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return { ok: false, reason: 'bad-args' };
+  try { _ppUpsertResolved.run(lo, hi, contentHash != null ? String(contentHash) : null); return { ok: true }; }
+  catch (e) { LOG_DEBUG && console.error('[E23] markPairResolvedWatermark failed:', e.message); return { ok: false, reason: 'db-error', message: e.message }; }
+}
+export function pairRecentlyResolvedSameContent(idA, idB, textA, textB) {
+  const lo = Math.min(Number(idA), Number(idB)), hi = Math.max(Number(idA), Number(idB));
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return false;
+  const row = _ppGetResolved.get(lo, hi);
+  if (!row) return false;
+  const cd = parseInt(process.env.E23_COOLDOWN_MS || '300000', 10);
+  // SQLite `datetime('now')` is UTC-naive (no trailing 'Z'); a bare Date.parse treats it as LOCAL
+  // time, so (Date.now() - when) drifts by the tz offset and a just-stamped row tests as "past
+  // cooldown". Append 'Z' to force UTC parsing so the watermark cool-down is anchored to real now.
+  const when = row.resolved_at ? Date.parse(String(row.resolved_at).replace(' ', 'T') + 'Z') : 0;
+  if (!when || (Date.now() - when) > cd) return false; // past cooldown — re-eligible
+  const curHash = hashDiscrimPairText(textA, textB);
+  return row.content_hash ? (row.content_hash === curHash) : true; // unchanged → recently judged → skip re-flag
+}
+
+export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null, cone_layer = 0, intent_type = null, source_quote = null, source_turn_id = null, event_date = null, order_index = null, contradiction_pair_id = null, similar_pair_id = null }) {
   embedding = ensureEmbeddingBuffer(embedding);
   const result = insert.run({
     session_id: session_id || '',
@@ -763,6 +930,7 @@ export function storeMemory({ session_id, type, text, embedding = null, metadata
  event_date: event_date ?? null,
  order_index: Number.isFinite(Number(order_index)) ? Number(order_index) : null,
  contradiction_pair_id: contradiction_pair_id ?? null,
+ similar_pair_id: similar_pair_id ?? null,
  });
   // Update vector index if embedding provided
   if (embedding) {
@@ -1034,7 +1202,7 @@ export function deleteInvalid() {
 // violation regardless of graph shape.
 //
 // Inbound RESTRICT FKs to memories(id) (no ON DELETE clause): superseded_by (self), compressed_from
-// (self), contradiction_pair_id (self), memory_edges.from_id, memory_edges.to_id, citation_log.memory_id.
+// (self), contradiction_pair_id (self), similar_pair_id (self), memory_edges.from_id, memory_edges.to_id, citation_log.memory_id.
 // ON DELETE CASCADE (auto, no manual cleanup): memory_raw.memory_id, memory_entities.memory_id,
 // memory_archive_index.archived_id. procedure_context_points.source_memory_id is a plain INTEGER
 // with NO REFERENCES clause (soft ref, cannot raise FK) — left intentionally dangling after delete.
@@ -1045,6 +1213,7 @@ export function deleteInvalid() {
 export const _nullSupHD   = db.prepare('UPDATE memories SET superseded_by = NULL        WHERE superseded_by = ?');
 export const _nullCompHD  = db.prepare('UPDATE memories SET compressed_from = NULL      WHERE compressed_from = ?');
 export const _nullPairHD = db.prepare('UPDATE memories SET contradiction_pair_id = NULL WHERE contradiction_pair_id = ?');
+export const _nullSimPairHD = db.prepare('UPDATE memories SET similar_pair_id = NULL        WHERE similar_pair_id = ?'); // E23 flag-then-ping-brain2
 export const _delEdgesHD = db.prepare('DELETE FROM memory_edges   WHERE from_id = ? OR to_id = ?');
 export const _delCitesHD = db.prepare('DELETE FROM citation_log   WHERE memory_id = ?');
 
@@ -1061,6 +1230,7 @@ export function hardDeleteMemory(id) {
     _nullSupHD.run(numId);
     _nullCompHD.run(numId);
     _nullPairHD.run(numId);
+    _nullSimPairHD.run(numId); // E23: null inbound similar_pair_id on survivors so RESTRICT never fires
     // Remove touching edges + citations anchored to the doomed row (the relationship/citation
     // becomes half-dangling without this; provenance rides merge_row.metadata + citation_log rows
     // that cite the SURVIVING merge/target, written by the merge tool BEFORE this call).
@@ -1412,6 +1582,7 @@ export function archiveMemoryById(id, { reason = null } = {}) {
 // All read-only; no row mutation. Counts are cheap GROUP BYs; the pair/review samples are capped.
 const _auditStatusBreakdown = db.prepare('SELECT status, COUNT(*) AS c FROM memories GROUP BY status');
 const _auditContrPairs = db.prepare("SELECT id, contradiction_pair_id, text, entity, attribute FROM memories WHERE status = 'contradicted' AND contradiction_pair_id IS NOT NULL AND id < contradiction_pair_id ORDER BY id LIMIT 50");
+const _auditSimPairs = db.prepare("SELECT id, similar_pair_id, text, entity, attribute FROM memories WHERE status = 'similar_pending' AND similar_pair_id IS NOT NULL AND id < similar_pair_id ORDER BY id LIMIT 50"); // E23 flag-then-ping-brain2: each pair reported once (lower id)
 const _auditReviewPending = db.prepare("SELECT id, text, source_memory_ids FROM memories WHERE status = 'active' AND metadata LIKE '%\"brain2_review_pending\":true%' ORDER BY id DESC LIMIT 50");
 const _auditMergedCount = db.prepare("SELECT COUNT(*) AS c FROM memories WHERE source_memory_ids IS NOT NULL AND source_memory_ids != '[]'");
 const _auditEdgeHisto = db.prepare("SELECT relation, COUNT(*) AS c FROM memory_edges WHERE valid_until IS NULL GROUP BY relation");
@@ -1419,18 +1590,42 @@ export function getAuditReport() {
   const breakdown = {};
   for (const { status, c } of _auditStatusBreakdown.all()) breakdown[status] = c;
   const contradicted_pairs = _auditContrPairs.all().map(r => ({ id: r.id, pair_id: r.contradiction_pair_id, text: (r.text || '').slice(0, 160), entity: r.entity, attribute: r.attribute }));
+  const similar_pairs = _auditSimPairs.all().map(r => ({ id: r.id, pair_id: r.similar_pair_id, text: (r.text || '').slice(0, 160), entity: r.entity, attribute: r.attribute }));
   const review_pending_merges = _auditReviewPending.all().map(r => {
     let source = []; try { source = JSON.parse(r.source_memory_ids || '[]'); } catch { source = []; }
     return { id: r.id, text: (r.text || '').slice(0, 160), source_ids: Array.isArray(source) ? source : [] };
   });
   return {
-    totals: { active: breakdown.active || 0, contradicted: breakdown.contradicted || 0, superseded: breakdown.superseded || 0, archived: breakdown.archived || 0, invalid: breakdown.invalid || 0, merged_rows: _auditMergedCount.get().c },
+    totals: { active: breakdown.active || 0, contradicted: breakdown.contradicted || 0, superseded: breakdown.superseded || 0, archived: breakdown.archived || 0, invalid: breakdown.invalid || 0, similar_pending: breakdown.similar_pending || 0, merged_rows: _auditMergedCount.get().c },
     open_contradiction_pairs: contradicted_pairs,
     open_contradiction_pair_count: contradicted_pairs.length,
+    open_similar_pairs: similar_pairs,
+    open_similar_pair_count: similar_pairs.length,
     review_pending_merges,
     review_pending_count: review_pending_merges.length,
     live_edge_relations: _auditEdgeHisto.all().map(r => ({ relation: r.relation, count: r.c })),
   };
+}
+
+// E23 flag-then-ping-brain2: reaper for the 'similar' edge backlog. A resolved pair's edge has
+// valid_until stamped by resolveSimilarPair; after a cool-down (default 30d, env E23_REAPER_OLDER_THAN_MS)
+// the edge row is no longer needed — the verdict metadata already rides the pair rows / merged summary.
+// Bounded per tick (max_per_tick) + gated on valid_until<cutoff so LIVE open similar edges are never
+// touched. No reaper = unbounded memory_edges growth (plan §3(F) non-optional). Safe to call from inside
+// the cron transaction (nested better-sqlite3 tx → savepoint); otherwise runs its own implicit tx.
+// datetime('now', ?) normalizes the modifier to the same space-format valid_until is stored in, so the
+// TEXT comparison stays well-ordered regardless of how the caller expresss the age.
+const _reapSimEdges = db.prepare(`DELETE FROM memory_edges WHERE relation = 'similar' AND valid_until IS NOT NULL AND valid_until < datetime('now', ?) AND id IN (SELECT id FROM memory_edges WHERE relation = 'similar' AND valid_until IS NOT NULL AND valid_until < datetime('now', ?) LIMIT ?)`);
+export function reapResolvedEdges({ older_than_ms = null, max_per_tick = 200 } = {}) {
+  const DEFAULT_MS = 30 * 24 * 60 * 60 * 1000;
+  const olderMs = older_than_ms != null ? Number(older_than_ms) : Number(process.env.E23_REAPER_OLDER_THAN_MS ?? DEFAULT_MS);
+  const olderSec = Math.max(0, Math.floor(Number.isFinite(olderMs) ? olderMs : DEFAULT_MS) / 1000);
+  const cap = Math.max(1, parseInt(max_per_tick, 10) || 200);
+  const mod = `-${olderSec} seconds`;
+  let info;
+  try { info = _reapSimEdges.run(mod, mod, cap); }
+  catch (e) { LOG_DEBUG && console.error('[E23] reapResolvedEdges error:', e.message); return { ok: false, reason: 'db-error', message: e.message }; }
+  return { ok: true, reaped: (info && info.changes) ? info.changes : 0, cutoff_seconds: olderSec, cap };
 }
 
 // === E5: bounded active set ===
@@ -1581,7 +1776,7 @@ export function vectorKnnSearch(queryEmbedding, topK = 5) {
     // halves of a contradiction (Flask-Login "never used" vs "integrated v0.6.2") get
     // co-ranked. The old strict `status !== 'active'` dropped the contradicted half after
     // its vector already consumed topK budget (ghost).
-    if (!mem || (mem.status !== 'active' && mem.status !== 'contradicted')) return null;
+    if (!mem || (mem.status !== 'active' && mem.status !== 'contradicted' && mem.status !== 'similar_pending')) return null;
     // E13: embedding-drift guard — cosine across DIFFERENT embedding spaces is meaningless.
     // Drop rows whose stored embedding_model_id differs from the current live model. NULL
     // model id (pre-E13 legacy rows) is treated compatible. Mirrors vectorKnnSearchAsync.
@@ -1621,7 +1816,7 @@ export async function vectorKnnSearchAsync(queryEmbedding, topK = 5) {
         // FIX-4 (BEAM bench): keep contradicted rows reachable (mirror vectorKnnSearch) so
         // both contradiction halves co-rank; the consent also keeps the allowlist (below) and
         // the post-filter consistent, eliminating the wasteful ghost-vector path.
-        if (!mem || (mem.status !== 'active' && mem.status !== 'contradicted')) return null;
+        if (!mem || (mem.status !== 'active' && mem.status !== 'contradicted' && mem.status !== 'similar_pending')) return null;
         // E13: embedding-drift guard — drop rows whose stored embedding_model_id differs from
         // the current model. Cosine across different embedding spaces is meaningless; returning
         // such rows as hits would silently corrupt recall (a 384->768 swap halves it). NULL model

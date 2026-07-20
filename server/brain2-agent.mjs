@@ -22,11 +22,19 @@
 import { llmFetch } from './llm-fetch.mjs';
 import { LLM_URL, LLM_MODEL } from './llm-config.mjs';
 import { BRAIN2_TOOLS_SPEC, dispatchTool } from './brain2-tools.mjs';
+import { getAuditReport, db } from './memory-store.mjs'; // E23: audit-driven reconcile prompt + durable queue
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const B2_MAX_TURNS = parseInt(process.env.BRAIN2_MAX_TURNS || '8');
 const B2_MAX_TOKENS = parseInt(process.env.BRAIN2_MAX_TOKENS || '1024');
 const B2_TIMEOUT_MS = parseInt(process.env.BRAIN2_TIMEOUT_MS || '120000');
+
+// E23 verdict-QUEUE constants (SQLite-backed, durable). The old single-flight DROP ("if running return
+// 'already-running'") is gone — an augment or cron-reconcile ENQUEUES a job + kicks a sequential drain.
+const BRAIN2_MAX_QUEUE_DEPTH = parseInt(process.env.BRAIN2_MAX_QUEUE_DEPTH || '2'); // bound: augment + 1 reconcile coexist, else reject (cron re-scans next tick)
+const BRAIN2_STALE_JOB_MS = parseInt(process.env.BRAIN2_STALE_JOB_MS || '600000'); // resurrect a 'processing' job whose started_at is older than this (crashed drain)
+const E23_MAX_ATTEMPTS = parseInt(process.env.E23_MAX_ATTEMPTS || '3'); // transient-retry ceiling before a job moves to the DLQ
+let _b2Busy = false; // global single-flight across augment + reconcile (the queue table holds the real depth)
 
 export const TOOLS_SPEC_JSON = JSON.stringify(BRAIN2_TOOLS_SPEC);
 
@@ -54,6 +62,7 @@ Be surgical: small in-place edits beat wholesale rewrites. When in doubt, annota
 RECONCILE (merge / link / resolve / compact / audit) — separate from the per-conversation verification above:
 8. Start a reconcile pass with memory_audit_report to SEE the open tensions, do not guess: it returns status totals, the open contradiction pairs AWAITING a verdict, the low-confidence merges awaiting review (brain2_review_pending), the merged-row count, and a live edge histogram.
 9. CONTRADICTIONS — two rows that genuinely conflict (linked status='contradicted' by the detect pass) get an EXPLICIT verdict via memory_resolve_contradiction, NEVER a silent pick: unlink (false alarm — clear the pair, both active), uphold (winner_id wins — soft-flag the loser superseded-by winner, both stay retrievable), or merge (the two are facets of one truth — fold them into a canonical merge_text; same confidence rules as memory_merge). Read both rows (memory_get) before deciding.
+9b. SIMILAR PAIRS — rows linked status='similar_pending' by the cron's dedup flag-pass (near-duplicates the cron flagged but did NOT merge) get an EXPLICIT verdict via memory_resolve_similar, NEVER a silent skip: distinct (they are genuinely different facts/facets — unlink + keep both active), supersede (winner_id wins — reversible soft-flag the loser; both stay retrievable), or merge (fold into one canonical merge_text; low confidence does NOT hard-delete). Read both rows (memory_get) before deciding. A pair you verdict distinct STAYS distinct — a watermark+cooldown stops the cron from re-flagging the same unchanged pair every tick, so do not re-litigate it.
 10. REDUNDANCY — N (>=2) rows that RESTATE the same fact (same entity, same cone layer, genuinely redundant — NOT distinct facets) fold into ONE canonical merge_text via memory_merge. Author a merge_text that preserves EVERY distinct detail from the originals (do not drop nuance). High confidence (>=0.7) hard-deletes the absorbed originals; low confidence (<0.7) soft-supersedes them reversibly + raises brain2_review_pending — never silently finalize an uncertain merge. When unsure whether two rows are redundant or are distinct facets, annotate + flag_superseded, do NOT merge.
 11. LINKING — when your reasoning surfaces a relationship the cone layers / supersede chain cannot express, author a FREE-FORM edge with memory_link. The relation label is not a fixed enum — invent exactly the link you found (relates_to, caused_by, prerequisites, dual_of, supersedes_explains, …). Optionally bi-temporal (valid_from/valid_until) + a 0-1 strength. Always pass a reason (recorded in edge metadata). NEVER link a memory to itself.
 12. COMPACT (orphan fallback ONLY) — a stale L1/L2 row that you have searched (memory_search) and confirmed has NO related memory to enrich-merge into may be REVERSIBLY archived via memory_compact. This is the LAST resort: merge-with-a-neighbor is always preferred when a neighbor exists. Never compact a row in an open contradiction pair (resolve it first); never compact L0/L3 (the guard refuses them anyway).
@@ -186,13 +195,110 @@ let _augmentState = {
   lastTurns: 0, lastToolCalls: 0, lastOk: null, lastError: null, lastSummary: null,
 };
 export function getAugmentStatus() {
-  return { ..._augmentState, running: _augmentState.running };
+  return { ..._augmentState, running: _augmentState.running, b2_busy: _b2Busy, queue: getB2QueueStatus() };
+}
+
+// ── E23 verdict QUEUE (SQLite-backed, durable) ───────────────────────────
+// The old single-flight DROP ("if (_augmentState.running) return 'already-running'") is gone. An augment
+// OR a cron-triggered reconcile now ENQUEUES a job onto the durable pending_verdicts table (survives a
+// segfault — counter-C FM2: in-process JS would lose ALL queued verdicts on a crash). A single global
+// drain runs jobs sequentially (concurrency=1 across BOTH augment + reconcile — NIM rule + one Brain2 at
+// a time), bounded by BRAIN2_MAX_QUEUE_DEPTH=2. Overflow rejects the enqueue: for a cron-reconcile that
+// means the pair stays in open_similar_pairs + the cron re-scans it the next tick (counter-D: no silent
+// loss — the dedup→resolve loop never drops a verdict). Permanent LLM errors move a job to
+// pending_verdicts_dlq; transient errors re-queue for the next tick (ceiling E23_MAX_ATTEMPTS, then DLQ).
+const _pvEnq = db.prepare("INSERT INTO pending_verdicts (kind, payload_json, content_hash, status) VALUES (?, ?, ?, 'queued')");
+const _pvClaim = db.prepare("UPDATE pending_verdicts SET status='processing', started_at=datetime('now'), attempts=attempts+1 WHERE id=?");
+const _pvDone = db.prepare("UPDATE pending_verdicts SET status='done' WHERE id=?");
+const _pvReset = db.prepare("UPDATE pending_verdicts SET status='queued', started_at=NULL WHERE id=?");
+const _pvDlqInsert = db.prepare("INSERT INTO pending_verdicts_dlq (kind, payload_json, content_hash, attempts, reason, enqueued_at) VALUES (?, ?, ?, ?, ?, datetime('now'))");
+const _pvRm = db.prepare("DELETE FROM pending_verdicts WHERE id=?");
+const _pvCountQueued = db.prepare("SELECT COUNT(*) AS c FROM pending_verdicts WHERE status='queued'");
+const _pvNext = db.prepare("SELECT id, kind, payload_json, attempts FROM pending_verdicts WHERE status='queued' ORDER BY enqueued_at ASC, id ASC LIMIT 1");
+const _pvStale = db.prepare("UPDATE pending_verdicts SET status='queued', started_at=NULL WHERE status='processing' AND started_at IS NOT NULL AND started_at < datetime('now', ?)");
+const _pvQueueDump = db.prepare("SELECT id, kind, status, attempts, enqueued_at, started_at FROM pending_verdicts ORDER BY enqueued_at DESC LIMIT 50");
+
+// Non-retryable error signatures (5xx / DNS / hard LLM refusal). Everything else is a transient retry.
+const _B2_NONRETRY = /HTTP 5\d\d|^llm-failed|ENOTFOUND|ECONNRESET|EAI_AGAIN|socket hang up|timeout|non-retryable/i;
+function _classifyB2Error(err) {
+  const m = String((err && err.message) || err || '');
+  return _B2_NONRETRY.test(m) ? { retryable: false, reason: m } : { retryable: true, reason: m };
+}
+function _toDlq(row, reason) {
+  try { _pvDlqInsert.run(row.kind, row.payload_json, row.content_hash, Number(row.attempts) || 0, String(reason).slice(0, 500)); _pvRm.run(row.id); }
+  catch (e) { LOG_DEBUG && console.error('[E23] DLQ insert failed:', e.message); }
+}
+function _tryClaimNext() {
+  _pvStale.run(`-${Math.floor(BRAIN2_STALE_JOB_MS / 1000)} seconds`); // resurrect a crashed 'processing' job
+  const row = _pvNext.get();
+  if (!row || !row.id) return null;
+  _pvClaim.run(row.id);
+  return row;
+}
+
+export function enqueueB2Job(kind, payload, contentHash = null) {
+  if (kind !== 'augment' && kind !== 'reconcile') return { ok: false, reason: 'bad-kind' };
+  const queuedNow = _pvCountQueued.get().c;
+  if (queuedNow >= BRAIN2_MAX_QUEUE_DEPTH) return { ok: false, reason: 'queue-full', depth: BRAIN2_MAX_QUEUE_DEPTH, queued: queuedNow };
+  const info = _pvEnq.run(kind, JSON.stringify(payload || {}), contentHash != null ? String(contentHash) : null);
+  return { ok: true, id: Number(info.lastInsertRowid), queued: queuedNow + 1, depth: BRAIN2_MAX_QUEUE_DEPTH };
+}
+
+export function enqueueReconcileJob(contentHash = null) { return enqueueB2Job('reconcile', { triggered_by: 'cron' }, contentHash); }
+
+export function getB2QueueStatus() {
+  return { busy: _b2Busy, queued: _pvCountQueued.get().c, depth: BRAIN2_MAX_QUEUE_DEPTH, jobs: _pvQueueDump.all() };
 }
 
 /**
- * runAugment — given the session context + the list of facts Brain 1 just stored, drive Brain 2 to
- * verify + supplement them via tool calls. Returns whatever runBrain2Agent returns. Updates the
- * module status tracker. Never throws (the caller is a fire-and-forget .catch on the sync path).
+ * drainB2Queue — claim + execute the oldest queued job, strictly one at a time (concurrency=1). Idempotent:
+ * a second drain while one is running returns {ok,reason:'busy'} and neither enqueues nor drops. Called
+ * fire-and-forget from runAugment (after an enqueue) AND from the maintenance cron tick (after a reconcile
+ * enqueue) — the cron "flags then PINGS Brain 2". Never throws to the caller.
+ */
+export async function drainB2Queue() {
+  if (_b2Busy) return { ok: false, reason: 'busy' };
+  _b2Busy = true;
+  try {
+    const claimed = _tryClaimNext();
+    if (!claimed) return { ok: true, reason: 'idle', drained: 0 };
+    const out = await _executeB2Job(claimed);
+    return { ok: true, drained: 1, kind: claimed.kind, outcome: out };
+  } finally {
+    _b2Busy = false;
+  }
+}
+
+async function _executeB2Job(row) {
+  let payload;
+  try { payload = JSON.parse(row.payload_json || '{}'); }
+  catch (e) { _toDlq(row, 'bad-payload-json: ' + e.message); return { ok: false, reason: 'dlq-bad-payload' }; }
+  let result;
+  try {
+    result = (row.kind === 'augment') ? await _runAugmentInternal(payload) : await _runReconcileInternal(payload);
+  } catch (e) {
+    const cls = _classifyB2Error(e);
+    if (!cls.retryable) { _toDlq(row, 'non-retryable: ' + cls.reason); return { ok: false, reason: 'dlq', error: cls.reason }; }
+    _pvReset.run(row.id); // transient — back to 'queued' for the next tick
+    if (LOG_DEBUG) console.error('[E23] job transient error, re-queued:', cls.reason);
+    return { ok: false, reason: 'retry-queued', error: cls.reason };
+  }
+  if (result && result.ok === false) {
+    const attempts = Number(row.attempts) || 1;
+    if (attempts < E23_MAX_ATTEMPTS) { _pvReset.run(row.id); return { ok: false, reason: 'retry-queued', attempts }; }
+    _toDlq(row, 'exhausted-attempts: ' + (result.reason || 'unknown'));
+    return { ok: false, reason: 'dlq-exhausted', attempts };
+  }
+  _pvDone.run(row.id);
+  return { ok: true, kind: row.kind };
+}
+
+/**
+ * runAugment — given the session context + the list of facts Brain 1 just stored, ENQUEUE an augment job
+ * + kick the sequential drain. Returns immediately ({ok,reason:'enqueued'}) so the fire-and-forget sync
+ * caller is never blocked. Queue-full ⇒ reject (best-effort Brain2 refinement skipped this cycle; the
+ * stored Brain1 facts survive as-is — no fact is lost, only this refinement pass). The actual agent loop
+ * runs later in _runAugmentInternal via drainB2Queue, one job at a time.
  * @param {object} ctx
  * @param {string} ctx.sessionId
  * @param {string} ctx.userMessage   - the user side of the synced exchange
@@ -200,10 +306,23 @@ export function getAugmentStatus() {
  * @param {Array<{id,text,type,entity,attribute,importance}>} ctx.storedMemories - Brain 1's chunked facts
  */
 export async function runAugment({ sessionId, userMessage, assistantResponse, storedMemories }) {
-  if (_augmentState.running) return { ok: false, reason: 'already-running' };
-  _augmentState.running = true;
-  _augmentState.lastStartedAt = new Date().toISOString();
+  const enq = enqueueB2Job('augment', { sessionId, userMessage, assistantResponse, storedMemories });
+  if (enq.ok !== true) {
+    _augmentState.lastError = `queue-full (${enq.queued || 0}/${BRAIN2_MAX_QUEUE_DEPTH})`;
+    if (LOG_DEBUG) console.log(`[Brain2] augment rejected: ${enq.reason}`);
+    return { ok: false, reason: enq.reason, queued: enq.queued };
+  }
   _augmentState.runs++;
+  if (LOG_DEBUG) console.log(`[Brain2] augment enqueued #${enq.id}, kicking drain`);
+  drainB2Queue().catch(e => { LOG_DEBUG && console.error('[Brain2] drain kick failed:', e.message); });
+  return { ok: true, reason: 'enqueued', id: enq.id, queued: enq.queued };
+}
+
+// _runAugmentInternal — the OLD runAugment body, run by the queue drain (one job at a time). No single-flight
+// (the queue's _b2Busy gate replaces _augmentState.running). Records the per-run telemetry + returns the
+// agent result so _executeB2Job can apply retry/DLQ policy on ok:false.
+async function _runAugmentInternal({ sessionId, userMessage, assistantResponse, storedMemories }) {
+  _augmentState.lastStartedAt = new Date().toISOString();
   try {
     const systemPrompt = buildSystemPrompt();
     const storedBlock = (storedMemories && storedMemories.length)
@@ -212,9 +331,6 @@ export async function runAugment({ sessionId, userMessage, assistantResponse, st
         ).join('\n')
       : '(Brain 1 stored no facts from this exchange.)';
     const userMsg = `SESSION: ${sessionId || '(none)'}\n\n=== FULL CONVERSATION (you see this at full context; Brain 1 had to chunk it) ===\nUSER:\n${userMessage || ''}\n\nASSISTANT:\n${assistantResponse || ''}\n\n=== FACTS BRAIN 1 ALREADY STORED FROM THIS EXCHANGE ===\n${storedBlock}\n\nYour task: verify each stored fact against the full conversation, EDIT incomplete/wrong ones in place, STORE any fact Brain 1 missed, ANNOTATE nuance, and (softly) FLAG any a newer fact supersedes. Respect the recoverability rule — never delete. Begin by listing the session's stored memories, then act. End with a one-line summary.`;
-    // Inject the augment session_id into memory_store calls so Brain-2-stored facts attach to the
-    // session (global search + per-session scans both surface them). Other tools keep their args;
-    // memory_edit/annotate operate on existing rows whose session_id is already set.
     const dispatch = (name, args) => {
       const a = (name === 'memory_store' && args && !args.session_id) ? { ...args, session_id: sessionId || '' } : args;
       return dispatchTool(name, a);
@@ -232,9 +348,31 @@ export async function runAugment({ sessionId, userMessage, assistantResponse, st
     _augmentState.lastFinishedAt = new Date().toISOString();
     _augmentState.lastOk = false;
     _augmentState.lastError = e.message;
-    LOG_DEBUG && console.error('[Brain2] runAugment error:', e.message);
+    LOG_DEBUG && console.error('[Brain2] _runAugmentInternal error:', e.message);
     return { ok: false, reason: 'throw', error: e.message };
-  } finally {
-    _augmentState.running = false;
   }
+}
+
+// _runReconcileInternal — cron-triggered verdict pass over OPEN pairs (status=similar_pending from the
+// dedup flag-pass + status=contradicted from the contradiction detect-pass). Builds an audit-driven prompt,
+// drives the Brain2 agent loop to emit memory_resolve_similar / memory_resolve_contradiction verdicts, returns
+// the agent result. Idles out when no pairs are open (returns ok:true idle-no-work — not a failure).
+async function _runReconcileInternal(payload = {}) {
+  const audit = getAuditReport();
+  const similarPairs = Array.isArray(audit.open_similar_pairs) ? audit.open_similar_pairs : [];
+  const contraPairs = Array.isArray(audit.open_contradiction_pairs) ? audit.open_contradiction_pairs : [];
+  if (similarPairs.length === 0 && contraPairs.length === 0 && !payload.force) {
+    if (LOG_DEBUG) console.log('[Brain2] reconcile idle — no open pairs awaiting a verdict');
+    return { ok: true, reason: 'idle-no-work', reconciled: 0, similar: similarPairs.length, contradictions: contraPairs.length };
+  }
+  const fmt = (arr) => arr.length
+    ? arr.map((p, i) => `${i + 1}. pair #${p.id}↔#${p.pair_id}${p.entity ? ` entity=${p.entity}${p.attribute ? '/' + p.attribute : ''}` : ''}: "${String(p.text || '').slice(0, 200)}"`).join('\n')
+    : '(none)';
+  const extraRole = `RECONCILE PASS (cron-triggered). Open similar-pair flags awaiting your verdict: ${similarPairs.length}. Open contradiction pairs: ${contraPairs.length}.
+Resolve EVERY open similar pair with memory_resolve_similar: read BOTH rows (memory_get) first, then pick mode=distinct (they are genuinely different facts/facets — unlink, keep both active), supersede (winner_id wins — reversible soft-flag the loser; both stay retrievable), or merge (fold the two into one canonical merge_text). The watermark instinct: a pair you verdict distinct STAYS distinct until its text mutates or the cooldown lapses — do not re-litigate an already-judged pair.`;
+  const systemPrompt = buildSystemPrompt(extraRole);
+  const userMsg = `=== OPEN SIMILAR PAIRS (status=similar_pending, awaiting your verdict) ===\n${fmt(similarPairs)}\n\n=== OPEN CONTRADICTION PAIRS (status=contradicted, awaiting your verdict) ===\n${fmt(contraPairs)}\n\nResolve each open pair now with memory_resolve_similar / memory_resolve_contradiction. When all are resolved, output a one-line summary and STOP.`;
+  const result = await runBrain2Agent({ systemPrompt, messages: [{ role: 'user', content: userMsg }] });
+  if (LOG_DEBUG) console.log(`[Brain2] reconcile done: ok=${result.ok} turns=${result.turns} toolCalls=${result.toolCalls}${result.ok ? '' : ' reason=' + (result.reason || '')}`);
+  return result;
 }

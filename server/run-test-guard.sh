@@ -10,6 +10,11 @@ export ENABLE_EMBEDDING=false ENABLE_ADVISOR=false ENABLE_MAINTENANCE=false ENAB
 export MOCK_LLM_PORT=8011
 export LLM_URL=http://127.0.0.1:8011/v1/chat/completions
 export LLM_MODEL=mock-model
+# E23 dual-mode: this suite pins the LEGACY consolidateMemories contract (originals superseded on fold —
+# see test header "legacy same-source entity merge CRON path"). Force BRAIN2_ENABLED=0 so the cron's
+# Brain2-on deferred-supersede (originals stay active for a Brain2 verdict) doesn't make S4c/d/e fail.
+# The Brain2-on path is pinned by run-test-e23.sh (S7/S9/S10).
+export BRAIN2_ENABLED=0
 
 # Clear the REAL db paths (mirror run-test-e2.sh) so rows do not leak across suites.
 rm -f ../data/hermes-memory.db data/hermes-memory.db ../data/hermes-memory.db-wal data/hermes-memory.db-wal ../data/hermes-memory.db-shm data/hermes-memory.db-shm

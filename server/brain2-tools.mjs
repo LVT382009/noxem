@@ -38,7 +38,7 @@ import { embed, searchByEmbedding, estimateImportance, generateContextPrefix, ex
 import {
   storeMemory, getMemory, getMemoriesByEntityAttr, getSessionMemories, getMemoryStats,
   getActiveWithEmbedding, editMemoryText, setImportance, flagSupersededBy, appendAnnotation,
-  updateMemoryEmbedding, addVecsToIndex, mergeMemoriesHard, resolveContradictionPair,
+  updateMemoryEmbedding, addVecsToIndex, mergeMemoriesHard, resolveContradictionPair, resolveSimilarPair,
   storeEdge, archiveMemoryById, getAuditReport,
 } from './memory-store.mjs';
 
@@ -192,6 +192,40 @@ async function h_memory_resolve_contradiction({ id_a, id_b, mode = 'unlink', win
   return { ok: false, error: `mode must be unlink|uphold|merge, got '${mode}'` };
 }
 
+// ── RESOLVE SIMILAR — explicit verdict over a dedup-flagged similar pair, never silent (E23) ──
+// E23 flips the old silent cron auto-supersede: the dedup pass now links both rows as 'similar_pending' +
+// surfaces them (open_similar_pairs in memory_audit_report); THIS tool is where Brain 2 actually decides
+// the verdict. Three modes, all non-destructive + recoverable (mirrors resolve_contradiction):
+//   distinct  — they are genuinely different facts/facets. Unlink the similar_pair_id on both, restore
+//               status='active'. Both stay fully retrievable. Watermark+cooldown stamped so the cron
+//               does NOT re-flag the same unchanged pair next tick.
+//   supersede — one side won. The loser is reversible soft-flagged superseded-by the winner
+//               (flagSupersededBy: downrank + is_newer_version_of chain edge; status stays active,
+//               fully retrievable). Watermark stamped.
+//   merge     — the pair are facets of one truth. APPEND a Brain2-authored summary row + reversible soft-flag
+//               BOTH originals by the summary. NO hard-delete anywhere (E23 narrows the Option-2 carve-out
+//               here: the cron-flagged path never deletes — the originals' content is absorbed into the
+//               summary's merge_text + provenance edge, and they survive retrievable for review). This does
+//               NOT route to h_memory_merge (the standalone redundancy tool that CAN hard-delete at high
+//               confidence) — resolve_similar is the safe reversible verdict, distinct from memory_merge.
+// The cardinal guard rides inside resolveSimilarPair (L0/L3 never hard-deleted; merge never deletes at all).
+async function h_memory_resolve_similar({ id_a, id_b, mode = 'distinct', winner_id = null, merge_text = null, rationale = null, session_id = '' }) {
+  const a = Number(id_a), b = Number(id_b);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return { ok: false, error: 'id_a + id_b: two distinct ids required' };
+  if (!['distinct', 'supersede', 'merge'].includes(mode)) return { ok: false, error: `mode must be distinct|supersede|merge, got '${mode}'` };
+  if (mode === 'supersede' && (winner_id == null || !Number.isFinite(Number(winner_id)))) return { ok: false, error: 'supersede requires winner_id (a or b)' };
+  if (mode === 'merge' && (!merge_text || !String(merge_text).trim())) return { ok: false, error: 'merge requires merge_text' };
+  try {
+    return resolveSimilarPair(a, b, {
+      mode,
+      winnerId: mode === 'supersede' ? Number(winner_id) : null,
+      mergeText: mode === 'merge' ? String(merge_text).trim() : null,
+      reason: rationale,
+      session_id: session_id || '',
+    });
+  } catch (e) { LOG_DEBUG && console.error('[Brain2] memory_resolve_similar error:', e.message); return { ok: false, error: e.message }; }
+}
+
 // ── ANNOTATE / RANK / FLAG (soft) ──────────────────────────
 function h_memory_annotate({ id, note, tag = 'brain2' }) {
   if (!id || !note) return { ok: false, error: 'id + note required' };
@@ -283,11 +317,13 @@ export const BRAIN2_TOOLS = [
     parameters: { type: 'object', properties: { ids: { type: 'array', items: { type: 'integer' }, description: 'The 2+ original memory ids to absorb (same entity, same cone layer, all active)' }, merge_text: { type: 'string', description: 'Your canonical sentence that subsumes every original — preserve all distinct detail, do not drop nuance' }, rationale: { type: 'string', description: 'Why these are redundant facets of one fact' }, confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Merge certainty. >=0.7 hard-deletes originals; <0.7 soft-supersedes them + marks review_pending' }, session_id: { type: 'string' } }, required: ['ids', 'merge_text'] } },
   { name: 'memory_resolve_contradiction', description: 'Resolve a contradiction pair (two rows linked as status=contradicted by the detect pass) — the EXPLICIT reasoning step, never silent. Three modes: unlink (false alarm — clear the pair, both active again), uphold (winner_id wins — clear the pair, soft-flag the loser superseded-by winner, reversible), merge (merge_text — the pair are facets of one truth; folds them into one merge row, same rules as memory_merge: high conf hard-deletes, low conf soft-supersedes). Use after memory_search confirms the two rows genuinely conflict and you have read enough context to decide.', handler: h_memory_resolve_contradiction,
     parameters: { type: 'object', properties: { id_a: { type: 'integer', description: 'First member of the contradiction pair' }, id_b: { type: 'integer', description: 'Second member of the contradiction pair' }, mode: { type: 'string', enum: ['unlink', 'uphold', 'merge'], description: 'unlink = false alarm; uphold = winner_id wins (soft-flag loser); merge = fold into merge_text' }, winner_id: { type: 'integer', description: 'Required for mode=uphold; must equal id_a or id_b' }, merge_text: { type: 'string', description: 'Required for mode=merge — canonical truth that supersedes both sides' }, rationale: { type: 'string' }, confidence: { type: 'number', minimum: 0, maximum: 1, description: 'Merge-mode certainty. >=0.7 hard-deletes; <0.7 soft-supersedes + review_pending' }, session_id: { type: 'string' } }, required: ['id_a', 'id_b', 'mode'] } },
+  { name: 'memory_resolve_similar', description: 'Resolve a SIMILAR pair — two rows the cron dedup pass linked as status=similar_pending (near-duplicates it FLAGGED but did NOT merge). This is the EXPLICIT reasoning step Brain 2 performs; never silent. Three modes, all reversible + non-destructive: distinct (they are genuinely different facts/facets — unlink the pair + keep BOTH active, fully retrievable), supersede (winner_id wins — clear the pair + reversible soft-flag the loser superseded-by winner; both stay retrievable), merge (fold into ONE canonical merge_text you author — APPENDS a Brain2-authored summary row + reversible soft-flags BOTH originals by the summary; NO hard-delete anywhere, originals absorb into the merge + survive for review). Stamps a watermark+cooldown so the cron does NOT keep re-flagging the same unchanged pair. Use after memory_get has read BOTH rows so you actually judge the same content the cron flagged.', handler: h_memory_resolve_similar,
+    parameters: { type: 'object', properties: { id_a: { type: 'integer', description: 'First member of the similar pair' }, id_b: { type: 'integer', description: 'Second member of the similar pair' }, mode: { type: 'string', enum: ['distinct', 'supersede', 'merge'], description: 'distinct = keep both (different facts); supersede = winner_id wins (soft-flag loser); merge = fold into merge_text (append summary + soft-flag originals, NO hard-delete)' }, winner_id: { type: 'integer', description: 'Required for mode=supersede; must equal id_a or id_b' }, merge_text: { type: 'string', description: 'Required for mode=merge — canonical sentence that absorb both originals; preserve every distinct detail' }, rationale: { type: 'string', description: 'Why this verdict (recorded in the verdict edge metadata for audit)' }, session_id: { type: 'string' } }, required: ['id_a', 'id_b', 'mode'] } },
   { name: 'memory_link', description: 'Author a FREE-FORM typed edge between two memories. The relation label is NOT a fixed enum — invent exactly the relationship your reasoning surfaced (relates_to, supersedes_explains, dual_of, blocks, prerequisites, caused_by, …). Optionally bi-temporal (valid_from/valid_until) + a 0-1 strength. Use to draw semantic links the cone-layer + supersede edges cannot express, WITHOUT mutating either memory text or status — pure graph enrichment. Self-referential edges are rejected.', handler: h_memory_link,
     parameters: { type: 'object', properties: { from_id: { type: 'integer', description: 'Source memory id' }, to_id: { type: 'integer', description: 'Target memory id' }, relation: { type: 'string', description: 'Free-form relationship label you authored — name the link you found, do not pick from a list' }, valid_from: { type: 'string', description: 'ISO timestamp the edge became true (optional)' }, valid_until: { type: 'string', description: 'ISO timestamp the edge stopped being true (optional; leave null for still-valid)' }, strength: { type: 'number', minimum: 0, maximum: 1, default: 1.0, description: 'Confidence in the link' }, reason: { type: 'string', description: 'Why you drew this edge (recorded in edge metadata for audit)' }, metadata: { type: 'object', description: 'Extra free-form edge metadata' } }, required: ['from_id', 'to_id', 'relation'] } },
   { name: 'memory_compact', description: 'REVERSIBLE orphan fallback. Use ONLY after memory_search found NO related memory to enrichment-merge a stale L1/L2 row into (merge is ALWAYS preferred when a neighbor exists). Demotes the row to archived (out of vector retrieval, its edges cascade-invalidate) + stamps a brain2_compact_reason so the matter is auditable. reactivate-on-reference can revive it on a later exact hit, and the row + its embedding survive — recoverable. L0 episode + L3 persona rows are NEVER compactable (cardinal guard). Never use this on a row that belongs to an open contradiction pair — resolve the pair instead.', handler: h_memory_compact,
     parameters: { type: 'object', properties: { id: { type: 'integer', description: 'The orphan L1/L2 memory to compact (must be active or contradicted; not L0/L3)' }, reason: { type: 'string', description: 'Why compact (NOT merge) — i.e. searched, no related memory found, true orphan' } }, required: ['id'] } },
-  { name: 'memory_audit_report', description: 'Read-only corpus-shape report Brain 2 reasons from. Returns status totals (active/contradicted/superseded/archived/invalid/merged_rows), the open contradiction pairs AWAITING a memory_resolve_contradiction verdict, the low-confidence merges awaiting review (brain2_review_pending from low-conf memory_merge), the consolidated merge-row count, + a live free-form edge histogram. Use at the start of a reconcile pass to see what tensions to resolve — no mutation.', handler: h_memory_audit_report, parameters: { type: 'object', properties: {} } },
+  { name: 'memory_audit_report', description: 'Read-only corpus-shape report Brain 2 reasons from. Returns status totals (active/contradicted/superseded/similar_pending/archived/invalid/merged_rows), the open contradiction pairs AWAITING a memory_resolve_contradiction verdict, the open SIMILAR pairs AWAITING a memory_resolve_similar verdict (cron-flagged near-duplicates), the low-confidence merges awaiting review (brain2_review_pending from low-conf memory_merge), the consolidated merge-row count, + a live free-form edge histogram. Use at the start of a reconcile pass to see what tensions to resolve — no mutation.', handler: h_memory_audit_report, parameters: { type: 'object', properties: {} } },
 ];
 
 // Spec for the agent system prompt: name + description + parameters only (handlers stripped). This is

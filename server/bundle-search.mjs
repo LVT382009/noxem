@@ -162,7 +162,7 @@ export async function searchLayer(queryVec, layer, limit) {
       // memory-store vectorKnnSearch / getActiveWithEmbedding). A contradiction pair has BOTH halves
       // status='contradicted'; gating only on 'active' would drop the whole pair from M-Flow, hiding
       // the very tension the D1 flip surfaces. Superseded / archived / invalid stay excluded (dead).
-      if (mem && (mem.status === 'active' || mem.status === 'contradicted') && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer)) && !isForeignEmbeddingModel(mem)) {
+      if (mem && (mem.status === 'active' || mem.status === 'contradicted' || mem.status === 'similar_pending') && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer)) && !isForeignEmbeddingModel(mem)) {
         results.push({ ...mem, score: r.score });
         if (results.length >= limit) break;
       }

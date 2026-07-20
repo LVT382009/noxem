@@ -2128,10 +2128,12 @@ app.post('/memory/sync', async (req, res) => {
   // Phase C-4: Brain 2 augment — fire-and-forget re-read of the FULL session at 1M context, where
   // Brain 2 tool-calls the noxem-internal soft-mutate suite (memory_edit / _store / _annotate /
   // _flag_superseded / _set_importance) to verify + supplement Brain 1's chunked facts. Never blocks
-  // the response (runAugment is an un-awaited promise + single-flight inside). Gated by ENABLE_AUGMENT
-  // + a non-empty exchange + at least one stored fact. The recoverability invariant (no prune / delete /
+  // the response — runAugment now ENQUEUES a durable verdict job + kicks the sequential drain (the old
+  // single-flight DROP is gone). Gated by ENABLE_AUGMENT + a non-empty exchange ONLY — when Brain 1
+  // stored 0 facts from the exchange, Brain 2 STILL runs: it can STORE a missed fact at full context (the
+  // augment fallback path the user asked for). The recoverability invariant (no prune / delete /
   // status-flip reachable from any tool) is enforced inside brain2-tools.mjs by construction.
-  if (ENABLE_AUGMENT && ids.length > 0 && (user_message?.trim() || assistant_response?.trim())) {
+  if (ENABLE_AUGMENT && (user_message?.trim() || assistant_response?.trim())) {
     const storedMemories = memories.map((m, i) => ({
       id: ids[i], text: m.text, type: m.type, entity: m.entity, attribute: m.attribute, importance: m.importance,
     }));

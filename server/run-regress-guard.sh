@@ -8,6 +8,11 @@ export ENABLE_EMBEDDING=false EMBEDDING_DIM=256 ENABLE_ADVISOR=false ENABLE_MAIN
 export MOCK_LLM_PORT=8011
 export LLM_URL=http://127.0.0.1:8011/v1/chat/completions
 export LLM_MODEL=mock-model
+# E23 dual-mode: this suite pins the LEGACY contracts — E2 semantic-merge (originals superseded into the
+# anchor on fold) + E8 cross-archived dedup. Force BRAIN2_ENABLED=0 so consolidateMemories' Brain2-on
+# deferred-supersede (originals stay active for a Brain2 verdict) doesn't break E2's anchor assertions.
+# The Brain2-on path is pinned by run-test-e23.sh (S7/S9/S10). E8 is mode-independent (38/0 either way).
+export BRAIN2_ENABLED=0
 
 rm -f ../data/hermes-memory.db data/hermes-memory.db ..data/hermes-memory.db-wal data/hermes-memory.db-wal ../data/hermes-memory.db-shm data/hermes-memory.db-shm 2>/dev/null
 fuser -k 8011/tcp 2>/dev/null || true
