@@ -712,6 +712,32 @@ export function linkContradictionPair(idA, idB) {
   return true;
 }
 
+// D1 (user Option-2, 2026-06-24): the explicit "reasoning decides" step that undoes a detectContradiction
+// pair-link. Clears contradiction_pair_id on BOTH members + restores status='active' so neither stays
+// flagged-as-tense. With winnerId: the loser is then SOFT-flagged superseded-by winner via
+// flagSupersededBy (reversible — downrank + is_newer_version_of chain edge, status stays active, no
+// hard delete, no retrieval loss) — the Brain2 verdict without a destructive call. Without winnerId it
+// is a plain 'unlink' (false-alarm retract; both go active). The OTHER content-preserving resolution is
+// a merge (mergeMemoriesHard), exposed to Brain 2 as the resolve tool's 'merge' branch and routed there
+// by the brain2-tools handler so the originals' inbound pair FK is nullified by hardDeleteMemory's
+// _nullPairHD on the high-confidence path. Idempotent + cardinal-safe: reverting a contradiction flag
+// never destroys an L0 episode / L3 persona (status restore only).
+const _clearPairStmt = db.prepare("UPDATE memories SET contradiction_pair_id = NULL, status = 'active', updated_at = datetime('now') WHERE id = ?");
+export function resolveContradictionPair(idA, idB, { winnerId = null, reason = null } = {}) {
+  if (!idA || !idB || Number(idA) === Number(idB)) return { ok: false, reason: 'bad-args' };
+  if (!getById.get(Number(idA)) || !getById.get(Number(idB))) return { ok: false, reason: 'not-found' };
+  const tx = db.transaction(() => { _clearPairStmt.run(Number(idA)); _clearPairStmt.run(Number(idB)); });
+  tx();
+  let flagged = null;
+  if (winnerId != null) {
+    const win = Number(winnerId);
+    const loser = (win === Number(idA)) ? Number(idB) : (win === Number(idB)) ? Number(idA) : null;
+    if (loser == null) return { ok: false, reason: 'winner-not-in-pair' };
+    flagged = flagSupersededBy(loser, win, { reason });
+  }
+  return { ok: true, resolved: [Number(idA), Number(idB)], upheld: winnerId != null ? Number(winnerId) : null, flagged };
+}
+
 export function storeMemory({ session_id, type, text, embedding = null, metadata = {}, importance = 0.5, context_prefix = '', entity = '', attribute = '', valid_from = null, summary = null, cone_layer = 0, intent_type = null, source_quote = null, source_turn_id = null, event_date = null, order_index = null, contradiction_pair_id = null }) {
   embedding = ensureEmbeddingBuffer(embedding);
   const result = insert.run({
@@ -808,6 +834,13 @@ export function updateMemoryStatus(id, status, supersededBy = null) {
     pruneVectors(db, id);
   });
   tx();
+  // E18: keep an OLD->NEW version edge LIVE so traverseMemoryGraph can walk supersession chains
+  // (the user's "enrich like human brain, multi-hop" ask). Created post-commit so it is NOT swept by
+  // cascadeInvalidateEdges (which already ran in the tx — a fresh valid_until=NULL edge survives).
+  // Best-effort: an edge-write failure never fails the supersede (data is already committed).
+  if (supersededBy != null && Number(supersededBy) !== Number(id)) {
+    try { storeEdge({ from_id: id, to_id: supersededBy, relation: 'is_newer_version_of', strength: 1.0, source_session_id: '', metadata: { chain: 'supersede' } }); } catch (e) { LOG_DEBUG && console.error('[E18] supersede chain edge failed:', e.message); }
+  }
 }
 
 // E2 A-MEM evolve helper. Master report §3 scenario A step 5: non-contradicting fresh context is
@@ -929,6 +962,11 @@ export function flagSupersededBy(id, byId, { reason = null } = {}) {
   meta.updated_at = new Date().toISOString();
   try {
     db.prepare('UPDATE memories SET importance = ?, metadata = ? WHERE id = ?').run(imp, JSON.stringify(meta), id);
+    // E18: soft-flag supersede path. flagSupersededBy does NOT flip status (row stays 'active'), and
+    // previously left NO graph link to the newer version, so traverseMemoryGraph could not walk a
+    // Brain2-flagged chain. Emit the same OLD->NEW version edge as the hard path so the chain is
+    // traversable either way. Best-effort: never fails the flag.
+    try { storeEdge({ from_id: id, to_id: byId, relation: 'is_newer_version_of', strength: 1.0, source_session_id: '', metadata: { chain: 'brain2_flag_soft' } }); } catch (ed) { LOG_DEBUG && console.error('[E18] soft-flag chain edge failed:', ed.message); }
     return { ok: true, id: Number(id), flagged_by: Number(byId), importance: imp };
   } catch (e) { LOG_DEBUG && console.error('[Brain2] flagSupersededBy error:', e.message); return { ok: false, reason: 'db-error', message: e.message }; }
 }
@@ -980,6 +1018,161 @@ export function deleteInvalid() {
 		deleteVec(db, id);
 	}
 	return ids.length;
+}
+
+// E17: FK-safe hard delete — the merge-then-delete-original primitive.
+//
+// Existing deleteMemory (L958) / removeById (L499) = bare `DELETE FROM memories WHERE id=?`. With
+// PRAGMA foreign_keys=ON (L36) that throws `FOREIGN KEY constraint failed` when a SURVIVING row
+// points back at the deleted id (a sibling whose superseded_by = this id; a memory whose
+// compressed_from / contradiction_pair_id = this id; a live memory_edges.from_id/to_id; a
+// citation_log row). /memory/purge (server.mjs :2444) sidesteps this because its delete set
+// (superseded/archived/invalid L1/L2) is self-contained. Brain2 merge-then-delete is NOT
+// self-contained — a merge can delete an original that a sibling still references, or that still
+// has touching edges/citations. This primitive cleans every inbound RESTRICT FK in the SAME
+// transaction before the DELETE, so hard-deleting an absorbed original never raises the FK
+// violation regardless of graph shape.
+//
+// Inbound RESTRICT FKs to memories(id) (no ON DELETE clause): superseded_by (self), compressed_from
+// (self), contradiction_pair_id (self), memory_edges.from_id, memory_edges.to_id, citation_log.memory_id.
+// ON DELETE CASCADE (auto, no manual cleanup): memory_raw.memory_id, memory_entities.memory_id,
+// memory_archive_index.archived_id. procedure_context_points.source_memory_id is a plain INTEGER
+// with NO REFERENCES clause (soft ref, cannot raise FK) — left intentionally dangling after delete.
+//
+// E6 cardinal guard at the SQL SOURCE: L0 (raw episode oracle) and L3 (persona) are NEVER
+// hard-deletable — not even via a post-merge step. Returns {ok:false, reason:'cardinal-protected'}.
+// This is the safety net against a Brain2 merge that mistakenly targets a cardinal row.
+export const _nullSupHD   = db.prepare('UPDATE memories SET superseded_by = NULL        WHERE superseded_by = ?');
+export const _nullCompHD  = db.prepare('UPDATE memories SET compressed_from = NULL      WHERE compressed_from = ?');
+export const _nullPairHD = db.prepare('UPDATE memories SET contradiction_pair_id = NULL WHERE contradiction_pair_id = ?');
+export const _delEdgesHD = db.prepare('DELETE FROM memory_edges   WHERE from_id = ? OR to_id = ?');
+export const _delCitesHD = db.prepare('DELETE FROM citation_log   WHERE memory_id = ?');
+
+export function hardDeleteMemory(id) {
+  if (id === null || id === undefined || id === '') return { ok: false, reason: 'bad-args' };
+  const numId = Number(id);
+  if (!Number.isFinite(numId) || numId <= 0) return { ok: false, reason: 'bad-args' };
+  const row = getById.get(numId);
+  if (!row) return { ok: false, reason: 'not-found' };
+  // E6 cardinal guard — never hard-delete L0 (raw episode oracle) or L3 (persona).
+  if (row.cone_layer === 0 || row.cone_layer === 3) return { ok: false, reason: 'cardinal-protected' };
+  const tx = db.transaction(() => {
+    // Null inbound self-FKs on SURVIVOR rows before the DELETE so RESTRICT never fires.
+    _nullSupHD.run(numId);
+    _nullCompHD.run(numId);
+    _nullPairHD.run(numId);
+    // Remove touching edges + citations anchored to the doomed row (the relationship/citation
+    // becomes half-dangling without this; provenance rides merge_row.metadata + citation_log rows
+    // that cite the SURVIVING merge/target, written by the merge tool BEFORE this call).
+    _delEdgesHD.run(numId, numId);
+    _delCitesHD.run(numId);
+    removeById.run(numId); // memory_raw / memory_entities / memory_archive_index are ON DELETE CASCADE
+  });
+  tx();
+  // Vector drop (post-commit — removeFromTurboVec is an HTTP call, cannot live in the sqlite tx).
+  // Best-effort: a failed TurboVec prune is backstopped by getActiveVectorIds at search time (E1b).
+  try {
+    const tb = getVectorBackend();
+    if (tb === 'turbovec' || tb === 'hybrid') removeFromTurboVec(numId).catch(() => {});
+    deleteVec(db, numId);
+  } catch (err) { LOG_DEBUG && console.error('[E17] hardDeleteMemory vector prune error:', err.message); }
+  return { ok: true, id: numId };
+}
+
+// E18: Brain2-authored merge with HARD-DELETE of absorbed originals (user Option-2, 2026-06-24).
+//
+// Mirrors the existing consolidateMemories provenance (memory-maintenance.mjs:484-507): merge row
+// stores metadata.consolidated_from + the source_memory_ids column. But instead of soft-superseding
+// the originals (updateMemoryStatus 'superseded' — reversible, leaves rows in archive), this absorbs
+// their content into the merge row text + writes a citation_log provenance row PER original that
+// cites the SURVIVING merge row, then HARD-DELETES the originals via hardDeleteMemory. Blog bloat
+// control: redundant rows are gone, content preserved inside the merge + its citations. The FK-safe
+// delete (§E17) is the ONLY reason this is safe — a survivor may still reference an original.
+//
+// Low confidence (<0.7): the merge row is still written (with brain2_review_pending) but originals
+// are SOFT-SUPERSEDED (updateMemoryStatus 'superseded', reversible), NOT hard-deleted — surfaced by
+// memory_audit_report for review. Never silently finalize an uncertain merge.
+//
+// Validation rejects WITHOUT touching the DB: >=2 distinct ids; all same cone_layer; cone_layer IN
+// (1,2) only (L0 episode + L3 persona are cardinal — never merge targets); all active|contradicted;
+// same entity (or all empty). The hard-delete is double-guarded: this validate + hardDeleteMemory's
+// own L0/L3 guard (defense in depth against a Brain2 merge mistakenly targeting a cardinal row).
+export const _mergeGetOrig = db.prepare('SELECT id, text, status, entity, cone_layer, importance, type, attribute, session_id FROM memories WHERE id = ?');
+export const _mergeSetSrc = db.prepare('UPDATE memories SET source_memory_ids = ? WHERE id = ?');
+export const _mergeInsCite = db.prepare('INSERT INTO citation_log (memory_id, session_id, context) VALUES (?, ?, ?)');
+
+export function mergeMemoriesHard(ids, mergeText, { rationale = null, confidence = 1.0, session_id = '', embedding = null, keep_type = null, keep_entity = null } = {}) {
+  if (!Array.isArray(ids) || ids.length < 2) return { ok: false, reason: 'need-2+-ids' };
+  if (!mergeText || typeof mergeText !== 'string') return { ok: false, reason: 'bad-merge-text' };
+  const numIds = ids.map(Number);
+  if (numIds.some(n => !Number.isFinite(n) || n <= 0)) return { ok: false, reason: 'bad-ids' };
+  const uniq = [...new Set(numIds)];
+  if (uniq.length < 2) return { ok: false, reason: 'need-2+-distinct' };
+  const rows = uniq.map(id => _mergeGetOrig.get(id));
+  if (rows.some(r => !r)) return { ok: false, reason: 'not-found' };
+  if (rows.some(r => r.cone_layer === 0 || r.cone_layer === 3)) return { ok: false, reason: 'cardinal-protected' };
+  const layer = rows[0].cone_layer;
+  if (rows.some(r => r.cone_layer !== layer)) return { ok: false, reason: 'mixed-cone-layer' };
+  if (rows.some(r => r.status !== 'active' && r.status !== 'contradicted')) return { ok: false, reason: 'not-active' };
+  const ents = rows.map(r => r.entity || '');
+  const nonEmpty = ents.filter(Boolean);
+  if (nonEmpty.length > 0 && new Set(nonEmpty).size > 1) return { ok: false, reason: 'mixed-entity' };
+  const entity = keep_entity || nonEmpty[0] || rows[0].entity || '';
+
+  const conf = Number.isFinite(Number(confidence)) ? Number(confidence) : 0;
+  const lowConf = conf < 0.7;
+
+  const meta = {
+    source: 'merge',
+    merged_by: 'brain2',
+    consolidated_from: uniq,
+    merge_rationale: rationale || 'brain2_merge',
+    merge_confidence: conf,
+    merged_at: new Date().toISOString(),
+  };
+  if (lowConf) meta.brain2_review_pending = true;
+
+  const bestType = keep_type || rows[0].type || 'fact';
+  let maxImp = 0;
+  for (const r of rows) if ((r.importance || 0) > maxImp) maxImp = r.importance || 0;
+
+  const newId = storeMemory({
+    session_id: session_id || rows[0].session_id || '',
+    type: bestType,
+    text: mergeText,
+    embedding,
+    metadata: meta,
+    importance: Math.min(1.0, maxImp + 0.2),
+    context_prefix: `Merged ${uniq.length} memories about ${entity}:`,
+    entity,
+    attribute: rows[0].attribute || '',
+    cone_layer: layer,
+  });
+  _mergeSetSrc.run(JSON.stringify(uniq), newId);
+
+  // Per-original provenance: citation_log row citing the SURVIVING merge (provenance rides survivor,
+  // NOT the doomed original, so hardDelete won't orphan it). Preview truncated to keep the row light.
+  for (const r of rows) {
+    const preview = (r.text || '').slice(0, 200);
+    const ctx = `merge #${newId} absorbed original #${r.id} (${meta.merge_rationale}) — "${preview}"`;
+    try { _mergeInsCite.run(newId, session_id || rows[0].session_id || '', ctx); } catch (e) { LOG_DEBUG && console.error('[E18] merge citation_log write failed:', e.message); }
+  }
+
+  if (lowConf) {
+    // Reversible: soft-supersede originals (existing hard path prunes vec + cascade-supersedes
+    // touching edges inside a tx). Do NOT hard-delete — surface via memory_audit_report review queue.
+    for (const r of rows) { try { updateMemoryStatus(r.id, 'superseded', newId); } catch (e) { LOG_DEBUG && console.error('[E18] low-conf supersede failed:', e.message); } }
+    return { ok: true, merge_id: newId, deleted: [], review_pending: true, confidence: conf };
+  }
+
+  // Hard path: originals absorbed + hard-deleted.
+  const deleted = [];
+  for (const r of rows) {
+    const res = hardDeleteMemory(r.id);
+    if (res.ok) deleted.push(r.id);
+    else LOG_DEBUG && console.error(`[E18] hardDeleteMemory failed for #${r.id}:`, res.reason);
+  }
+  return { ok: true, merge_id: newId, deleted, confidence: conf };
 }
 
 export function searchMemories({ query, limit = 10 }) {
@@ -1171,6 +1364,73 @@ export function archiveStaleMemories() {
     return rows.length;
   });
   try { return tx(); } catch (e) { LOG_DEBUG && console.error('[Store] archiveStaleMemories error:', e.message); return 0; }
+}
+
+// D1 (user Option-2, 2026-06-24): TARGETED single-id archive — the memory_compact Brain2 tool's store
+// primitive. Unlike the bulk archiveStaleMemories (90-day CRON), Brain 2 has ALREADY searched for a
+// related memory to enrichment-merge this stale row into and found NONE (a true orphan). Archive is the
+// FALLBACK for orphans; compaction is reversible (reactivateMemory undoes it — the archive_index row +
+// the stored embedding BLOB survive, so E7 reactivation-on-reference can revive it on a later hit).
+// Cardinal guard (E6, user-approved safety net): L0 episode + L3 persona survive archive FOREVER (a
+// Brain2 wrong-judgment cannot lose an oracle/persona). Only active|contradicted L1/L2 are demotable —
+// so a pair-link is compactable too, and reactivation restores it (its partner keeps its own status).
+// One tx: status flip + cascadeInvalidateEdges('cascade-archive') + pruneVectors + archive_index insert
+// + a brain2_compact_reason/compacted_at metadata stamp for the audit trail. Mirrors the per-row body of
+// archiveStaleMemories so the audit + reactivation paths see the same shape either way.
+const _archiveOneById = db.prepare("UPDATE memories SET status = 'archived', updated_at = datetime('now') WHERE id = ?");
+const _insArchiveOne = db.prepare("INSERT OR IGNORE INTO memory_archive_index (archived_id, archived_at, cone_layer, entity, attribute) VALUES (?, datetime('now'), ?, ?, ?)");
+const _rowForArchive = db.prepare('SELECT id, status, cone_layer, entity, attribute, importance, metadata FROM memories WHERE id = ?');
+export function archiveMemoryById(id, { reason = null } = {}) {
+  const numId = Number(id);
+  if (!Number.isFinite(numId) || numId <= 0) return { ok: false, reason: 'bad-args' };
+  const row = _rowForArchive.get(numId);
+  if (!row) return { ok: false, reason: 'not-found' };
+  if (row.cone_layer === 0 || row.cone_layer === 3) return { ok: false, reason: 'cardinal-protected' };
+  if (row.status !== 'active' && row.status !== 'contradicted') return { ok: false, reason: 'not-active' };
+  let meta = {};
+  try { meta = row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : {}; } catch { meta = {}; }
+  meta.brain2_compact_reason = reason || 'brain2_compact_orphan_fallback';
+  meta.brain2_compacted_by = 'brain2_tool';
+  meta.brain2_compacted_at = new Date().toISOString();
+  const tx = db.transaction(() => {
+    _archiveOneById.run(numId);
+    cascadeInvalidateEdges.run('cascade-archive', numId, numId);
+    pruneVectors(db, numId);
+    _insArchiveOne.run(numId, row.cone_layer ?? 0, row.entity ?? null, row.attribute ?? null);
+    db.prepare('UPDATE memories SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), numId);
+  });
+  try { tx(); }
+  catch (e) { LOG_DEBUG && console.error('[Store] archiveMemoryById error:', e.message); return { ok: false, reason: 'db-error', message: e.message }; }
+  return { ok: true, id: numId, archived: true, reversible: true };
+}
+
+// D1 audit report — the READ primitive the memory_audit_report Brain2 tool surfaces. Gives Brain 2 the
+// corpus shape it needs to DECIDE (resolve contradictions, finalize review_pending merges, find
+// enrichment-merge candidates for orphans): status breakdown, open contradiction pairs (each reported
+// once via the lower id), low-confidence merges awaiting review (metadata.brain2_review_pending), the
+// consolidated merge rows (source_memory_ids set), + a free-form edge histogram of the live link graph.
+// All read-only; no row mutation. Counts are cheap GROUP BYs; the pair/review samples are capped.
+const _auditStatusBreakdown = db.prepare('SELECT status, COUNT(*) AS c FROM memories GROUP BY status');
+const _auditContrPairs = db.prepare("SELECT id, contradiction_pair_id, text, entity, attribute FROM memories WHERE status = 'contradicted' AND contradiction_pair_id IS NOT NULL AND id < contradiction_pair_id ORDER BY id LIMIT 50");
+const _auditReviewPending = db.prepare("SELECT id, text, source_memory_ids FROM memories WHERE status = 'active' AND metadata LIKE '%\"brain2_review_pending\":true%' ORDER BY id DESC LIMIT 50");
+const _auditMergedCount = db.prepare("SELECT COUNT(*) AS c FROM memories WHERE source_memory_ids IS NOT NULL AND source_memory_ids != '[]'");
+const _auditEdgeHisto = db.prepare("SELECT relation, COUNT(*) AS c FROM memory_edges WHERE valid_until IS NULL GROUP BY relation");
+export function getAuditReport() {
+  const breakdown = {};
+  for (const { status, c } of _auditStatusBreakdown.all()) breakdown[status] = c;
+  const contradicted_pairs = _auditContrPairs.all().map(r => ({ id: r.id, pair_id: r.contradiction_pair_id, text: (r.text || '').slice(0, 160), entity: r.entity, attribute: r.attribute }));
+  const review_pending_merges = _auditReviewPending.all().map(r => {
+    let source = []; try { source = JSON.parse(r.source_memory_ids || '[]'); } catch { source = []; }
+    return { id: r.id, text: (r.text || '').slice(0, 160), source_ids: Array.isArray(source) ? source : [] };
+  });
+  return {
+    totals: { active: breakdown.active || 0, contradicted: breakdown.contradicted || 0, superseded: breakdown.superseded || 0, archived: breakdown.archived || 0, invalid: breakdown.invalid || 0, merged_rows: _auditMergedCount.get().c },
+    open_contradiction_pairs: contradicted_pairs,
+    open_contradiction_pair_count: contradicted_pairs.length,
+    review_pending_merges,
+    review_pending_count: review_pending_merges.length,
+    live_edge_relations: _auditEdgeHisto.all().map(r => ({ relation: r.relation, count: r.c })),
+  };
 }
 
 // === E5: bounded active set ===

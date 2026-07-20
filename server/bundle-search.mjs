@@ -138,9 +138,11 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
 }
 
 /**
- * Search a single cone layer using vector KNN.
+ * Search a single cone layer using vector KNN. Exported (E20, 2026-06-24) so the D1 status-gate fix
+ * is deterministically unit-testable WITHOUT the embedding-ready gate that wraps bundleSearch.
+ * The KNN candidates + cone_layer + status gate run the exact same path bundleSearch uses.
  */
-async function searchLayer(queryVec, layer, limit) {
+export async function searchLayer(queryVec, layer, limit) {
   try {
     // Use sqlite-vec KNN and filter by cone_layer
     const allVecResults = knnSearch(db, Array.from(queryVec), limit * 10);
@@ -154,9 +156,13 @@ async function searchLayer(queryVec, layer, limit) {
     const results = [];
     for (const r of scored) {
       const mem = memById.get(String(r.id));
-      // E1: bundle search must gate on active status like the vectorKnn paths — without this,
+      // E1: bundle search must gate on status like the vectorKnn paths — without this,
       // superseded/archived rows returned by knnSearch surfaced dead memories in cone layers.
-      if (mem && mem.status === 'active' && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer)) && !isForeignEmbeddingModel(mem)) {
+      // D1 (E19, 2026-06-24): include 'contradicted' alongside 'active' (mirror the FIX-4 arms in
+      // memory-store vectorKnnSearch / getActiveWithEmbedding). A contradiction pair has BOTH halves
+      // status='contradicted'; gating only on 'active' would drop the whole pair from M-Flow, hiding
+      // the very tension the D1 flip surfaces. Superseded / archived / invalid stay excluded (dead).
+      if (mem && (mem.status === 'active' || mem.status === 'contradicted') && (mem.cone_layer === layer || (layer === 0 && !mem.cone_layer)) && !isForeignEmbeddingModel(mem)) {
         results.push({ ...mem, score: r.score });
         if (results.length >= limit) break;
       }

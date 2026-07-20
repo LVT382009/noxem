@@ -1,6 +1,7 @@
-import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories, enforceActiveSetBound } from './memory-store.mjs';
+import { getActiveWithEmbedding, updateMemoryStatus, updateMemoryType, deleteMemory, storeMemories, getMemoryStats, deleteInvalid, archiveStaleMemories, storeMemory, getMemoriesByEntityAttr, vectorKnnSearch, db, getActiveMemories, enforceActiveSetBound, linkContradictionPair, hardDeleteMemory, editMemoryText, getMemory } from './memory-store.mjs';
 import { initEmbeddingEngine, isEmbeddingReady, embed, embedBatch, findDuplicates, categorizeText, estimateImportance, extractEntityAttribute, cosineSimilarity, isTrivialIntent } from './embedding-engine.mjs';
 import { appendEvolvedContext } from './memory-store.mjs';
+import { isVecReady } from './vector-index.mjs';
 import { synthesizeConsolidation } from './advisor-engine.mjs';
 import { deltaProcessor, graphPruner, ambientInjector, ingestPipeline, strategyDistiller, capsuleBuilder, lessonVault, compactionCoordinator, multiSourceRouter } from './module-registry.mjs';
 import { llmFetch } from './llm-fetch.mjs';
@@ -82,31 +83,12 @@ export async function runMaintenance() {
     }
 
     // 2. Contradiction detection (entity-attribute matching - directional)
-    // Handles: preference changes, negation flips, temporal updates, state changes
+    // Handles: preference changes, negation flips, temporal updates, state changes. Pure + exportable
+    // (see runContradictionPass) so a deterministic regression test can drive the D1 flip without the
+    // embedding-ready gate that wraps runMaintenance.
     try {
-      const entityAttrMap = new Map();
-      for (const m of memories) {
-        if (!m.entity || !m.attribute) continue;
-        const key = `${m.entity}::${m.attribute}`;
-        if (!entityAttrMap.has(key)) entityAttrMap.set(key, []);
-        entityAttrMap.get(key).push(m);
-      }
-
-      for (const [key, mems] of entityAttrMap) {
-        if (mems.length < 2) continue;
-        mems.sort((a, b) => a.id - b.id);
-
-        for (let i = 0; i < mems.length - 1; i++) {
-          const older = mems[i];
-          const newer = mems[i + 1];
-          const contradiction = detectContradiction(older.text, newer.text);
-          if (contradiction) {
-            updateMemoryStatus(older.id, 'superseded', newer.id);
-            results.contradictions++;
-            LOG_DEBUG && console.log(`[Maintenance] Contradiction (${contradiction}): "${older.text}" -> superseded by "${newer.text}" (${key})`);
-          }
-        }
-      }
+      const res = runContradictionPass(memories);
+      results.contradictions += res.contradictions;
     } catch (err) {
       LOG_DEBUG && console.error('[Maintenance] Contradiction error:', err.message);
     }
@@ -141,6 +123,28 @@ export async function runMaintenance() {
     } catch (err) {
       LOG_DEBUG && console.error('[Maintenance] Cleanup error:', err.message);
     }
+
+    // 4b. D1 user Option-2 step-7: MERGE-FIRST stale enrichment. A stale L1/L2 row with a related
+    // active memory is absorbed INTO the related (editMemoryText appends context — the related KEEPS its
+    // id + edges + status — then the stale is hard-deleted, content preserved in the related text). Only
+    // TRUE ORPHANS (no related memory found) fall through to step-5 archiveStaleMemories' REVERSIBLE
+    // compaction. So a stale preference enriches the newer fact that supersedes it; the archive tile is
+    // the fallback, never the default. Enrich runs while embeddings are live (vectorKnnSearch needs them).
+    try {
+      const enr = enrichStaleIntoRelated(memories);
+      results.enriched_merged = enr.enriched;
+      if (enr.enriched > 0) LOG_DEBUG && console.log(`[Maintenance] Enrichment-merged ${enr.enriched} stale memories into related (orphans left for archive)`);
+    } catch (err) { LOG_DEBUG && console.error('[Maintenance] Enrich-merge error:', err.message); }
+
+    // 4c. D1 user Option-2 step-7: harden review-pending merges. A low-conf memory_merge left its
+    // originals soft-superseded for review; after HARDEN_REVIEW_HOURS (default 24h) with no objection the
+    // originals hard-delete (their content already lives in the merge text) + brain2_review_pending clears.
+    try {
+      const HARDEN_HOURS = parseFloat(process.env.HARDEN_REVIEW_HOURS || '24');
+      const h = hardenReviewPendingMerges(HARDEN_HOURS);
+      results.hardened_merges = h.hardened;
+      if (h.hardened > 0) LOG_DEBUG && console.log(`[Maintenance] Hardened ${h.hardened} review-pending merges (originals hard-deleted)`);
+    } catch (err) { LOG_DEBUG && console.error('[Maintenance] Harden error:', err.message); }
 
     // 5. Archive stale memories (90+ days old, never recalled)
     try {
@@ -280,6 +284,99 @@ const elapsed = Date.now() - start;
   }
 }
 
+// D1 (user Option-2, 2026-06-24) step-7: MERGE-FIRST stale enrichment — the CRON that keeps stale
+// memories from rotting unread in the archive. BEFORE archiveStaleMemories' reversible compaction, the
+// pass looks for a RELATED active L1/L2 memory for each stale candidate (same cone layer + same-or-empty
+// entity + cosine >= ENRICH_MIN_COSINE, found via vectorKnnSearch). On a hit it ENRICHES the related row
+// IN PLACE: editMemoryText appends the stale's context to the related's text (the related KEEPS its id +
+// its edges + its status — only its text grows + its embedding is dropped for a later re-embed), then the
+// stale is HARD-DELETED via hardDeleteMemory (content now lives inside the related, content-preserving).
+// The determinstic join is intentionally crude but lossless; a QUALITY re-phrase merge stays Brain 2's LLM
+// job (memory_merge / memory_resolve_contradiction in the reconcile prompt). TRUE ORPHANS (no related hit)
+// return skipped + are LEFT for archiveStaleMemories' reversible compaction — exactly the user's stated
+// policy: merge-first, compact-only-as-fallback for genuine orphans.
+// contradicted rows are EXCLUDED (status must be 'active') so a contradiction pair member is NEVER silently
+// merged by the CRON — it belongs to the contradiction reconcile pass's explicit verdict.
+// Exported so a deterministic regression test can drive it WITHOUT the embedding-ready gate runMaintenance
+// early-returns under; vectorKnnSearch itself needs isVecReady (basis-vector test db satisfies this).
+export function enrichStaleIntoRelated(memories) {
+  const ENRICH_MIN_COSINE = parseFloat(process.env.ENRICH_MIN_COSINE || '0.80');
+  const STALE_DAYS = parseInt(process.env.ENRICH_STALE_DAYS || process.env.ARCHIVE_STALE_DAYS || '90');
+  if (!Array.isArray(memories)) return { enriched: 0, skipped: 0 };
+  const stale = memories
+    .filter(m => Number(m.cone_layer) === 1 || Number(m.cone_layer) === 2)
+    .filter(m => m.status === 'active')
+    .filter(m => Number(m.recall_count || 0) === 0)
+    .filter(m => m.created_at && (Date.parse(m.created_at) < Date.now() - STALE_DAYS * 86400 * 1000))
+    .filter(m => m.embedding);
+  if (!stale.length) return { enriched: 0, skipped: 0 };
+  let enriched = 0, skipped = 0;
+  for (const s of stale) {
+    if (!isVecReady()) break;
+    const hits = vectorKnnSearch(s.embedding, 20);
+    if (!hits || !hits.length) { skipped++; continue; }
+    let related = null, relatedScore = 0;
+    for (const h of hits) {
+      if (Number(h.id) === Number(s.id)) continue;
+      const r = getMemory(h.id);
+      if (!r || r.status !== 'active') continue;
+      if (Number(r.cone_layer) !== Number(s.cone_layer)) continue;
+      if ((s.entity || '') !== (r.entity || '')) continue;     // same fact family (both-empty === counts)
+      if ((h.score || 0) < ENRICH_MIN_COSINE) continue;
+      related = r; relatedScore = h.score || 0; break;
+    }
+    if (!related) { skipped++; continue; }
+    const staleText = String(s.text || '').trim();
+    const relText = String(related.text || '').trim();
+    const joiner = /\.$/.test(relText) ? '' : '.';
+    const enrichedText = `${relText}${joiner} (also recorded earlier: "${staleText}")`;
+    const editRes = editMemoryText(related.id, enrichedText, { reason: `CRON enrich-merge absorbed #${s.id} into #${related.id}` });
+    if (!editRes?.ok) { if (LOG_DEBUG) console.error('[Maint enrich] editMemoryText failed on #' + related.id + ':', editRes && editRes.reason); skipped++; continue; }
+    const delRes = hardDeleteMemory(s.id);
+    if (!delRes?.ok) {
+      if (LOG_DEBUG) console.error('[Maint enrich] hardDeleteMemory failed on stale #' + s.id + ' (related #' + related.id + ' already enriched — manual reconcile needed):', delRes && delRes.reason);
+      skipped++; continue;
+    }
+    enriched++;
+    if (LOG_DEBUG) console.log(`[Maint enrich] Absorbed stale #${s.id} into related #${related.id} (cosine ${relatedScore.toFixed(2)})`);
+  }
+  return { enriched, skipped };
+}
+
+// D1 (user Option-2, 2026-06-24) step-7: harden REVIEW-PENDING merges. A low-confidence memory_merge
+// (<0.7) wrote its merge row with brain2_review_pending + SOFT-superceded its originals (status
+// 'superseded', superseded_by = mergeId) — reversible, surfaced by memory_audit_report for a human/audit.
+// After a review window (HARDEN_REVIEW_HOURS, default 24) elapses with no objection, this pass FINALIZES the
+// merge: hard-deletes the superseded originals (their content already lives inside the merge text +
+// citation_log) + clears brain2_review_pending. Cardinal guard rides inside hardDeleteMemory — L0/L3
+// originals (which a merge can't have created) would survive. So an uncertain merge is eventually made
+// durable, but ONLY after the window — never the instant it's raised. No embeddings required (pure status
+// + superseded_by bookkeeping), so this is fully deterministic + exported for direct testing.
+export function hardenReviewPendingMerges(maxAgeHours = 24) {
+  const rows = db.prepare("SELECT id, metadata, created_at FROM memories WHERE status = 'active' AND metadata LIKE '%\"brain2_review_pending\":true%'").all();
+  if (!rows.length) return { hardened: 0, skipped: 0 };
+  const cutoffMs = Math.max(0, Number(maxAgeHours) || 0) * 3600 * 1000;
+  const now = Date.now();
+  let hardened = 0, skipped = 0;
+  const origStmt = db.prepare("SELECT id FROM memories WHERE superseded_by = ? AND status = 'superseded'");
+  const clearPendStmt = db.prepare("UPDATE memories SET metadata = ?, updated_at = datetime('now') WHERE id = ?");
+  for (const m of rows) {
+    let meta = {};
+    try { meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata || '{}') : (m.metadata || {}); } catch { meta = {}; }
+    const when = meta.merged_at ? Date.parse(meta.merged_at) : (m.created_at ? Date.parse(m.created_at) : 0);
+    if (!when || (now - when) < cutoffMs) { skipped++; continue; }
+    const originals = origStmt.all(m.id).map(r => r.id);
+    let deleted = 0;
+    for (const oid of originals) { const r = hardDeleteMemory(oid); if (r?.ok) deleted++; else if (LOG_DEBUG) console.error('[Maint harden] hardDeleteMemory failed for superseded original #' + oid + ':', r && r.reason); }
+    meta.brain2_review_pending = false;
+    try { clearPendStmt.run(JSON.stringify(meta), m.id); }
+    catch (e) { if (LOG_DEBUG) console.error('[Maint harden] clear-pending failed for merge #' + m.id + ':', e.message); skipped++; continue; }
+    hardened++;
+    if (LOG_DEBUG) console.log(`[Maint harden] Finalized merge #${m.id} (hard-deleted ${deleted} originals, review window elapsed)`);
+  }
+  return { hardened, skipped };
+}
+
 // Category auto-correction: check if typed memories are misclassified
 // Uses rule-based heuristics to detect common category mismatches
 function autoCorrectCategories(memories, maxCorrections = 25) {
@@ -346,6 +443,42 @@ function extractValue(text) {
   if (idMatch) return { value: idMatch[1].trim(), negated: false };
 
   return null;
+}
+
+// D1 (user Option-2, 2026-06-24): the contradiction-detection PASS, extracted from runMaintenance so
+// it is deterministically unit-testable (the embedding-ready gate that wraps runMaintenance would
+// otherwise block a pure-store regression test). Pure over the rows it mutates: it pair-links
+// both members of a detected conflict as status='contradicted' (bidirectional contradiction_pair_id)
+// instead of silently superseding the older one — a detectContradiction hit is a TENSION to surface,
+// not a verdict. Resolution is a separate, explicit step (resolveContradictionPair + the Brain2
+// memory_resolve_contradiction tool), never this pass. Returns { contradictions, paired:[[a,b]...] }
+// so callers / tests can assert exactly which rows were linked.
+export function runContradictionPass(memories) {
+  const out = { contradictions: 0, paired: [] };
+  if (!Array.isArray(memories) || memories.length < 2) return out;
+  const entityAttrMap = new Map();
+  for (const m of memories) {
+    if (!m.entity || !m.attribute) continue;
+    const key = `${m.entity}::${m.attribute}`;
+    if (!entityAttrMap.has(key)) entityAttrMap.set(key, []);
+    entityAttrMap.get(key).push(m);
+  }
+  for (const [key, mems] of entityAttrMap) {
+    if (mems.length < 2) continue;
+    mems.sort((a, b) => a.id - b.id);
+    for (let i = 0; i < mems.length - 1; i++) {
+      const older = mems[i];
+      const newer = mems[i + 1];
+      const contradiction = detectContradiction(older.text, newer.text);
+      if (contradiction) {
+        linkContradictionPair(older.id, newer.id);
+        out.contradictions++;
+        out.paired.push([older.id, newer.id]);
+        LOG_DEBUG && console.log(`[Maintenance] Contradiction (${contradiction}): "${older.text}" ↔ "${newer.text}" pair-linked contradicted (${key})`);
+      }
+    }
+  }
+  return out;
 }
 
 // Detect contradiction between two memories about the same entity+attribute
