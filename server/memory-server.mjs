@@ -23,6 +23,7 @@ import {
  upsertEntity, getEntity, listEntities, touchEntity,
  addFacet, getFacets, addFacetPoint, getFacetPoints,
  linkMemoryToEntity, getMemoriesForEntity, getEntitiesForMemory,
+ getMemoriesByIds,
 } from './memory-store.mjs';
 import { tryReactivateCandidates, tryCrossArchivedDedup, tryActiveEvolveDedup } from './reactivation-engine.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, getRLMStatus, shutdownRLM } from './advisor-engine.mjs';
@@ -901,7 +902,7 @@ app.post('/memory/store', async (req, res) => {
     const contextPrefix = generateContextPrefix(trimmed, catType, session_id);
 
     // v2.1: Storage-time structural dedup (MemPalace pattern)
- try { const _dup = spatialFilter.checkStorageTimeDuplicate(trimmed, entity, attribute); if (_dup) return res.json({ ok: true, id: _dup.id, embedding: 'duplicate', duplicate_of: _dup.id }); } catch {}
+ try { const _dup = spatialFilter.checkStorageTimeDuplicate(trimmed, entity, attribute); if (_dup && _dup.is_duplicate) return res.json({ ok: true, id: _dup.existing_id, embedding: 'duplicate', duplicate_of: _dup.existing_id }); } catch {}
  // Store immediately without waiting for embedding (non-blocking)
     const id = storeMemory({
       session_id: session_id || '',
@@ -1208,8 +1209,23 @@ app.get("/memory/search", async (req, res) => {
   try { searchResults = entityRanker.applyEntityBoost(searchResults); } catch {}
 	// v2.2: Merge structural with semantic results
 	try { if (_prefilter?.prefiltered && searchResults.length > 0) searchResults = spatialFilter.mergeStructuralWithSemantic(_prefilter.results, searchResults); } catch {}
-	// v2.2: Expand hit graph by entities
-	try { if (searchResults.length > 0) searchResults = entityRanker.expandHitGraphByEntities(q.trim(), searchResults.map(r => r.id)); } catch {}
+	// v2.2: Expand hit graph by entities (append hydrated neighbors - never drop originals)
+	try {
+		if (searchResults.length > 0) {
+			const _graphBaseIds = new Set(searchResults.map(r => r.id).filter(Boolean));
+			const _graphExpanded = entityRanker.expandHitGraphByEntities(q.trim(), Array.from(_graphBaseIds));
+			if (_graphExpanded && _graphExpanded.length) {
+				const _graphNewIds = _graphExpanded.map(e => e.id).filter(id => id && !_graphBaseIds.has(id));
+				if (_graphNewIds.length) {
+					const _graphRows = (getMemoriesByIds(_graphNewIds) || []).filter(m => m && m.status === 'active' && !_graphBaseIds.has(m.id));
+					if (_graphRows.length) searchResults = [...searchResults, ..._graphRows.map(m => {
+						const { embedding, vec_id, ..._row } = m;
+						return { ..._row, score: 0, _via_graph: true };
+					})];
+				}
+			}
+		}
+	} catch {}
 	// v2.2: Modality boost for cross-modal results
 	try { if (searchResults.length > 0) searchResults = crossModalExtractor.modalityBoost(searchResults, q.trim()); } catch {}
 	// v2.2: Hall-type corridor diversity
