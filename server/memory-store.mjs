@@ -969,6 +969,7 @@ export function storeMemories(items) {
     event_date: m.event_date ?? null,
     order_index: Number.isFinite(Number(m.order_index)) ? Number(m.order_index) : null,
     contradiction_pair_id: m.contradiction_pair_id ?? null,
+    similar_pair_id: m.similar_pair_id ?? null, // E23: supply INSERT named param (mirrors storeMemory); without it better-sqlite3 throws "Missing named parameter 'similar_pair_id'" and /memory/sync + /memory/store-batch 500 — every hook sync dropped -> 0 active memories
   }));
   const ids = insertTx(prepared);
   // Update vector index for batch
