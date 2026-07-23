@@ -714,6 +714,16 @@ export VECTOR_BACKEND=${VECTOR_BACKEND:-hybrid}
 export TURBOVEC_URL=${TURBOVEC_URL:-http://127.0.0.1:3003}
 export BRAIN2_ENABLED
 export NODE_OPTIONS="${NODE_OPTIONS:-} --dns-result-order=ipv4first"
+# E23: thread the Brain2 LLM endpoint into the memory-server env BEFORE it boots.
+# llm-config.mjs freezes LLM_URL at import time (static read of process.env), so it must be
+# exported here -- not in the [2/2] qwenproxy branch that runs AFTER memory server is already up.
+# QwenProxy mode builds the OpenAI-compatible adapter on :LLM_PORT but never exported its URL,
+# so memory-server's brain2 imported LLM_URL='' and augment's llmFetch('') threw -> "llm-failed"
+# (lastTurns:0). Local/freellm already export LLM_URL above; the [ -z ] guards keep this additive.
+if [ "$BRAIN2_ENABLED" = '1' ] && [ "$BRAIN2_PROVIDER" = 'qwenproxy' ]; then
+  [ -z "${LLM_URL:-}" ] && export LLM_URL="http://127.0.0.1:${LLM_PORT}/v1/chat/completions"
+  [ -z "${LLM_MODEL:-}" ] && export LLM_MODEL="qwen3.7-max-thinking"
+fi
 node "$MEMORY_SERVER" &
 MEMORY_PID=$!
 wait_for_port $MEMORY_PORT "Memory server" 180
