@@ -159,6 +159,18 @@ class NoxemMemoryProvider:
         if "llm_model" in cfg and "GEMMA_MODEL" not in os.environ:
             os.environ["GEMMA_MODEL"] = str(cfg["llm_model"])
 
+        # QwenProxy preset: Brain 2 routes through the local OpenAI-compatible QwenProxy
+        # adapter, so set the LLM endpoint to it (mirrors the FreeLLM preset below). The
+        # standalone noxem-launcher.sh also exports this; this covers the hermes-agent
+        # provider path where llm-config.mjs freezes LLM_URL at import time.
+        if cfg.get("brain2_provider") == "qwenproxy":
+            _qp_port = os.environ.get("LLM_PORT", os.environ.get("GEMMA4_PORT", "8000"))
+            _qp_url = f"http://127.0.0.1:{_qp_port}/v1/chat/completions"
+            if "LLM_URL" not in os.environ:
+                os.environ["LLM_URL"] = _qp_url
+            if "GEMMA_URL" not in os.environ:
+                os.environ["GEMMA_URL"] = _qp_url
+
         # Update self._server_url if config changed it
         if "NOXEM_SERVER" in os.environ:
             self._server_url = os.environ["NOXEM_SERVER"]
@@ -519,14 +531,10 @@ class NoxemMemoryProvider:
                 "default": "qwenproxy",
                 "choices": ["qwenproxy", "local", "freellm"],
             },
-            # ── QwenProxy (cloud) ───────────────────────
-            {
-                "key": "llm_api_key",
-                "description": "QwenProxy API key",
-                "secret": True,
-                "when": {"brain2_provider": "qwenproxy"},
-                "env_var": "LLM_API_KEY",
-            },
+            # ── QwenProxy (cloud) ── no setup fields: Brain 2 routes through the
+            # local OpenAI-compatible QwenProxy adapter, whose URL is auto-preset
+            # in load_env_from_config. No API key — QwenProxy authenticates by
+            # account login, not key. (Only local + FreeLLM prompt for keys.) ──
             # ── Local LLM ───────────────────────────────
             {
                 "key": "llm_url",
