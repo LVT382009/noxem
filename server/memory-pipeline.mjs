@@ -44,7 +44,7 @@ setInterval(() => {
 
 function getSessionState(sessionId) {
   if (!sessionState.has(sessionId)) {
-    sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL2Extract: 0, lastL3Extract: 0, consecutiveFailures: 0, lastActivity: Date.now() });
+    sessionState.set(sessionId, { l0Count: 0, l1ExtractCount: 0, lastL1Extract: 0, lastL1ExtractAt: 0, lastL2Extract: 0, lastL3Extract: 0, consecutiveFailures: 0, lastActivity: Date.now() });
   }
   return sessionState.get(sessionId);
 }
@@ -81,9 +81,15 @@ export function onMemoryStored(sessionId) {
 export async function extractL1FromL0(sessionId) {
   const state = getSessionState(sessionId);
   if (state.consecutiveFailures > 0) {
+    // Failure backoff: throttle repeat attempts so a slow/down LLM is not hammered on every store.
+    // Uses a real ms timestamp (lastL1ExtractAt) — NOT the count cursor lastL1Extract. lastL1Extract
+    // is a memory COUNT (small int) consumed at onMemoryStored:66; comparing Date.now()≈1.7e12 minus
+    // it was always >= cooldownMs → the cooldown used to ALWAYS skip (dead defensive code).
     const cooldownMs = Math.min(30_000 * state.consecutiveFailures, 300_000);
-    if (Date.now() - state.lastL1Extract < cooldownMs) return;
+    if (Date.now() - state.lastL1ExtractAt < cooldownMs) return;
   }
+  // Stamp THIS attempt's start so the next call's cooldown is measured from here (success OR failure).
+  state.lastL1ExtractAt = Date.now();
   const episodeMems = getSessionMemories(sessionId)
     .filter(m => m.cone_layer === 0 || !m.cone_layer)
     .slice(-20); // Process last 20 episode memories
@@ -127,16 +133,16 @@ Output schema (JSON array): [{"text","type","source_quote","entity","attribute",
       signal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
     });
 
-    if (!res.ok) { state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++; return; }
+    if (!res.ok) { state.consecutiveFailures++; return; }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '';
     const jsonMatch = content.match(/\[[\s\S]*?\]/);
-    if (!jsonMatch) { state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++; return; }
+    if (!jsonMatch) { state.consecutiveFailures++; return; }
 
     let atoms;
     try { atoms = JSON.parse(jsonMatch[0]); } catch (parseErr) {
       LOG_DEBUG && console.error('[Pipeline] L1 JSON parse error:', parseErr.message);
-      state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++;
+      state.consecutiveFailures++;
       return;
     }
     const _stored = []; // FIX-1: track stored atoms for contradiction pair-linking (mirrors /memory/extract).
@@ -190,12 +196,16 @@ Output schema (JSON array): [{"text","type","source_quote","entity","attribute",
       }
     }
 
+    // Only the SUCCESS path advances the l0Count cursor (lastL1Extract) + the warmup schedule
+    // (l1ExtractCount) + clears consecutiveFailures. Failure branches above increment
+    // consecutiveFailures only — leaving the cursor so the SAME L0 window is retried next tick (the
+    // .slice(-20) re-read window never permanently scrolls past un-extracted episodes).
     state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures = 0;
 				// v2.2: Mark extraction complete in ingest pipeline
 				try { ingestPipeline.markExtractionComplete(sessionId); } catch {}
     LOG_DEBUG && console.log(`[Pipeline] L1 extraction: ${atoms.length} atoms from ${episodeMems.length} episodes`);
   } catch (err) {
-    state.lastL1Extract = state.l0Count; state.l1ExtractCount++; state.consecutiveFailures++;
+    state.consecutiveFailures++;
   LOG_DEBUG && console.error('[Pipeline] L1 LLM error:', err.message);
   }
 }
@@ -228,11 +238,9 @@ export async function extractL2Scenes() {
       const lastScene = existing[existing.length - 1];
       const daysSinceExtract = (Date.now() - new Date(lastScene.created_at).getTime()) / 86400000;
       if (daysSinceExtract < 7) continue; // skip if recent
-      // Supersede the stale scene and re-extract. null = no specific successor (the new scene is
-      // stored below, so its id isn't known yet). -1 violates the superseded_by FK (memories(id) is
-      // AUTOINCREMENT → -1 never matches) and throws under PRAGMA foreign_keys=ON — aborting the
-      // whole re-extract branch before the LLM call. See extractL3Persona for the matching note.
-      for (const sc of existing) updateMemoryStatus(sc.id, 'superseded', null);
+      // Stale scene re-extract: the supersede of `existing` now runs AFTER the new scene is stored
+      // below (passing the real new id). Superseding BEFORE the LLM call left the cone layer with NO
+      // replacement on a transient LLM failure → bundleSearch lost the L2 hop mid-outage (data loss).
     }
     const sceneText = mems.map(m => `- [${m.type}] ${m.text}`).join('\n');
     try {
@@ -260,7 +268,7 @@ export async function extractL2Scenes() {
       if (isEmbeddingReady()) {
         try { embedding = new Float32Array(await embed(summary)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L2 embedding failed:', e.message); }
       }
-      storeMemory({
+      const newSceneId = storeMemory({
         text: summary,
         type: 'project',
         session_id: 'pipeline',
@@ -272,6 +280,11 @@ export async function extractL2Scenes() {
         intent_type: classifyIntent(summary), // E2 intent tag for semantic clustering
         embedding,
       });
+      // Supersede the stale scene(s) with the REAL successor id, now that the replacement is safely
+      // stored (moved from before the LLM call). Any failure above `continue`s/exits BEFORE this line
+      // → the old scene stays 'active' → best-available-truth, no data loss. Passing newSceneId (not
+      // null) also makes /memory/:id/lineage walkable (the prior null dropped the supersession chain).
+      if (existing.length > 0) for (const sc of existing) updateMemoryStatus(sc.id, 'superseded', newSceneId);
     } catch (err) {
       LOG_DEBUG && console.error(`[Pipeline] L2 scene error for ${entity}:`, err.message);
     }
@@ -298,11 +311,9 @@ export async function extractL3Persona() {
     const lastPersona = existingP[existingP.length - 1];
     const daysSinceExtract = (Date.now() - new Date(lastPersona.created_at).getTime()) / 86400000;
     if (daysSinceExtract < 7) return; // skip if recent
-    // Supersede the stale persona and re-extract. null = no specific successor (column is nullable;
-    // the new persona row is stored AFTER this, so its id isn't known yet anyway). -1 would violate
-    // the superseded_by FK (memories(id) is AUTOINCREMENT, -1 never matches) and throw under
-    // PRAGMA foreign_keys=ON — aborting the whole re-extract branch before the LLM call.
-    for (const p of existingP) updateMemoryStatus(p.id, 'superseded', null);
+    // Stale persona re-extract: the supersede of `existingP` now runs AFTER the new persona is
+    // stored below (passing the real new id). Superseding BEFORE the LLM call left the single
+    // persona row blank mid-outage (L3_core: 0) on any transient LLM failure — data loss.
   }
 
   const textBlock = l1Mems.slice(0, 80).map(m => `[${m.type}] ${m.text}`).join('\n');
@@ -332,7 +343,7 @@ export async function extractL3Persona() {
     if (isEmbeddingReady()) {
       try { embedding = new Float32Array(await embed(persona)); } catch (e) { LOG_DEBUG && console.warn('[Pipeline] L3 embedding failed:', e.message); }
     }
-    storeMemory({
+    const newPersonaId = storeMemory({
       text: persona,
       type: 'profile',
       session_id: 'pipeline',
@@ -344,6 +355,11 @@ export async function extractL3Persona() {
       intent_type: classifyIntent(persona), // E2 intent tag for semantic clustering
       embedding,
     });
+    // Supersede the stale persona with the REAL successor id, now that the replacement is safely
+    // stored (moved from before the LLM call). Any failure above `return`s/exits BEFORE this line →
+    // the old persona stays 'active' → best-available-truth, no L3 blank-mid-outage. newPersonaId
+    // (not null) keeps /memory/:id/lineage walkable.
+    if (existingP.length > 0) for (const p of existingP) updateMemoryStatus(p.id, 'superseded', newPersonaId);
 
     LOG_DEBUG && console.log(`[Pipeline] L3 persona extracted from ${l1Mems.length} L1 memories`);
   } catch (err) {
@@ -362,9 +378,11 @@ export async function runPipeline() {
 }
 
 export function getPipelineStatus() {
-  const l0 = getAllActiveMemoriesNoEmbed().filter(m => !m.cone_layer || m.cone_layer === 0).length;
-  const l1 = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 1).length;
-  const l2 = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 2).length;
-  const l3 = getAllActiveMemoriesNoEmbed().filter(m => m.cone_layer === 3).length;
-  return { enabled: PIPELINE_ENABLED, layers: { L0_episode: l0, L1_facet: l1, L2_abstraction: l2, L3_core: l3 } };
+  // BUG-7 single-scan: one read of the active set, four local filters (mirrors extractL2Scenes:208
+  // / extractL3Persona). The prior code ran 4 full WHERE status='active' scans — a 4× I/O multiplier
+  // on this polled status endpoint. The dynamic `enabled` flag is preserved (PIPELINE_ENABLED reflects
+  // the setting; counts stay real even when the pipeline is disabled).
+  const all = getAllActiveMemoriesNoEmbed();
+  const count = (lyr) => all.filter(m => lyr === 0 ? (!m.cone_layer || m.cone_layer === 0) : m.cone_layer === lyr).length;
+  return { enabled: PIPELINE_ENABLED, layers: { L0_episode: count(0), L1_facet: count(1), L2_abstraction: count(2), L3_core: count(3) } };
 }

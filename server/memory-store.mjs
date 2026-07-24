@@ -584,7 +584,7 @@ SELECT m.id, m.session_id, m.type, m.text, m.status, m.metadata, m.created_at, m
 `);
 
 const searchRecent = db.prepare(`
-SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count, summary FROM memories
+SELECT id, session_id, type, text, status, metadata, created_at, importance, recall_count, summary, event_date, order_index, source_quote, contradiction_pair_id, similar_pair_id, 0 AS score FROM memories
   WHERE status IN ('active', 'contradicted', 'similar_pending') AND text LIKE @query ESCAPE '\'
   ORDER BY created_at DESC
   LIMIT @limit
@@ -717,7 +717,7 @@ const getCitationsBySession = db.prepare('SELECT memory_id, COUNT(*) as count FR
 
 
 // Convert SQLite BLOB (Node Buffer) to a regular JS array of float32 values
-function bufferToFloat32(buf) {
+export function bufferToFloat32(buf) {
   if (!buf) return null;
   if (buf.byteLength % 4 !== 0) throw new Error(`[bufferToFloat32] misaligned buffer: ${buf.byteLength} bytes is not a multiple of 4`);
   return Array.from(new Float32Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / Float32Array.BYTES_PER_ELEMENT)));
@@ -1074,8 +1074,18 @@ export function editMemoryText(id, newText, { reason = null, contextPrefix = nul
   meta.brain2_edit = editAudit;
   meta.updated_at = new Date().toISOString();
   try {
-    db.prepare('UPDATE memories SET text = ?, metadata = ?, updated_at = datetime(\'now\') WHERE id = ?')
-      .run(String(newText), JSON.stringify(meta), id);
+    // Fold context_prefix into the SAME update as text+metadata (single statement, single
+    // memories_au trigger that re-syncs FTS with BOTH new columns) so there is no window for a
+    // partial edit. The old code ran a 2nd `UPDATE ... context_prefix` in an empty catch {} — a
+    // transient SQLITE_BUSY there silently failed and the function still returned {ok:true}, leaving
+    // the row with new text + stale context_prefix (and FTS never re-synced the prefix).
+    if (contextPrefix != null) {
+      db.prepare("UPDATE memories SET text = ?, context_prefix = ?, metadata = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(String(newText), String(contextPrefix), JSON.stringify(meta), id);
+    } else {
+      db.prepare("UPDATE memories SET text = ?, metadata = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(String(newText), JSON.stringify(meta), id);
+    }
     // Drop the now-stale KNN vec (old embedding -> wrong semantics); BLOB survives until re-embed.
     // Status is NOT touched (stays 'active'); row stays in FTS + by-id retrieval while vec is rebuilt.
     try {
@@ -1083,9 +1093,6 @@ export function editMemoryText(id, newText, { reason = null, contextPrefix = nul
       if (tb === 'turbovec' || tb === 'hybrid') removeFromTurboVec(id).catch(() => {});
       deleteVec(db, id);
     } catch (e) { LOG_DEBUG && console.error('[Brain2] editMemoryText vec-clear error:', e.message); }
-    if (contextPrefix != null) {
-      try { db.prepare('UPDATE memories SET context_prefix = ? WHERE id = ?').run(String(contextPrefix), id); } catch {}
-    }
     return { ok: true, id: Number(id) };
   } catch (e) {
     LOG_DEBUG && console.error('[Brain2] editMemoryText error:', e.message);
@@ -1861,26 +1868,34 @@ export function getEdgesByRel(relation, limit = 50, asOf = null) {
 export function invalidateEdgeById(edgeId) { return invalidateEdge.run(edgeId).changes; }
 export function getEdge(edgeId) { return getEdgeById.get(edgeId); }
 export function traverseMemoryGraph(fromId, maxDepth = 3, limit = 20, direction = 'both', relation = '', asOf = null) {
+  // When a relation filter is requested, over-fetch the recursive CTE pool: the CTE bakes `LIMIT ?`
+  // into the traversal (traverseGraph / ...Incoming), so a post-fetch JS relation filter applied
+  // over only `limit` mixed-relation edges could return [] (or far below `limit`) even when many
+  // matching edges exist deeper in (depth, strength) order — a false negative on a query the
+  // endpoint documents and the E23 `similar`-pair workflow relies on. Fetch a bounded pool, filter
+  // by relation, THEN slice to `limit`. (No-relation path keeps fetchCap = limit → no extra work.)
+  const fetchCap = relation ? Math.min(Math.max(limit * 10, 200), 500) : limit;
   let rows;
   if (direction === 'incoming') {
-    rows = asOf ? traverseGraphIncomingAsOf.all(fromId, asOf, maxDepth, asOf, limit) : traverseGraphIncoming.all(fromId, maxDepth, limit);
+    rows = asOf ? traverseGraphIncomingAsOf.all(fromId, asOf, maxDepth, asOf, fetchCap) : traverseGraphIncoming.all(fromId, maxDepth, fetchCap);
   } else if (direction === 'outgoing') {
-    rows = asOf ? traverseGraphAsOf.all(fromId, asOf, maxDepth, asOf, limit) : traverseGraph.all(fromId, maxDepth, limit);
+    rows = asOf ? traverseGraphAsOf.all(fromId, asOf, maxDepth, asOf, fetchCap) : traverseGraph.all(fromId, maxDepth, fetchCap);
   } else {
     // both: combine outgoing and incoming, dedup by edge id
-    const outRows = asOf ? traverseGraphAsOf.all(fromId, asOf, maxDepth, asOf, limit) : traverseGraph.all(fromId, maxDepth, limit);
-    const inRows = asOf ? traverseGraphIncomingAsOf.all(fromId, asOf, maxDepth, asOf, limit) : traverseGraphIncoming.all(fromId, maxDepth, limit);
+    const outRows = asOf ? traverseGraphAsOf.all(fromId, asOf, maxDepth, asOf, fetchCap) : traverseGraph.all(fromId, maxDepth, fetchCap);
+    const inRows = asOf ? traverseGraphIncomingAsOf.all(fromId, asOf, maxDepth, asOf, fetchCap) : traverseGraphIncoming.all(fromId, maxDepth, fetchCap);
     const seen = new Set();
     rows = [];
     for (const r of [...outRows, ...inRows]) {
       if (!seen.has(r.id)) { seen.add(r.id); rows.push(r); }
     }
     rows.sort((a, b) => a.depth - b.depth || b.strength - a.strength);
-    rows = rows.slice(0, limit);
   }
-  if (relation) {
-    rows = rows.filter(r => r.relation === relation);
-  }
+  // Apply the relation filter BEFORE the limit cap so matching edges deeper than the first `limit`
+  // mixed-relation rows are not dropped. `both` already sorted above; single-direction preserves
+  // the CTE's own order (no sort added — keeps no-relation behavior identical to before).
+  if (relation) rows = rows.filter(r => r.relation === relation);
+  rows = rows.slice(0, limit);
   return rows;
 }
 

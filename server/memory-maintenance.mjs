@@ -190,7 +190,9 @@ export async function runMaintenance() {
     try {
       const enr = enrichStaleIntoRelated(memories);
       results.enriched_merged = enr.enriched;
+      results.flagged_for_brain2 = enr.flagged;
       if (enr.enriched > 0) LOG_DEBUG && console.log(`[Maintenance] Enrichment-merged ${enr.enriched} stale memories into related (orphans left for archive)`);
+      if (enr.flagged > 0) LOG_DEBUG && console.log(`[Maintenance] Flagged ${enr.flagged} stale~related pairs for Brain2 verdict (E23 flag-then-ping; not yet merged)`);
     } catch (err) { LOG_DEBUG && console.error('[Maintenance] Enrich-merge error:', err.message); }
 
     // 4c. D1 user Option-2 step-7: harden review-pending merges. A low-conf memory_merge left its
@@ -367,8 +369,12 @@ export function enrichStaleIntoRelated(memories) {
     .filter(m => Number(m.recall_count || 0) === 0)
     .filter(m => m.created_at && (Date.parse(m.created_at) < Date.now() - STALE_DAYS * 86400 * 1000))
     .filter(m => m.embedding);
-  if (!stale.length) return { enriched: 0, skipped: 0 };
-  let enriched = 0, skipped = 0;
+  if (!stale.length) return { enriched: 0, flagged: 0, skipped: 0 };
+  // `enriched` = Brain1-only path that actually merged (concat+hard-delete) a stale row into related.
+  // Brain2-on path only FLAGS pairs as 'similar' for a Brain2 verdict (no merge, no delete) — that's a
+  // distinct outcome and is counted in `flagged`, NOT `enriched`. Prior code lumped both into `enriched`
+  // and the caller logged "Enrichment-merged N" even when nothing was actually merged (Brain2-on run).
+  let enriched = 0, flagged = 0, skipped = 0;
   for (const s of stale) {
     if (!isVecReady()) break;
     const hits = vectorKnnSearch(s.embedding, 20);
@@ -393,21 +399,35 @@ export function enrichStaleIntoRelated(memories) {
       // BOTH loss — flag the (stale, related) pair as 'similar' so Brain2 verdicts; both halves stay active
       // + searchable until then. Brain1-only keeps the legacy concat+hard-delete verbatim.
       linkSimilarPair(s.id, related.id, Number(relatedScore));
-      enriched++;
+      flagged++;
       if (LOG_DEBUG) console.log(`[Maint enrich] E23 flagged stale #${s.id} ~ related #${related.id} (cosine ${relatedScore.toFixed(2)}) for Brain2 verdict`);
     } else {
-      const editRes = editMemoryText(related.id, enrichedText, { reason: `CRON enrich-merge absorbed #${s.id} into #${related.id}` });
-      if (!editRes?.ok) { if (LOG_DEBUG) console.error('[Maint enrich] editMemoryText failed on #' + related.id + ':', editRes && editRes.reason); skipped++; continue; }
-      const delRes = hardDeleteMemory(s.id);
-      if (!delRes?.ok) {
-        if (LOG_DEBUG) console.error('[Maint enrich] hardDeleteMemory failed on stale #' + s.id + ' (related #' + related.id + ' already enriched — manual reconcile needed):', delRes && delRes.reason);
+      // Atomic absorb: run the edit (append stale text into related) + the hard-delete of the stale
+      // row in ONE better-sqlite3 transaction. Previously these were sequential with no txn: if
+      // editMemoryText succeeded but hardDeleteMemory failed, the stale row stayed 'active' WITH
+      // related.text already carrying the "(also recorded earlier: …)" layer → the next cron tick
+      // re-picked the same stale row and appended ANOTHER layer → related.text grew monotonically
+      // every tick (silent bloat, the report's "no absorb guard"). Wrapping both means a delete
+      // failure rolls the edit back too → related unchanged, stale row survives (delete rolled back)
+      // → no data loss, no layering; the next tick retries cleanly on the original texts.
+      let _txErr = null;
+      try {
+        db.transaction(() => {
+          const editRes = editMemoryText(related.id, enrichedText, { reason: `CRON enrich-merge absorbed #${s.id} into #${related.id}` });
+          if (!editRes?.ok) throw new Error((editRes && editRes.reason) || 'editMemoryText failed');
+          const delRes = hardDeleteMemory(s.id);
+          if (!delRes?.ok) throw new Error((delRes && delRes.reason) || 'hardDeleteMemory failed');
+        })();
+      } catch (e) { _txErr = e; }
+      if (_txErr) {
+        if (LOG_DEBUG) console.error('[Maint enrich] atomic absorb failed for stale #' + s.id + ' → related #' + related.id + ' (both rolled back, stale row survives, no partial bloat):', _txErr.message);
         skipped++; continue;
       }
       enriched++;
       if (LOG_DEBUG) console.log(`[Maint enrich] Absorbed stale #${s.id} into related #${related.id} (cosine ${relatedScore.toFixed(2)})`);
     }
   }
-  return { enriched, skipped };
+  return { enriched, flagged, skipped };
 }
 
 // D1 (user Option-2, 2026-06-24) step-7: harden REVIEW-PENDING merges. A low-confidence memory_merge

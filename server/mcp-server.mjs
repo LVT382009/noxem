@@ -57,7 +57,8 @@ server.registerTool(
       intent: z.enum(['identifier', 'exact', 'mixed', 'conceptual']).optional().default('mixed').describe('Search intent — identifier=strict, conceptual=explore'),
       type: z.string().optional().describe('Filter by memory type (fact, preference, setup, project, goal, entity, profile, pattern, event, issue, learning, request)'),
       session_id: z.string().optional().describe('Filter by session ID'),
-      expand: z.boolean().optional().default(false).describe('Enable multi-query expansion for broader recall'),
+      // `expand` removed: the handler never read it and searchMemories has no multi-query-expansion
+      // param, so the advertised "broader recall" knob was a silent no-op that misled clients.
     },
   },
   async ({ query, limit = 10, intent = 'mixed', type, session_id }) => {
@@ -117,9 +118,14 @@ server.registerTool(
     try {
       const memType = type || categorizeText(text);
       const imp = importance ?? estimateImportance(text, memType);
-      const { entity: ent, attribute: attr } = (entity && attribute)
-        ? { entity, attribute }
-        : extractEntityAttribute(text);
+      // Per-field caller-wins (mirrors tool 4 / memory_sync :198,203-204). The prior
+      // `(entity && attribute) ? {entity,attribute} : extractEntityAttribute(text)` ternary DROPPED a
+      // lone-passed entity when attribute was omitted (falsy && → re-extract from free text → if the
+      // extractor returned '' the caller's explicit entity was discarded → row stored with entity='' →
+      // invisible to list-by-entity). Extract both, then let the caller's explicit value win per field.
+      const { entity: exEnt, attribute: exAttr } = extractEntityAttribute(text);
+      const ent = entity || exEnt || '';
+      const attr = attribute || exAttr || '';
         const id = storeMemory({
         text,
         type: memType,

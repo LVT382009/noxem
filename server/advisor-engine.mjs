@@ -18,6 +18,33 @@ import { llmFetch } from './llm-fetch.mjs';
 import { LLM_URL, LLM_MODEL } from './llm-config.mjs';
 const CONTEXT_WINDOW = parseInt(process.env.NOXEM_CONTEXT_WINDOW ?? '8192');
 const ADVISOR_ENABLED = process.env.ADVISOR_ENABLED !== 'false';
+// Balanced-array extraction. The LLM returns a JSON array of memories, but model output often
+// wraps it in prose ("Here are the memories:\n[...]"). The old extractors used two different
+// regexes: :\d greedy /\[[\s\S]*\]/ over-grabs from the first '[' to the LAST ']' (wrong if any
+// prose/bracket follows the array) and :\d lazy /\[[\s\S]*?\]/ stops at the first ']' — which a
+// ']' inside a memory string literal ("see array[0]", "[id=42]") trips early, silently truncating
+// the array so JSON.parse either fails or drops everything after that ']' (silent chunk loss). Walk
+// bracket depth honoring string literals + backslash escapes instead; returns null when no balanced
+// array exists so the caller can fall through to its empty-result branch.
+function extractFirstJsonArray(s) {
+  if (!s) return null;
+  const start = s.indexOf('[');
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === '[') depth++;
+    else if (c === ']') { depth--; if (depth === 0) return s.slice(start, i + 1); }
+  }
+  return null; // unbalanced — no parseable array
+}
 function callLLM(messages, maxTokens = 1024, temperature = 0.3) {
   return llmFetch(LLM_URL, {
     method: 'POST',
@@ -264,9 +291,9 @@ Rules:
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content || '';
       if (!content || content.startsWith('[LLM un')) return [];
-      const jsonMatch = content.match(/\[[\s\S]*\]/);
-      if (!jsonMatch) return [];
-      const memories = JSON.parse(jsonMatch[0]);
+      const jsonArr = extractFirstJsonArray(content);
+      if (!jsonArr) return [];
+      const memories = JSON.parse(jsonArr);
       return Array.isArray(memories) ? memories.filter(m => m.text && m.type) : [];
     } catch (err) {
       LOG_DEBUG && console.error('Session end analysis error:', err.message);
@@ -278,8 +305,12 @@ Rules:
   for (let i = 0; i < fullHistory.length; i += CHUNK_SIZE) {
     chunks.push(fullHistory.slice(i, i + CHUNK_SIZE));
   }
-  // BUG-17: Process chunks in parallel with concurrency limit (3 concurrent LLM calls)
-  const chunkTasks = chunks.slice(0, 10).map(chunk => async () => {
+  // BUG-17: Process chunks in parallel with concurrency limit (3 concurrent LLM calls).
+  // No silent cap — the old `.slice(0, 10)` dropped every chunk past the 100th turn with no
+  // signal, so a long session's tail was never extracted. CONCURRENCY_LIMIT below bounds the
+  // concurrent LLM calls; the total count is log-visible so a runaway session is seen, not hidden.
+  if (LOG_DEBUG && chunks.length > 0) console.log(`[advisor] session-end extracting ${chunks.length} chunk(s) (CHUNK_SIZE=${CHUNK_SIZE})`);
+  const chunkTasks = chunks.map(chunk => async () => {
     const chunkText = chunk.map(t =>
       `${t.role?.toUpperCase() || 'USER'}: ${(t.content || '').substring(0, Math.max(200, Math.min(Math.floor(CONTEXT_WINDOW * 0.18), 32000)))}`
     ).join('\n\n');
@@ -297,9 +328,9 @@ Rules: Extract only non-obvious, durable facts. Omit greetings, small talk.`,
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content || '';
       if (!content) return [];
-      const jsonMatch = content.match(/\[[\s\S]*?\]/);
-      if (!jsonMatch) return [];
-      const chunkMems = JSON.parse(jsonMatch[0]);
+      const jsonArr = extractFirstJsonArray(content);
+      if (!jsonArr) return [];
+      const chunkMems = JSON.parse(jsonArr);
       return Array.isArray(chunkMems) ? chunkMems.filter(m => m.text && m.type) : [];
     } catch (err) {
       LOG_DEBUG && console.error('Chunk extraction error:', err.message);

@@ -15,7 +15,7 @@ import { isEmbeddingReady, embed, searchByEmbedding } from './embedding-engine.m
 import { tryReactivateCandidates } from './reactivation-engine.mjs';
 
 import { knnSearch, knnSearchHybrid, getVectorBackend } from './vector-index.mjs';
-import { entityRanker, ingestPipeline, crossModalExtractor, lessonVault, spatialFilter, multiSourceRouter } from './module-registry.mjs';
+import { spatialFilter, multiSourceRouter } from './module-registry.mjs';
 
 const LOG_DEBUG = process.env.LOG_LEVEL === 'debug' || (!process.env.LOG_LEVEL);
 const BUNDLE_TOP_K = parseInt(process.env.BUNDLE_TOP_K || '5');
@@ -32,14 +32,13 @@ const QUERY_NODE_ID = '__query_tip__';
  */
 export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
   if (!isEmbeddingReady()) {
-	// v2.2: Apply entity-based hit graph expansion
-	try { allHits = entityRanker.expandHitGraphByEntities(query, allHits.map(h => h.id)); } catch {}
-	// v2.2: Apply lesson vault reranking
-	try { allHits = lessonVault.rerankResults(allHits, { recency: 0.3, importance: 0.3, relevance: 0.4 }); } catch {}
-	// v2.2: Expand with graph signals from ingest pipeline
-	try { const expanded = await ingestPipeline.expandWithGraphSignals(allHits.map(h => h.id)); if (expanded?.length > 0) allHits = [...allHits, ...expanded.filter(e => !allHits.some(h => h.id === e.id))]; } catch {}
-	// v2.2: Cross-modal scene grouping bonus
-	try { allHits = crossModalExtractor.applySceneGroupingBonus(allHits); } catch {}
+    // The not-ready branch: no KNN/embedding results exist to enhance. The four v2.2 enhancement
+    // lines that used to live here all READ `allHits`, but `allHits` is a `const` declared at line 56
+    // (after this early return) → Temporal Dead Zone → each line threw `ReferenceError`, swallowed by
+    // its own empty `catch {}` → silent dead no-ops. Deleted. If these enhancers are ever wanted,
+    // they belong on the READY path after `allHits` exists, using the append-not-replace form, never
+    // a bare `allHits = expandHitGraphByEntities(...)` replace (the result-wipe shape fixed at
+    // memory-server.mjs:1212).
     return { episodes: [], error: 'embedding not ready' };
   }
 
@@ -126,7 +125,12 @@ export async function bundleSearch(query, topK = BUNDLE_TOP_K) {
 
   return {
     episodes: rankedEpisodes.slice(0, topK),
-    reactivated: reactivatedRows.length > 0 ? reactivatedRows : undefined,
+    // Strip the raw embedding BLOB (and vec_id) before shipping — tryReactivateCandidates returns
+    // raw SELECT * rows whose embedding column is a ~3KB Buffer (same class as the /memory/search
+    // `related`/`reactivated` leaks; strip pattern from memory-server.mjs:1222).
+    reactivated: reactivatedRows.length > 0 ? reactivatedRows.map(m => {
+      if (!m) return m; const { embedding, vec_id, ..._r } = m; return _r;
+    }) : undefined,
     layers_searched: {
       L0: l0Hits.length,
       L1: l1Hits.length,

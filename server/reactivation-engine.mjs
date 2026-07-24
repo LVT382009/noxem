@@ -25,6 +25,17 @@ const REACTIVATION_THRESHOLD = parseFloat(process.env.E7_REACTIVATION_THRESHOLD 
 const REACTIVATION_TOPK = parseInt(process.env.E7_REACTIVATION_TOPK || '50');
 const REACTIVATION_MAX = parseInt(process.env.E7_REACTIVATION_MAX || '5');
 
+// Normalize a row's created_at (SQLite 'YYYY-MM-DD HH:MM:SS' or ISO '...T...') to epoch-ms.
+// Returns 0 for missing/invalid (NOT NaN) so comparisons stay total-ordered. The same fix the
+// :196 `_ts` helper uses in the E8 store-path; hoisted here so the J2 gate (line ~64) shares it
+// instead of comparing raw `m.created_at > full.created_at` STRINGS — a lexicographic compare that
+// mis-sorts mixed-format rows ('2026-01-02 ' vs '2026-01-02T...'), and short-circuits to falsy when
+// `full.created_at` is null (→ filter keeps nothing → newerActive=[] → stale=false → ALWAYS promote,
+// so a possibly-stale archive row with a missing timestamp skipped the gate). Normalizing collapses
+// both: an unknown candidate time → 0 → every active same-entity row is "newer" → the contradiction
+// scan runs and a stale fact is correctly left archived (conservative, per :67 "do NOT promote").
+function _createdTs(row) { try { return new Date(String(row?.created_at || '').replace(' ', 'T')).getTime() || 0; } catch { return 0; } }
+
 // Scan the archive hot set, rerank the query against it, reactivate the high-confidence hits that
 // pass the J2 contradiction gate. Returns reactivated rows (already flipped active + vec re-inserted)
 // for the caller to surface. Returns [] if nothing eligible. Never throws to the query hot path.
@@ -61,7 +72,8 @@ export function tryReactivateCandidates(queryEmbedding, {
     let stale = false;
     try {
       const sameEntity = getMemoriesByEntityAttr(full.entity, full.attribute) || [];
-      const newerActive = sameEntity.filter(m => full.created_at && (!m.created_at || m.created_at > full.created_at));
+      const candTs = _createdTs(full);
+      const newerActive = sameEntity.filter(m => _createdTs(m) > candTs);
       stale = newerActive.some(n => detectContradiction(full.text, n.text) != null);
     } catch (e) {
       // If the contradiction lookup fails, be conservative: do NOT promote a possibly-stale fact.

@@ -34,6 +34,13 @@ const B2_TIMEOUT_MS = parseInt(process.env.BRAIN2_TIMEOUT_MS || '120000');
 const BRAIN2_MAX_QUEUE_DEPTH = parseInt(process.env.BRAIN2_MAX_QUEUE_DEPTH || '2'); // bound: augment + 1 reconcile coexist, else reject (cron re-scans next tick)
 const BRAIN2_STALE_JOB_MS = parseInt(process.env.BRAIN2_STALE_JOB_MS || '600000'); // resurrect a 'processing' job whose started_at is older than this (crashed drain)
 const E23_MAX_ATTEMPTS = parseInt(process.env.E23_MAX_ATTEMPTS || '3'); // transient-retry ceiling before a job moves to the DLQ
+// Tools that carry per-session lineage. The augment closure injects the live session_id for any of
+// these when the model omitted it: a Brain2-authored merge/store/contradiction/similar row orphaned
+// of session_id never surfaces in per-session scans (memory-search session_id filter + the
+// consolidateMemories CRON scope), so the verdict stays invisible to the origin session. All four
+// handlers accept session_id (memory_store / memory_merge / memory_resolve_similar /
+// memory_resolve_contradiction in brain2-tools.mjs); the model is not told to set it — injected here.
+const SESSION_TOOLS = new Set(['memory_store', 'memory_merge', 'memory_resolve_similar', 'memory_resolve_contradiction']);
 let _b2Busy = false; // global single-flight across augment + reconcile (the queue table holds the real depth)
 
 export const TOOLS_SPEC_JSON = JSON.stringify(BRAIN2_TOOLS_SPEC);
@@ -147,10 +154,11 @@ export async function runBrain2Agent({ systemPrompt, messages, maxTurns = B2_MAX
     return { ok: false, reason: 'bad-args', turns: 0, toolCalls: 0 };
   }
   const convo = [{ role: 'system', content: systemPrompt }, ...messages];
-  // Optional dispatch override: runAugment injects the augment session_id into memory_store
-  // calls (Brain 2's store tool doesn't expose session_id, so brand-new augment-stored facts
-  // would otherwise carry session_id="" and vanish from per-session scans). Falls back to the
-  // shared dispatchTool when no override is passed (standalone agent use).
+  // Optional dispatch override: runAugment injects the augment session_id into the session-carrying
+  // tools (memory_store + the merge family: memory_merge, memory_resolve_similar,
+  // memory_resolve_contradiction — see SESSION_TOOLS) so a Brain2-authored store/merge/verdict row
+  // would not otherwise carry session_id="" and vanish from per-session scans. Falls back to the
+  // shared dispatchTool when no override is passed (standalone agent / cron reconcile use).
   const d = dispatch || dispatchTool;
   let totalToolCalls = 0;
   for (let turn = 0; turn < maxTurns; turn++) {
@@ -279,17 +287,34 @@ async function _executeB2Job(row) {
   } catch (e) {
     const cls = _classifyB2Error(e);
     if (!cls.retryable) { _toDlq(row, 'non-retryable: ' + cls.reason); return { ok: false, reason: 'dlq', error: cls.reason }; }
-    _pvReset.run(row.id); // transient — back to 'queued' for the next tick
+    // _pvReset writes OUTSIDE any try — a throw here (SQLITE_BUSY / WAL-checkpoint / disk-full while
+    // a maintenance-cron writer holds the lock) escapes _executeB2Job, and the row stays 'processing'
+    // → _pvStale resurrects it later → the augment re-runs → DUPLICATE stored rows. Wrap it like the
+    // sibling _toDlq (:227-230) already wraps its writes, so a transient DB hiccup can't double-execute.
+    try { _pvReset.run(row.id); } catch (me) { LOG_DEBUG && console.error('[E23] _pvReset failed (transient re-queue); job remains queued-or-processing, will retry on a later drain:', me.message); }
     if (LOG_DEBUG) console.error('[E23] job transient error, re-queued:', cls.reason);
     return { ok: false, reason: 'retry-queued', error: cls.reason };
   }
   if (result && result.ok === false) {
-    const attempts = Number(row.attempts) || 1;
-    if (attempts < E23_MAX_ATTEMPTS) { _pvReset.run(row.id); return { ok: false, reason: 'retry-queued', attempts }; }
+    // OFF-BY-ONE: _pvNext reads `attempts` BEFORE _pvClaim increments it, so `row.attempts` is the
+    // PRE-increment value — always one BEHIND the DB. With the prior `Number(row.attempts) || 1` and
+    // `<` comparison, a never-succeeding job ran E23_MAX_ATTEMPTS+1 times before DLQ (the `|| 1` also
+    // masked the first-claim attempts=0 read). Use the TRUE post-claim count (read+1) with `<=` so the
+    // ceiling means exactly E23_MAX_ATTEMPTS executions.
+    const attempts = (Number(row.attempts) || 0) + 1;
+    if (attempts <= E23_MAX_ATTEMPTS) {
+      try { _pvReset.run(row.id); } catch (me) { LOG_DEBUG && console.error('[E23] _pvReset failed (retry-queue):', me.message); }
+      return { ok: false, reason: 'retry-queued', attempts };
+    }
     _toDlq(row, 'exhausted-attempts: ' + (result.reason || 'unknown'));
     return { ok: false, reason: 'dlq-exhausted', attempts };
   }
-  _pvDone.run(row.id);
+  // Mark done AFTER the tool-loop already applied its side effects (stored facts, edits, soft-flags).
+  // A throw from _pvDone.run (SQLITE_BUSY / WAL checkpoint / disk-full) must NOT escape — escaping left
+  // the drain accounting broken AND the row stuck 'processing', which _pvStale resurrected → the
+  // already-applied augment re-ran → DUPLICATE stored rows. Catch + treat as done (the job IS done; a
+  // failed mark only risks a rare later resurrect, bounded by store-time dedup), matching _toDlq's guard.
+  try { _pvDone.run(row.id); } catch (e) { LOG_DEBUG && console.error('[E23] _pvDone failed (job already applied; not escaping to avoid a double-exec on resurrect):', e.message); }
   return { ok: true, kind: row.kind };
 }
 
@@ -332,7 +357,7 @@ async function _runAugmentInternal({ sessionId, userMessage, assistantResponse, 
       : '(Brain 1 stored no facts from this exchange.)';
     const userMsg = `SESSION: ${sessionId || '(none)'}\n\n=== FULL CONVERSATION (you see this at full context; Brain 1 had to chunk it) ===\nUSER:\n${userMessage || ''}\n\nASSISTANT:\n${assistantResponse || ''}\n\n=== FACTS BRAIN 1 ALREADY STORED FROM THIS EXCHANGE ===\n${storedBlock}\n\nYour task: verify each stored fact against the full conversation, EDIT incomplete/wrong ones in place, STORE any fact Brain 1 missed, ANNOTATE nuance, and (softly) FLAG any a newer fact supersedes. Respect the recoverability rule — never delete. Begin by listing the session's stored memories, then act. End with a one-line summary.`;
     const dispatch = (name, args) => {
-      const a = (name === 'memory_store' && args && !args.session_id) ? { ...args, session_id: sessionId || '' } : args;
+      const a = (SESSION_TOOLS.has(name) && args && !args.session_id) ? { ...args, session_id: sessionId || '' } : args;
       return dispatchTool(name, a);
     };
     const result = await runBrain2Agent({ systemPrompt, messages: [{ role: 'user', content: userMsg }], dispatch });

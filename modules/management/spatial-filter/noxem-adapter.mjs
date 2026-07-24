@@ -218,7 +218,13 @@ export function prefilterByStructure(query, options = {}) {
  * @param {number} [limit=10] - Max final results
  * @returns {Array} Merged and re-ranked results
  */
-export function mergeStructuralWithSemantic(prefilteredResults, semanticResults, limit = 10) {
+export function mergeStructuralWithSemantic(prefilteredResults, semanticResults, limit) {
+  // The LIVE caller (memory-server.mjs /memory/search merge step) is the sole authority on the
+  // final count — it slice(0, limitNum) AFTER this merge. Capping the merge at a default 10 here
+  // pre-truncated the merged set to 10 regardless of the requested limitNum (artificial recall
+  // ceiling for any entity-prefilterable query). Default to unbounded when a valid limit isn't
+  // supplied; a real limit from the caller is honored.
+  const cap = (typeof limit === 'number' && limit > 0) ? limit : Number.POSITIVE_INFINITY;
   const seen = new Map();
 
   // Apply closet-style rank boosts to pre-filtered results
@@ -244,7 +250,7 @@ export function mergeStructuralWithSemantic(prefilteredResults, semanticResults,
 
   return Array.from(seen.values())
     .sort((a, b) => (b.score || 0) - (a.score || 0))
-    .slice(0, limit);
+    .slice(0, cap);
 }
 
 // ── 2. Wake-Up Context Injection ────────────────────────────────────
@@ -349,22 +355,18 @@ export function checkStorageTimeDuplicate(text, entity, attribute = '') {
     return { is_duplicate: false, existing_id: null, similarity: 0 };
   }
 
-  // Use findDuplicates for embedding-based comparison on FTS hits with embeddings
   let maxSim = 0;
   let duplicateId = null;
-
-  const hitsWithEmbeddings = entityHits.filter(h => h.embedding);
-  if (hitsWithEmbeddings.length > 1) {
-    const dupePairs = _findDuplicates(hitsWithEmbeddings, 10);
-    for (const pair of dupePairs) {
-      // Check if one of the pair is a newly-created candidate (most recent)
-      const sim = pair.similarity;
-      if (sim > maxSim) {
-        maxSim = sim;
-        duplicateId = pair.a.id;
-      }
-    }
-  }
+  // The prior "embedding path" here was broken: it ran _findDuplicates(hitsWithEmbeddings, 10),
+  // which computes PAIRWISE similarity AMONG the existing FTS hits (see embedding-engine.mjs,
+  // cosineSimilarity(a.embedding, b.embedding) over the passed array) — it never embedded or
+  // compared the NEW text. So maxSim was the max sim between two EXISTING memories for the
+  // entity, and duplicateId = pair.a.id was an unrelated existing memory. A genuinely-new
+  // Svelte fact sharing FTS keywords with two near-verbatim React prefs got REJECTED with
+  // duplicate_of pointing at the React memory. Removed. The Jaccard fallback below implements
+  // the correct NEW-vs-EXISTING comparison for near-verbatim re-stores (docstring contract).
+  // (Optionally re-introduce a one-to-many embed-the-candidate compare if embed() becomes cheap
+  // at store time; that needs an async signature + caller change — not done here, surgical.)
 
   // Jaccard word-level similarity as fallback for texts without embeddings
   const entityMems = _getMemoriesByEntityAttr(entity, attribute || '');

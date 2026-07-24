@@ -24,6 +24,7 @@ import {
  addFacet, getFacets, addFacetPoint, getFacetPoints,
  linkMemoryToEntity, getMemoriesForEntity, getEntitiesForMemory,
  getMemoriesByIds,
+  bufferToFloat32,
 } from './memory-store.mjs';
 import { tryReactivateCandidates, tryCrossArchivedDedup, tryActiveEvolveDedup } from './reactivation-engine.mjs';
 import { analyzeBeforeCompress, getAdvice, analyzeSessionEnd, getRLMStatus, shutdownRLM } from './advisor-engine.mjs';
@@ -297,6 +298,11 @@ function processEmbedQueue() {
                 addVecsToIndex([batch[i].id], [embeddings[i]]);
               }
             }
+            // Selective per-item cache invalidation (replaces the blanket drain wipe that used to
+            // sit at the end of processEmbedQueue and threw away every entity's cache on every drain).
+            // Only this fresh row's own entity scope can be stale now that it is searchable; entity
+            // -less rows no-op, mirroring the guarded store hot path (:934).
+            try { if (batch[i].entity) invalidateQueryCacheForEntity(batch[i].entity, batch[i].attribute); } catch {}
           } catch (embedErr) { LOG_DEBUG && console.error(`[EmbedQueue] Failed for ${batch[i]?.id}:`, embedErr.message); }
         }
       } catch (err) {
@@ -313,7 +319,6 @@ function processEmbedQueue() {
             await new Promise(r => setTimeout(r, 2000));
       }
     }
- invalidateQueryCache();
   }).catch(err => {
     LOG_DEBUG && console.error('[EmbedQueue] Queue processor error:', err.message);
   });
@@ -446,10 +451,16 @@ function _keywordJaccard(kwA, kwB) {
   return inter / (setA.size + setB.size - inter);
 }
 
-function findCachedResult(queryVec, rawQuery) {
+function findCachedResult(queryVec, rawQuery, sessionId) {
   if (!queryVec || !isEmbeddingReady()) return null;
   const now = Date.now();
-  const queryNorm = _normalizeQuery(rawQuery);
+  // Session-aware norm key: a scoped query (session_id=S) caches its S-filtered results under a
+  // distinct key from an unscoped query of the same text, so a cache built by one scope cannot serve
+  // another scope and return the wrong row set (an unscoped request served from a scoped-S1 cache
+  // would silently receive S1-only — fewer than available; or scoped-S2 served from scoped-S1 would
+  // get zero). The retained session re-filter on hit (:1127) is now belt-and-suspenders that also
+  // guards Tier-2 cosine matches across sessions.
+  const queryNorm = _normalizeQuery(rawQuery) + (sessionId ? `::${sessionId}` : '');
   const queryKw = _extractKeywords(rawQuery);
 
   // Tier 1: Exact normalized match — O(1) lookup
@@ -496,9 +507,13 @@ function findCachedResult(queryVec, rawQuery) {
   return null;
 }
 
-function addToQueryCache(queryVec, results, rawQuery) {
+function addToQueryCache(queryVec, results, rawQuery, sessionId) {
   if (!queryVec || results.length === 0) return;
-  const queryNorm = _normalizeQuery(rawQuery);
+  // Session-aware norm key (mirrors findCachedResult): scoped results cache under a distinct key
+  // from unscoped, so the two scopes never share a cache entry. entry.queryNorm stores this same
+  // session-aware value, so invalidateQueryCacheForEntity's `_queryCacheNorm.delete(entry.queryNorm)`
+  // still removes the exact norm key it inserted.
+  const queryNorm = _normalizeQuery(rawQuery) + (sessionId ? `::${sessionId}` : '');
   const keywords = _extractKeywords(rawQuery);
   const resultIds = results.slice(0, 10).map(r => r.id).filter(Boolean);
   const resultEntities = new Set();
@@ -931,7 +946,10 @@ app.post('/memory/store', async (req, res) => {
 	// v2.1: Track session activity for ambient injection (Lemma pattern)
 	try { if (session_id) ambientInjector.trackSessionActivity(session_id); } catch {}
 
-	invalidateQueryCacheForEntity(entity, attribute);
+	// No entity → nothing to selectively invalidate; rely on the 2h TTL instead of a blanket wipe
+	// that would throw away every other entity's cache entries (CLAUDE.md "Selective invalidation
+	// by entity+attribute overlap (not full-clear on store)").
+	if (entity) invalidateQueryCacheForEntity(entity, attribute);
 	// v2.1: Touch entity recency (Memary pattern)
 	try { if (entity) entityRanker.touchEntityWithRecency(entity); } catch {}
 	// v2.2: Upsert entity with recency tracking
@@ -969,25 +987,48 @@ app.post('/memory/store-batch', (req, res) => {
     });
 
     // Store immediately without waiting for embedding
-    const items = enrichedMemories.map(m => ({
-      session_id: m.session_id || '',
-      type: m.catType,
-      text: m.trimmed,
-      embedding: null, // embedded in background
-      metadata: { ...(m.metadata || {}), source: m.metadata?.source || "api", extraction_method: m.metadata?.extraction_method || "store_batch_api" },
-      importance: estimateImportance(m.trimmed, m.catType),
-      context_prefix: m.contextPrefix,
-      entity: m.entity,
-      attribute: m.attribute,
-      // E2: tag intent per item so batch stores cluster by intent_type too.
-      intent_type: m.intentType,
-    }));
+    const items = enrichedMemories.map(m => {
+      const _meta = m.metadata || {};
+      return {
+        session_id: m.session_id || '',
+        type: m.catType,
+        text: m.trimmed,
+        embedding: null, // embedded in background
+        // Align with /memory/store: provenance metadata (origin_session_id + stored_at) so batch rows
+        // are not flagged "origin unknown", and keep the batch-specific extraction_method tag.
+        metadata: {
+          ..._meta,
+          source: _meta.source || "api",
+          extraction_method: _meta.extraction_method || "store_batch_api",
+          origin_session_id: m.session_id || "",
+          stored_at: new Date().toISOString(),
+        },
+        importance: estimateImportance(m.trimmed, m.catType),
+        context_prefix: m.contextPrefix,
+        entity: m.entity,
+        attribute: m.attribute,
+        // E2: tag intent per item so batch stores cluster by intent_type too.
+        intent_type: m.intentType,
+        // Align with /memory/store: the summary column (searchFts returns it at memory-store.mjs:578)
+        // and the provenance pair ids the insert SQL binds at memory-store.mjs:519-521.
+        summary: ruleBasedCompress(m.trimmed, 2),
+        similar_pair_id: m.similar_pair_id ?? null,
+        contradiction_pair_id: m.contradiction_pair_id ?? null,
+      };
+    });
 
     const ids = storeMemories(items);
 	// v2.2: Batch store hooks
 	try { for (const item of items) { if (item.entity) { entityRanker.upsertEntityWithRecency({ name: item.entity, type: item.type }); entityRanker.touchEntityWithRecency(item.entity); } } } catch {}
 	try { for (let i = 0; i < ids.length; i++) { capsuleBuilder.recordVersion(db, ids[i], 'create'); capsuleBuilder.onMemoryStored(db, ids[i], items[i].text, items[i].entity, items[i].attribute); } } catch {}
 	try { ambientInjector.invalidateInjectionCache(); } catch {}
+  // v2: Wire graph edge extraction per row (mirrors /memory/store:929) + warm the cone pipeline per
+  // distinct session (mirrors /memory/store:930). Fire-and-forget so the batch response is not
+  // delayed; each promise carries its own no-op catch to avoid an unhandled-rejection leak.
+  for (let i = 0; i < ids.length; i++) {
+    extractAndStoreEdges(ids[i], items[i].text, items[i].session_id || '').catch(() => {});
+  }
+  for (const sid of new Set(items.map(i => i.session_id || ''))) onMemoryStored(sid);
 
   // Queue background embedding for all stored memories
   let embedDropped = 0;
@@ -1087,9 +1128,15 @@ app.get("/memory/search", async (req, res) => {
           if (queryVecs.length === 1) queryVecForCache = qVec;
 
       // C-3: Skip cache for multi-query — cached single-query results would discard expansion
-      const cached = queryVecs.length === 1 && findCachedResult(qVec, q.trim());
+      const cached = queryVecs.length === 1 && findCachedResult(qVec, q.trim(), session_id);
       if (cached) {
-        searchResults = cached.results.slice(0, limitNum);
+        // Cache is keyed on a session-aware norm (addToQueryCache above), so a cache HIT already
+        // carries the right scope. The re-filter stays as a Tier-2 guard: a cosine/keyword Tier-2
+        // match can still land on an entry built under a different session_id, so filter again
+        // before the slice so cross-session rows never surface here.
+        let _cached = cached.results;
+        if (session_id) _cached = _cached.filter(r => r.session_id === session_id);
+        searchResults = _cached.slice(0, limitNum);
         searchMethod = "cache_t" + cached.tier + "+" + (cached.similarity).toFixed(3);
             // Cached results are final — skip live search
   try {
@@ -1208,12 +1255,12 @@ app.get("/memory/search", async (req, res) => {
   // v2.1: Entity-centric search boost (Memary pattern)
   try { searchResults = entityRanker.applyEntityBoost(searchResults); } catch {}
 	// v2.2: Merge structural with semantic results
-	try { if (_prefilter?.prefiltered && searchResults.length > 0) searchResults = spatialFilter.mergeStructuralWithSemantic(_prefilter.results, searchResults); } catch {}
+	try { if (_prefilter?.prefiltered && searchResults.length > 0) searchResults = spatialFilter.mergeStructuralWithSemantic(_prefilter.results, searchResults, limitNum); } catch {}
 	// v2.2: Expand hit graph by entities (append hydrated neighbors - never drop originals)
 	try {
 		if (searchResults.length > 0) {
 			const _graphBaseIds = new Set(searchResults.map(r => r.id).filter(Boolean));
-			const _graphExpanded = entityRanker.expandHitGraphByEntities(q.trim(), Array.from(_graphBaseIds));
+			const _graphExpanded = entityRanker.expandHitGraphByEntities(q.trim(), _graphBaseIds);
 			if (_graphExpanded && _graphExpanded.length) {
 				const _graphNewIds = _graphExpanded.map(e => e.id).filter(id => id && !_graphBaseIds.has(id));
 				if (_graphNewIds.length) {
@@ -1225,7 +1272,7 @@ app.get("/memory/search", async (req, res) => {
 				}
 			}
 		}
-	} catch {}
+	} catch (e) { if (LOG_DEBUG) console.warn('[search] graph expansion failed:', e.message); }
 	// v2.2: Modality boost for cross-modal results
 	try { if (searchResults.length > 0) searchResults = crossModalExtractor.modalityBoost(searchResults, q.trim()); } catch {}
 	// v2.2: Hall-type corridor diversity
@@ -1237,7 +1284,7 @@ app.get("/memory/search", async (req, res) => {
 
     // Store in semantic cache if we got results from embedding search
     if (queryVecForCache && searchResults.length > 0 && !searchMethod.startsWith("cache")) {
-      addToQueryCache(queryVecForCache, searchResults, q.trim());
+      addToQueryCache(queryVecForCache, searchResults, q.trim(), session_id);
     }
 
 
@@ -1278,7 +1325,12 @@ try {
 		if (associativeResults.length > 0 && queryVecForCache) {
 			associativeResults = associativeResults
 				.map(r => {
-					const sim = r.embedding ? cosineSimilarity(queryVecForCache, r.embedding) : 1;
+					// Decode the raw embedding Buffer to float32 BEFORE cosine (the old call passed the
+					// raw BLOB bytes to cosineSimilarity → byte-level garbage → the >=0.75 drift guard
+					// admitted whatever and the slice(0,5) did the real pruning). The BLOB itself is
+					// stripped from the response by _stripRow at the res.json boundary below.
+					const _vec = r.embedding ? bufferToFloat32(r.embedding) : null;
+					const sim = _vec ? cosineSimilarity(queryVecForCache, _vec) : 1;
 					return { ...r, _assoc_sim: sim };
 				})
 				.filter(r => r._assoc_sim >= 0.75)
@@ -1302,13 +1354,19 @@ if (queryVecForCache && process.env.ENABLE_REACTIVATION !== 'false') {
   if (reactivatedRows?.length && LOG_DEBUG) console.log('[E7] reactivated', reactivatedRows.length, 'archived rows on query reference');
 }
 
+// Strip the raw embedding BLOB (and vec_id) from associative + reactivated rows before shipping —
+// tryReactivateCandidates and getMemoriesByEntityAttr return raw SELECT * rows whose embedding
+// column is a ~3KB Buffer; shipping it exposes the model fingerprint on every search response.
+// Same destructure pattern the graph-expansion path uses at :1222.
+const _stripRow = (m) => { if (!m) return m; const { embedding, vec_id, ..._r } = m; return _r; };
+
 res.json({
   ok: true,
   method: searchMethod,
   queries: queries.length > 1 ? queries : undefined,
   results: searchResults,
-  related: associativeResults.length > 0 ? associativeResults : undefined,
-  reactivated: reactivatedRows.length > 0 ? reactivatedRows : undefined,
+  related: associativeResults.length > 0 ? associativeResults.map(_stripRow) : undefined,
+  reactivated: reactivatedRows.length > 0 ? reactivatedRows.map(_stripRow) : undefined,
   diversityStats: diversityStats || undefined,  // E15: present only when ?stats=true
 });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1384,9 +1442,10 @@ app.get('/memory/release', async (req, res) => {
     let chars = 0;
     for (const m of deduped) {
       const prefix = m.context_prefix ? `[${m.context_prefix}] ` : '';
-  const sessionTag = (sessionId && m.session_id && m.session_id !== sessionId)
-    ? `[from session ${m.session_id.slice(0, 8)}]` : '';
-  const line = `- (${m.type}) ${prefix}${sessionTag}${sessionTag ? ' ' : ''}${m.text}`;
+  // Cross-session `[from session ...]` tag removed: line :1361 already filters to `sessionId`, so
+  // `m.session_id !== sessionId` was unreachable and the tag never rendered (report LOW finding).
+  // Endpoint stays session-scoped per its existing prefilter.
+  const line = `- (${m.type}) ${prefix}${m.text}`;
       if (chars + line.length > charBudget) break;
       lines.push(line);
       chars += line.length;
@@ -2299,6 +2358,10 @@ app.post('/memory/reembed', async (req, res) => {
       updateMemoryEmbedding(ids[i], vec);
     }
     addVecsToIndex(ids, embeddings);
+    // Re-embedding adds rows to the KNN index that cached "no hits" searches previously excluded —
+    // invalidate so a stale cached result set does not hide the now-searchable rows until the 2h TTL
+    // fires. Entity-less rows fall through to a broad clear (acceptable for a bulk backfill).
+    for (const m of missing) invalidateQueryCacheForEntity(m.entity, m.attribute);
 
     res.json({ ok: true, reembedded: ids.length });
   } catch (err) {
@@ -2542,7 +2605,13 @@ app.get('/memory/audit', async (_req, res) => {
 
 app.post('/memory/feedback', (req, res) => {
   try {
-    const result = ambientInjector.processMemoryFeedback(db, req.body);
+    // processMemoryFeedback(memoryId, signal) — does NOT take a db handle (uses module-private
+    // _db). The prior (db, req.body) call bound the Database object as `WHERE id = ?` → TypeError
+    // → 500 every call, leaving the positive-feedback-boost / negative-feedback→archive loop
+    // (FEEDBACK_ARCHIVE_THRESHOLD) unreachable over HTTP. Destructure the documented body, matching
+    // the MCP memory_feedback handler (mcp-server.mjs) which already passes args positionally.
+    const { memory_id, signal } = req.body || {};
+    const result = ambientInjector.processMemoryFeedback(memory_id, signal);
     res.json({ ok: true, ...result });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2629,7 +2698,13 @@ app.get('/memory/entity/ranking', (req, res) => {
 
 app.get('/memory/entity/stream', (req, res) => {
   try {
-    const stream = entityRanker.getMemoryStream(db, req.query);
+    // getMemoryStream(entityFilter='', limit=100) — does NOT take a db handle (uses module-private
+    // _db). The prior (db, req.query) call bound the Database object as the `WHERE entity = ?` param
+    // and `Math.min(req.query, 500)` → NaN → better-sqlite3 bind TypeError → 500 every call.
+    const stream = entityRanker.getMemoryStream(
+      typeof req.query.entity === 'string' ? req.query.entity : '',
+      req.query.limit ? Math.min(+req.query.limit, 500) : 100,
+    );
     res.json({ ok: true, stream });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2709,9 +2784,16 @@ app.post('/memory/compress/typed', (req, res) => {
 });
 
 // Spatial Filter (MemPalace)
-app.get('/memory/tunnels', async (_req, res) => {
+app.get('/memory/tunnels', (req, res) => {
   try {
-    const tunnels = await spatialFilter.detectCrossWingTunnels(db);
+    // detectCrossWingTunnels(minEntityPairs, minOverlap) — SYNCHRONOUS, uses module-private _db.
+    // The prior `await detectCrossWingTunnels(db)` bound the Database object as the
+    // `HAVING entity_count >= ?` param → bind TypeError → 500 every call. Pass numeric
+    // thresholds (omit → documented defaults TUNNEL_MIN_ENTITY_PAIRS / TUNNEL_MIN_SHARED_ATTRIBUTES).
+    const tunnels = spatialFilter.detectCrossWingTunnels(
+      req.query.minEntityPairs ? +req.query.minEntityPairs : undefined,
+      req.query.minOverlap ? +req.query.minOverlap : undefined,
+    );
     res.json({ ok: true, tunnels });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

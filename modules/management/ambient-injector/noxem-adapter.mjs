@@ -520,11 +520,15 @@ export async function distillGuide(procedureId, llmFetchFn) {
     return { guide_id: null, distilled: false, reason: `Use count ${procRow.use_count} < ${GUIDE_DISTILL_MIN_USE_COUNT}` };
   }
 
-  // Check if already distilled by checking for a distilled_from edge pointing to this procedure
+  // Check if already distilled by checking for a distilled_from edge pointing to this procedure.
+  // The procedures table has NO `type` column (memory-store.mjs:289-299), so the prior
+  // `AND p.type = 'guide'` predicate threw "no such column: p.type" at prepare — DEAD every call.
+  // Dedupe by the distilled_from edge alone: the INSERT below (line ~588) links guide→source via
+  // exactly this edge, so its existence IS the "already distilled" signal (matches distillAllEligible).
   const existingGuide = _db.prepare(`
     SELECT e.from_id FROM memory_edges e
     JOIN procedures p ON p.id = e.from_id
-    WHERE e.to_id = ? AND e.relation = 'distilled_from' AND p.type = 'guide'
+    WHERE e.to_id = ? AND e.relation = 'distilled_from'
     LIMIT 1
   `).get(procedureId);
 

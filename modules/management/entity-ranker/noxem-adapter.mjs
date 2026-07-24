@@ -233,7 +233,7 @@ export function expandHitGraphByEntities(query, existingIds, depth = GRAPH_EXPAN
     try {
       const neighbors = _traverseMemoryGraph(seedId, depth, limit);
       for (const n of (neighbors || [])) {
-        if (!existingIds.has(n.to_id) && !discovered.has(n.to_id)) {
+        if (!seedIds.has(n.to_id) && !discovered.has(n.to_id)) {
           discovered.set(n.to_id, {
             id: n.to_id,
             relation: n.relation,
