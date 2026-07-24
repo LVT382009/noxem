@@ -580,8 +580,8 @@ class NoxemMemoryProvider:
             {
                 "key": "context_window",
                 "description": "Context window",
-                "default": 8192,
-                "choices": [8192, 32768, 131072, 1048576],
+                "default": "8192",
+                "choices": ["8192", "32768", "131072", "1048576"],
             },
             {
                 "key": "embedding_enabled",
